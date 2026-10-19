@@ -90,14 +90,6 @@ base_url = "https://api.acoustid.org"
 [policy]
 # 已获明确授权自动写入；随时可设为 false 全局只读
 write_enabled = true
-
-[policy.tags]
-auto_scan = true
-scan_interval_hours = 24
-auto_write = true
-fingerprint = true
-max_auto_write_per_run = 2000
-max_duration_delta_seconds = 5.0
 write_mode = "auto"
 # 内嵌与同名 .lrc 两者都写：多设备与 U 盘/车载需要文件自足
 write_sidecar_lrc = true
@@ -108,6 +100,14 @@ fill_empty_lrc = true
 skip_if_valid_synced = true
 clear_plain_embedded = true
 allow_other_providers = false
+
+[policy.tags]
+auto_scan = true
+scan_interval_hours = 24
+auto_write = true
+fingerprint = true
+max_auto_write_per_run = 2000
+max_duration_delta_seconds = 5.0
 
 [policy.matching]
 # 时长闸门：识别版本差异的主要判据
