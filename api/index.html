@@ -1053,7 +1053,7 @@
   <a href="#_5" class="md-nav__link">
     <span class="md-ellipsis">
       
-        曲库
+        设置
       
     </span>
   </a>
@@ -1064,7 +1064,7 @@
   <a href="#_6" class="md-nav__link">
     <span class="md-ellipsis">
       
-        歌词
+        曲库
       
     </span>
   </a>
@@ -1075,7 +1075,7 @@
   <a href="#_7" class="md-nav__link">
     <span class="md-ellipsis">
       
-        标签
+        歌词
       
     </span>
   </a>
@@ -1086,7 +1086,7 @@
   <a href="#_8" class="md-nav__link">
     <span class="md-ellipsis">
       
-        整理
+        标签
       
     </span>
   </a>
@@ -1095,6 +1095,17 @@
         
           <li class="md-nav__item">
   <a href="#_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        整理
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_10" class="md-nav__link">
     <span class="md-ellipsis">
       
         重复音频
@@ -1110,7 +1121,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_10" class="md-nav__link">
+  <a href="#_11" class="md-nav__link">
     <span class="md-ellipsis">
       
         错误格式
@@ -1121,7 +1132,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_11" class="md-nav__link">
+  <a href="#_12" class="md-nav__link">
     <span class="md-ellipsis">
       
         任务
@@ -1132,7 +1143,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_12" class="md-nav__link">
+  <a href="#_13" class="md-nav__link">
     <span class="md-ellipsis">
       
         安全建议
@@ -1472,7 +1483,7 @@
   <a href="#_5" class="md-nav__link">
     <span class="md-ellipsis">
       
-        曲库
+        设置
       
     </span>
   </a>
@@ -1483,7 +1494,7 @@
   <a href="#_6" class="md-nav__link">
     <span class="md-ellipsis">
       
-        歌词
+        曲库
       
     </span>
   </a>
@@ -1494,7 +1505,7 @@
   <a href="#_7" class="md-nav__link">
     <span class="md-ellipsis">
       
-        标签
+        歌词
       
     </span>
   </a>
@@ -1505,7 +1516,7 @@
   <a href="#_8" class="md-nav__link">
     <span class="md-ellipsis">
       
-        整理
+        标签
       
     </span>
   </a>
@@ -1514,6 +1525,17 @@
         
           <li class="md-nav__item">
   <a href="#_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        整理
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_10" class="md-nav__link">
     <span class="md-ellipsis">
       
         重复音频
@@ -1529,7 +1551,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_10" class="md-nav__link">
+  <a href="#_11" class="md-nav__link">
     <span class="md-ellipsis">
       
         错误格式
@@ -1540,7 +1562,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_11" class="md-nav__link">
+  <a href="#_12" class="md-nav__link">
     <span class="md-ellipsis">
       
         任务
@@ -1551,7 +1573,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_12" class="md-nav__link">
+  <a href="#_13" class="md-nav__link">
     <span class="md-ellipsis">
       
         安全建议
@@ -1649,7 +1671,34 @@
 </tr>
 </tbody>
 </table>
-<h3 id="_5">曲库<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h3>
+<h3 id="_5">设置<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>路径</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/settings/ai</code></td>
+<td>读取大模型设置，Token 只返回是否已配置</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/api/v1/settings/ai</code></td>
+<td>保存大模型设置；Token 单独写入 0600 文件</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/settings/ai/test</code></td>
+<td>用当前表单或已保存配置发一条最小请求</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_6">曲库<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -1701,7 +1750,7 @@
 </tr>
 </tbody>
 </table>
-<h3 id="_6">歌词<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h3>
+<h3 id="_7">歌词<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -1748,7 +1797,7 @@
 </tr>
 </tbody>
 </table>
-<h3 id="_7">标签<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h3>
+<h3 id="_8">标签<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -1805,7 +1854,7 @@
 </tr>
 </tbody>
 </table>
-<h3 id="_8">整理<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h3>
+<h3 id="_9">整理<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -1847,7 +1896,7 @@
 </tr>
 </tbody>
 </table>
-<h3 id="_9">重复音频<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h3>
+<h3 id="_10">重复音频<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -1892,7 +1941,7 @@
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>http://127.0.0.1:8080/api/v1/dedupe/delete
 </code></pre></div>
 <p>服务端会校验分类、组成员、建议删除标记和参照项。任意一组不合法时整批拒绝。</p>
-<h2 id="_10">错误格式<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h2>
+<h2 id="_11">错误格式<a class="headerlink" href="#_11" title="Permanent link">&para;</a></h2>
 <p>错误返回 JSON：</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span><span class="nt">"detail"</span><span class="p">:</span><span class="s2">"具体原因"</span><span class="p">}</span>
 </code></pre></div>
@@ -1931,7 +1980,7 @@
 </tr>
 </tbody>
 </table>
-<h2 id="_11">任务<a class="headerlink" href="#_11" title="Permanent link">&para;</a></h2>
+<h2 id="_12">任务<a class="headerlink" href="#_12" title="Permanent link">&para;</a></h2>
 <p>抓取、扫描、整理等长任务返回任务 ID：</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="s2">"..."</span><span class="p">,</span><span class="nt">"kind"</span><span class="p">:</span><span class="s2">"fetch"</span><span class="p">,</span><span class="nt">"state"</span><span class="p">:</span><span class="s2">"running"</span><span class="p">}</span>
 </code></pre></div>
@@ -1939,7 +1988,7 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>curl<span class="w"> </span>-b<span class="w"> </span>cookies.txt<span class="w"> </span>http://127.0.0.1:8080/api/v1/tasks/&lt;id&gt;
 </code></pre></div>
 <p>任务状态落库，重启后不会丢失；中断的任务会标记为 interrupted。</p>
-<h2 id="_12">安全建议<a class="headerlink" href="#_12" title="Permanent link">&para;</a></h2>
+<h2 id="_13">安全建议<a class="headerlink" href="#_13" title="Permanent link">&para;</a></h2>
 <ul>
 <li>不要把 Token 写进前端代码或公开仓库。</li>
 <li>生产环境只通过 HTTPS 暴露。</li>
