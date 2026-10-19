@@ -544,6 +544,39 @@ export type TagSettings = {
   revision: string
 }
 
+export type AIProtocol = 'openai_chat' | 'openai_responses' | 'anthropic'
+
+export type AISettings = {
+  enabled: boolean
+  protocol: AIProtocol
+  base_url: string
+  model: string
+  timeout_seconds: number
+  max_requests_per_run: number
+  auto_clean_duplicates: boolean
+  has_api_key: boolean
+  api_key_source: 'env' | 'settings' | 'config' | 'none'
+  protocols: AIProtocol[]
+  revision: string
+}
+
+export type AISettingsInput = Partial<Pick<
+  AISettings,
+  'enabled' | 'protocol' | 'base_url' | 'model' | 'timeout_seconds' | 'max_requests_per_run' | 'auto_clean_duplicates'
+>> & {
+  api_key?: string
+  clear_api_key?: boolean
+}
+
+export type AITestResult = {
+  ok: boolean
+  protocol: AIProtocol
+  model: string
+  endpoint: string
+  sample: string
+  latency_ms: number
+}
+
 export type TagLinkCandidate = {
   index: number
   title: string

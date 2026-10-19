@@ -1,5 +1,8 @@
 import type {
   Alternatives,
+  AISettings,
+  AISettingsInput,
+  AITestResult,
   SafeItem,
   CleanupResult,
   DedupeResponse,
@@ -331,6 +334,17 @@ export const api = {
     request<TagSettings>('/api/v1/settings/tags', {
       method: 'PUT',
       body: JSON.stringify(policy),
+    }),
+  aiSettings: () => request<AISettings>('/api/v1/settings/ai'),
+  updateAISettings: (settings: AISettingsInput) =>
+    request<AISettings & { ok: boolean }>('/api/v1/settings/ai', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    }),
+  testAISettings: (settings: AISettingsInput) =>
+    request<AITestResult>('/api/v1/settings/ai/test', {
+      method: 'POST',
+      body: JSON.stringify(settings),
     }),
   tagProposals: (params: { state?: string; q?: string; limit?: number; offset?: number }) =>
     request<TagProposalPage>(`/api/v1/tags/proposals${query(params)}`),

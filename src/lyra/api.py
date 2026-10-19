@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,14 @@ from .auth import (
     verify_token,
 )
 from .compare import build_comparison
-from .config import Config, RootConfig, apply_tag_policy_values
+from .config import (
+    AI_PROTOCOLS,
+    AI_SETTINGS_FIELDS,
+    Config,
+    RootConfig,
+    apply_ai_settings_values,
+    apply_tag_policy_values,
+)
 from .cover import (
     CoverDownloadError,
     CoverError,
@@ -94,6 +101,33 @@ logger = logging.getLogger(__name__)
 
 _AUDIT_KEEP = 100
 COOKIE_NAME = "lyra_session"
+AI_TOKEN_FILENAME = "ai-token"
+
+
+def _ai_token_path(cfg: Config) -> Path:
+    return cfg.storage.resolved_data_dir / AI_TOKEN_FILENAME
+
+
+def _read_ai_token(cfg: Config) -> str:
+    path = _ai_token_path(cfg)
+    try:
+        return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    except OSError:
+        return ""
+
+
+def _write_ai_token(cfg: Config, token: str) -> None:
+    path = _ai_token_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(token)
+    path.chmod(0o600)
+
+
+def _clear_ai_token(cfg: Config) -> None:
+    with contextlib.suppress(OSError):
+        _ai_token_path(cfg).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +422,20 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 apply_tag_policy_values(cfg, json.loads(raw_policy))
         except Exception:  # noqa: BLE001 — 清理失败不该阻止启动
             pass
+
+        try:
+            raw_ai = state.get_meta("settings.ai")
+            if raw_ai:
+                apply_ai_settings_values(cfg, json.loads(raw_ai))
+            saved_token = _read_ai_token(cfg)
+            if saved_token and not os.environ.get("LYRA_AI_API_KEY"):
+                cfg.ai.api_key = saved_token
+            env_key = os.environ.get("LYRA_AI_API_KEY")
+            if env_key:
+                cfg.ai.api_key = env_key
+                cfg.ai.enabled = True
+        except Exception as exc:  # noqa: BLE001 — 配置损坏不该阻止启动
+            print(f"[startup] AI 设置读取失败：{exc}", flush=True)
 
         # **崩溃恢复。** `recover_pending` 早就实现了、也有测试，但从来没有
         # 任何生产代码调用它——于是崩溃中断的事务永远停在非终态，
@@ -2515,6 +2563,106 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             "revision": revision,
         }
 
+    def _ai_settings_view() -> dict[str, Any]:
+        env_key = os.environ.get("LYRA_AI_API_KEY") or ""
+        saved_token = _read_ai_token(cfg)
+        if env_key:
+            source = "env"
+        elif saved_token:
+            source = "settings"
+        elif cfg.ai.api_key.strip():
+            source = "config"
+        else:
+            source = "none"
+        return {
+            "enabled": cfg.ai.enabled,
+            "protocol": cfg.ai.protocol,
+            "base_url": cfg.ai.base_url,
+            "model": cfg.ai.model,
+            "timeout_seconds": cfg.ai.timeout_seconds,
+            "max_requests_per_run": cfg.ai.max_requests_per_run,
+            "auto_clean_duplicates": cfg.ai.auto_clean_duplicates,
+            "has_api_key": bool(cfg.ai.api_key.strip()),
+            "api_key_source": source,
+            "protocols": list(AI_PROTOCOLS),
+            "revision": state.get_meta("settings.ai.revision") or "",
+        }
+
+    @app.get("/api/v1/settings/ai", dependencies=[Depends(require_auth)])
+    def ai_settings_view() -> dict[str, Any]:
+        return _ai_settings_view()
+
+    @app.put("/api/v1/settings/ai", dependencies=[Depends(require_auth)])
+    def update_ai_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """保存大模型配置；token 单独写入 0600 文件，不进入数据库。"""
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        unknown = set(payload) - set(AI_SETTINGS_FIELDS) - {"api_key", "clear_api_key"}
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"未知设置项：{sorted(unknown)[0]}")
+        if os.environ.get("LYRA_AI_API_KEY") and (
+            payload.get("clear_api_key") or payload.get("api_key") not in (None, "", "***")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="环境变量 LYRA_AI_API_KEY 优先，无法从设置页修改 token",
+            )
+
+        before = replace(cfg.ai)
+        values = {k: payload[k] for k in AI_SETTINGS_FIELDS if k in payload}
+        try:
+            apply_ai_settings_values(cfg, values)
+            if payload.get("clear_api_key"):
+                _clear_ai_token(cfg)
+                cfg.ai.api_key = ""
+            else:
+                token = payload.get("api_key")
+                if isinstance(token, str) and token not in ("", "***"):
+                    token = token.strip()
+                    _write_ai_token(cfg, token)
+                    cfg.ai.api_key = token
+            if cfg.ai.enabled and not cfg.ai.api_key.strip():
+                raise ValueError("启用 AI 时必须填写 API Token")
+            stored = {k: getattr(cfg.ai, k) for k in AI_SETTINGS_FIELDS}
+            state.set_meta("settings.ai", json.dumps(stored, ensure_ascii=False))
+            state.set_meta("settings.ai.revision", str(time.time_ns()))
+        except ValueError as exc:
+            cfg.ai = before
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            cfg.ai = before
+            raise HTTPException(status_code=500, detail=f"保存 AI token 失败：{exc}") from exc
+        _invalidate_caches()
+        return {"ok": True, **_ai_settings_view()}
+
+    @app.post("/api/v1/settings/ai/test", dependencies=[Depends(require_auth)])
+    def test_ai_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """用当前表单或已保存配置发一条最小请求，不写任何文件。"""
+        from .ai import AIError, test_connection
+
+        payload = payload or {}
+        temp_cfg = replace(cfg, ai=replace(cfg.ai))
+        values = {k: payload[k] for k in AI_SETTINGS_FIELDS if k in payload}
+        try:
+            apply_ai_settings_values(temp_cfg, values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        token = payload.get("api_key")
+        if isinstance(token, str) and token not in ("", "***"):
+            temp_cfg.ai.api_key = token.strip()
+        if not temp_cfg.ai.api_key.strip():
+            raise HTTPException(status_code=400, detail="还没有填写 API Token")
+        try:
+            return test_connection(
+                protocol=temp_cfg.ai.protocol,
+                base_url=temp_cfg.ai.base_url,
+                model=temp_cfg.ai.model,
+                api_key=temp_cfg.ai.api_key,
+                timeout=temp_cfg.ai.timeout_seconds,
+            )
+        except AIError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # -- 动作 -------------------------------------------------------------
 
     @app.post("/api/v1/tasks/fetch", dependencies=[Depends(require_auth)])
@@ -3429,6 +3577,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 budget -= 1
                 try:
                     judgement = review_duplicate(
+                        protocol=cfg.ai.protocol,
                         base_url=cfg.ai.base_url, model=cfg.ai.model,
                         api_key=cfg.ai.api_key, timeout=cfg.ai.timeout_seconds,
                         audio={

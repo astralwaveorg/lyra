@@ -2,6 +2,12 @@
 
 完整记录见仓库根目录的 [CHANGELOG.md](https://github.com/astralwaveorg/lyra/blob/main/CHANGELOG.md)。
 
+## 1.1.0
+
+- 设置页新增大模型配置：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages
+- 支持 API 地址、模型 ID、Token、超时和连接测试
+- Token 保存在 `data/ai-token`（0600），不进入数据库
+
 ## 1.0.0
 
 首个公开版本。

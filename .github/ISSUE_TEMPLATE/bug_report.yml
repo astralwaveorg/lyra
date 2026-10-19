@@ -13,7 +13,7 @@ body:
     attributes:
       label: Lyra 版本
       description: 设置页的版本，或镜像 tag
-      placeholder: "1.0.0"
+      placeholder: "1.1.0"
     validations:
       required: true
   - type: dropdown

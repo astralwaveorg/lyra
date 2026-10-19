@@ -156,8 +156,8 @@ MIGRATIONS = {..., 13: _MIGRATION_13}
 3. 提交并打 tag：
 
 ```bash
-git tag -a v1.0.0 -m "Lyra 1.0.0"
-git push origin v1.0.0
+git tag -a v1.1.0 -m "Lyra 1.1.0"
+git push origin v1.1.0
 ```
 
 4. GitHub Actions 会运行测试、构建多架构镜像并推送到 GHCR。

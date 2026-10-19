@@ -59,7 +59,7 @@ max_inline_retry_wait_seconds = 5
 
 [providers.lrclib]
 client_name = "Lyra"
-client_version = "1.0.0"
+client_version = "1.1.0"
 client_url = "https://github.com/astralwaveorg/lyra"
 # 授权 reference：优先用环境变量 LYRA_LRCLIB_AUTHORIZATION_REF 注入，
 # 避免把凭据写进任何文件。留空表示只用客户端标识头（LRCLIB 不要求 key）。
@@ -161,8 +161,11 @@ backup_max_bytes = 0
 # 是否允许清理由**确定性**的歌词行覆盖决定（孤儿那份有没有多出歌词行），
 # 不由模型一句话决定；动作是移入回收站（可还原），不是删除。
 enabled = false
-base_url = "https://api.minimax.chat/v1/text/chatcompletion_v2"
-model = "MiniMax-Text-01"
+# openai_chat | openai_responses | anthropic
+protocol = "openai_chat"
+# 可填 base URL（含 /v1）或完整 endpoint
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
 # 建议用环境变量 LYRA_AI_API_KEY 提供密钥，不要写进本文件
 api_key = ""
 timeout_seconds = 30.0
@@ -170,9 +173,3 @@ timeout_seconds = 30.0
 max_requests_per_run = 12
 # 高置信度的重复歌词是否自动清理（仍要求「歌词行 100% 被现有那份覆盖」）
 auto_clean_duplicates = false
-# 自动清理「确实多余」的孤儿 .lrc：
-#   - 内容与现有 .lrc 重复（歌词行 100% 被覆盖，作词/作曲/标题行不计）
-#   - 整个曲库里没有对应音频的
-# 曲库里有同名音频（可能在别的目录）的**不动**——那可能是放错目录。
-# 动作是移入回收站（保留相对路径、可还原），不是删除。
-auto_clean_orphan_sidecars = false

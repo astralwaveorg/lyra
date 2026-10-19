@@ -8,7 +8,7 @@ import alipay from '@/assets/sponsor/alipay.jpg'
 import community from '@/assets/sponsor/community.jpg'
 
 const meta = useMeta()
-const version = computed(() => meta.version || '1.0.0')
+const version = computed(() => meta.version || '1.1.0')
 
 const links = [
   {

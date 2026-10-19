@@ -218,7 +218,7 @@ docker compose up -d
 镜像标签使用具体版本，例如：
 
 ```dotenv
-LYRA_VERSION=1.0.0
+LYRA_VERSION=1.1.0
 ```
 
 不要在生产环境长期使用 `latest`。

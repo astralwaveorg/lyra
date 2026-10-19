@@ -135,6 +135,8 @@ Lyra 的页面按「看内容、修内容、管理系统」分成三组。第一
 
 设置页保存的标签策略会写入数据库，并覆盖配置文件里的 `[policy.tags]`。监控进程每分钟检查一次变更。
 
+「大模型」支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种协议。可以填 base URL 或完整 endpoint，保存前可用「测试连接」发一条最小请求。Token 只保存在服务端 `data/ai-token`，页面不会回显完整值。
+
 ## 键盘与移动端
 
 界面在桌面和手机上使用同一套路由。手机上侧栏变成抽屉，表格变成卡片列表，操作按钮保留在卡片内。歌词对比和整理预览在窄屏下改为纵向排列。

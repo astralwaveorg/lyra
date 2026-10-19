@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api/client'
-import type { TagPolicy, TokenRow } from '@/api/types'
+import type { AIProtocol, AISettings, AITestResult, TagPolicy, TokenRow } from '@/api/types'
 import { useMeta } from '@/stores/meta'
 import { useSession } from '@/stores/session'
 import { useTheme } from '@/stores/ui'
@@ -31,6 +31,21 @@ const sessionCount = computed(
 const tagPolicy = ref<TagPolicy | null>(null)
 const tagLoading = ref(false)
 const tagSaving = ref(false)
+
+const ai = ref<AISettings | null>(null)
+const aiLoading = ref(false)
+const aiSaving = ref(false)
+const aiTesting = ref(false)
+const aiToken = ref('')
+const clearAIToken = ref(false)
+const aiTest = ref<AITestResult | null>(null)
+const aiError = ref('')
+
+const AI_PROTOCOL_LABEL: Record<AIProtocol, string> = {
+  openai_chat: 'OpenAI Chat Completions',
+  openai_responses: 'OpenAI Responses',
+  anthropic: 'Anthropic Messages',
+}
 
 const currentPassword = ref('')
 const newPassword = ref('')
@@ -74,6 +89,85 @@ async function saveTagPolicy() {
     ElMessage.error(err instanceof Error ? err.message : '保存失败')
   } finally {
     tagSaving.value = false
+  }
+}
+
+async function loadAISettings() {
+  aiLoading.value = true
+  aiError.value = ''
+  try {
+    ai.value = await api.aiSettings()
+    aiToken.value = ''
+    clearAIToken.value = false
+    aiTest.value = null
+  } catch (err) {
+    aiError.value = err instanceof Error ? err.message : '大模型设置加载失败'
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+function aiPayload() {
+  if (!ai.value) return null
+  const payload = {
+    enabled: ai.value.enabled,
+    protocol: ai.value.protocol,
+    base_url: ai.value.base_url.trim(),
+    model: ai.value.model.trim(),
+    timeout_seconds: ai.value.timeout_seconds,
+    max_requests_per_run: ai.value.max_requests_per_run,
+    auto_clean_duplicates: ai.value.auto_clean_duplicates,
+  }
+  if (clearAIToken.value) return { ...payload, clear_api_key: true }
+  if (aiToken.value.trim()) return { ...payload, api_key: aiToken.value.trim() }
+  return payload
+}
+
+async function saveAISettings() {
+  if (!ai.value) return
+  const payload = aiPayload()
+  if (!payload) return
+  if (!payload.base_url.startsWith('http://') && !payload.base_url.startsWith('https://')) {
+    ElMessage.warning('API 地址需要以 http:// 或 https:// 开头')
+    return
+  }
+  if (!payload.model) {
+    ElMessage.warning('请填写模型 ID')
+    return
+  }
+  if (payload.timeout_seconds < 5 || payload.timeout_seconds > 300) {
+    ElMessage.warning('超时时间需要在 5 到 300 秒之间')
+    return
+  }
+  aiSaving.value = true
+  aiError.value = ''
+  try {
+    const saved = await api.updateAISettings(payload)
+    ai.value = saved
+    aiToken.value = ''
+    clearAIToken.value = false
+    ElMessage.success('大模型设置已保存')
+  } catch (err) {
+    aiError.value = err instanceof Error ? err.message : '保存失败'
+  } finally {
+    aiSaving.value = false
+  }
+}
+
+async function testAISettings() {
+  if (!ai.value) return
+  const payload = aiPayload()
+  if (!payload) return
+  aiTesting.value = true
+  aiTest.value = null
+  aiError.value = ''
+  try {
+    aiTest.value = await api.testAISettings(payload)
+    ElMessage.success('连接成功')
+  } catch (err) {
+    aiError.value = err instanceof Error ? err.message : '连接失败'
+  } finally {
+    aiTesting.value = false
   }
 }
 
@@ -162,7 +256,7 @@ async function copyToken() {
 
 onMounted(async () => {
   if (!meta.summary) await meta.refresh().catch(() => undefined)
-  await Promise.all([loadTokens(), loadTagPolicy()])
+  await Promise.all([loadTokens(), loadTagPolicy(), loadAISettings()])
 })
 </script>
 
@@ -295,6 +389,146 @@ onMounted(async () => {
   </section>
 
   <section class="card">
+    <div class="card-head">
+      <span class="card-title">大模型</span>
+      <span class="card-hint">用于歌词语义复核；Token 只保存在服务端数据目录</span>
+    </div>
+    <div v-if="ai" class="card-body col">
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">启用大模型</div>
+          <div class="cell-meta">只用于「两份歌词是否同一首、留哪一份」这类语义判断</div>
+        </div>
+        <el-switch v-model="ai.enabled" />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">协议</div>
+          <div class="cell-meta">决定请求体和返回解析方式；兼容 OpenAI 与 Anthropic</div>
+        </div>
+        <el-select v-model="ai.protocol" style="width: 260px">
+          <el-option
+            v-for="item in ai.protocols"
+            :key="item"
+            :value="item"
+            :label="AI_PROTOCOL_LABEL[item]"
+          />
+        </el-select>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">API 地址</div>
+          <div class="cell-meta">可填 base URL（如 https://api.openai.com/v1）或完整 endpoint</div>
+        </div>
+        <el-input
+          v-model="ai.base_url"
+          placeholder="https://api.openai.com/v1"
+          style="max-width: 420px"
+        />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">模型 ID</div>
+          <div class="cell-meta">例如 gpt-4o-mini、claude-sonnet-4-5 或兼容服务的模型名</div>
+        </div>
+        <el-input v-model="ai.model" placeholder="gpt-4o-mini" style="max-width: 420px" />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">API Token</div>
+          <div class="cell-meta">
+            <span v-if="ai.api_key_source === 'env'">来自环境变量 LYRA_AI_API_KEY，设置页不能覆盖</span>
+            <span v-else-if="ai.api_key_source === 'settings'">已保存在服务端 ai-token 文件，留空表示不修改</span>
+            <span v-else-if="ai.api_key_source === 'config'">来自配置文件，留空表示继续使用</span>
+            <span v-else>还没有配置 Token</span>
+          </div>
+        </div>
+        <div class="setting-control token-control">
+          <el-input
+            v-model="aiToken"
+            type="password"
+            show-password
+            clearable
+            :disabled="clearAIToken || ai.api_key_source === 'env'"
+            :placeholder="ai.has_api_key ? '留空不修改' : '粘贴 API Token'"
+            style="max-width: 360px"
+          />
+          <el-checkbox
+            v-if="ai.has_api_key && ai.api_key_source !== 'env'"
+            v-model="clearAIToken"
+          >
+            清除已保存的 Token
+          </el-checkbox>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">超时</div>
+          <div class="cell-meta">单次模型请求的最长等待时间</div>
+        </div>
+        <div class="setting-control">
+          <el-input-number
+            v-model="ai.timeout_seconds"
+            :min="5"
+            :max="300"
+            :step="5"
+            controls-position="right"
+          />
+          <span class="cell-meta">秒</span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">单轮请求上限</div>
+          <div class="cell-meta">一次操作最多调用模型多少次，0 表示不限制</div>
+        </div>
+        <el-input-number
+          v-model="ai.max_requests_per_run"
+          :min="0"
+          :max="100"
+          :step="1"
+          controls-position="right"
+        />
+      </div>
+      <div class="setting-actions">
+        <el-button type="primary" :loading="aiSaving" @click="saveAISettings">
+          保存大模型设置
+        </el-button>
+        <el-button :loading="aiTesting" @click="testAISettings">
+          测试连接
+        </el-button>
+        <span class="cell-meta">测试只发一条最小请求，不写文件</span>
+      </div>
+      <el-alert
+        v-if="aiError"
+        :title="aiError"
+        type="error"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        v-if="aiTest"
+        :title="`连接成功 · ${aiTest.model} · ${aiTest.latency_ms}ms`"
+        type="success"
+        :closable="false"
+        show-icon
+      >
+        <div class="cell-meta mono">{{ aiTest.endpoint }}</div>
+        <div v-if="aiTest.sample" class="cell-meta">返回：{{ aiTest.sample }}</div>
+      </el-alert>
+    </div>
+    <el-skeleton v-else-if="aiLoading" :loading="true" animated :rows="5" class="settings-skeleton" />
+    <el-alert
+      v-else
+      type="error"
+      :closable="false"
+      show-icon
+      title="大模型设置加载失败，请刷新页面重试"
+      class="settings-skeleton"
+    />
+  </section>
+
+  <section class="card">
     <div class="card-head"><span class="card-title">修改密码</span></div>
     <div class="card-body form">
       <el-input v-model="currentPassword" type="password" show-password placeholder="当前密码" autocomplete="current-password" />
@@ -384,6 +618,13 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.token-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));

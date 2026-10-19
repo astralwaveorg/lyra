@@ -62,6 +62,14 @@ curl -b cookies.txt \
 | GET | `/api/v1/stats` | 曲库统计 |
 | GET | `/api/v1/watch` | 监控心跳与最近事件 |
 
+### 设置
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/settings/ai` | 读取大模型设置，Token 只返回是否已配置 |
+| PUT | `/api/v1/settings/ai` | 保存大模型设置；Token 单独写入 0600 文件 |
+| POST | `/api/v1/settings/ai/test` | 用当前表单或已保存配置发一条最小请求 |
+
 ### 曲库
 
 | 方法 | 路径 | 说明 |

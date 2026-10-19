@@ -320,19 +320,44 @@ class LyricsFormatConfig:
     romanization: bool = False
 
 
+AI_PROTOCOLS = ("openai_chat", "openai_responses", "anthropic")
+"""支持的大模型协议。
+
+- openai_chat: OpenAI Chat Completions，以及兼容它的服务
+- openai_responses: OpenAI Responses API
+- anthropic: Anthropic Messages API
+"""
+
+AI_SETTINGS_FIELDS = (
+    "enabled",
+    "protocol",
+    "base_url",
+    "model",
+    "timeout_seconds",
+    "max_requests_per_run",
+    "auto_clean_duplicates",
+)
+
+AI_SETTINGS_BOUNDS: dict[str, tuple[float, float]] = {
+    "timeout_seconds": (5.0, 300.0),
+    "max_requests_per_run": (0, 100),
+}
+
+
 @dataclass(slots=True)
 class AIConfig:
     """AI 辅助判定（可选）。
 
     只用于**语义层面**的判断：「这两份歌词是不是同一首」「哪一份更完整」。
-    这些问题靠名字与时长都答不了，而 Lyra 的原则是不猜——所以让模型给一个
-    带理由的判断，人再确认；配置里也可以让它对**高置信度的重复项**自动清理。
+    模型只给带理由的判断，动作仍由 Lyra 执行。
     """
+
     enabled: bool = False
-    base_url: str = "https://api.minimax.chat/v1/text/chatcompletion_v2"
-    model: str = "MiniMax-Text-01"
+    protocol: str = "openai_chat"
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o-mini"
     api_key: str = ""
-    """密钥。优先用环境变量 LYRA_AI_API_KEY，避免把密钥写进配置文件。"""
+    """密钥。设置页保存的 token 会写入数据目录下的 ai-token（0600）。"""
     timeout_seconds: float = 30.0
     max_requests_per_run: int = 12
     """一轮最多问几次：既防超支，也防一次点击把上游打爆。"""
@@ -464,6 +489,52 @@ def apply_tag_policy_values(cfg: Config, values: Mapping[str, Any]) -> TagPolicy
         setattr(policy, key, value)
     cfg.policy.tags = policy
     return policy
+
+
+def apply_ai_settings_values(cfg: Config, values: Mapping[str, Any]) -> AIConfig:
+    """把设置页保存的非敏感 AI 配置写进配置对象。
+
+    token 单独存放在数据目录，不进入这里，也不进入数据库 meta。
+    """
+    if not isinstance(values, Mapping):
+        raise ValueError("设置必须是对象")
+    ai = replace(cfg.ai)
+    for key, raw in values.items():
+        if key not in AI_SETTINGS_FIELDS:
+            raise ValueError(f"未知设置项：{key}")
+        if key in ("enabled", "auto_clean_duplicates"):
+            if not isinstance(raw, bool):
+                raise ValueError(f"{key} 必须是布尔值")
+            setattr(ai, key, raw)
+            continue
+        if key == "protocol":
+            if raw not in AI_PROTOCOLS:
+                raise ValueError(f"不支持的协议：{raw}")
+            ai.protocol = str(raw)
+            continue
+        if key == "base_url":
+            url = str(raw or "").strip()
+            if not url.startswith(("http://", "https://")):
+                raise ValueError("API 地址必须是 http:// 或 https://")
+            ai.base_url = url.rstrip("/")
+            continue
+        if key == "model":
+            model = str(raw or "").strip()
+            if not model:
+                raise ValueError("模型 ID 不能为空")
+            ai.model = model
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError(f"{key} 必须是数字")
+        low, high = AI_SETTINGS_BOUNDS[key]
+        value = int(raw) if key == "max_requests_per_run" else float(raw)
+        if not (low <= value <= high):
+            raise ValueError(f"{key} 必须在 {low} 到 {high} 之间")
+        setattr(ai, key, value)
+    if ai.enabled and not ai.model.strip():
+        raise ValueError("启用 AI 时必须填写模型 ID")
+    cfg.ai = ai
+    return ai
 
 
 def _mask_in_place(data: dict[str, Any], dotted: str) -> None:
@@ -614,6 +685,10 @@ _WEB_KEYS = {"bind", "port", "auth_required", "admin_username", "admin_password"
 _WRITE_KEYS = {
     "backup_before_write", "backup_auto_prune", "backup_max_bytes",
     "backup_review_only", "auto_clean_orphan_sidecars",
+}
+_AI_KEYS = {
+    "enabled", "protocol", "base_url", "model", "api_key",
+    "timeout_seconds", "max_requests_per_run", "auto_clean_duplicates",
 }
 _TOP_KEYS = {
     "config_version", "roots", "storage", "watch", "providers",
@@ -1322,9 +1397,13 @@ def _parse_ai(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None:
     if "ai" not in raw:
         return
     table = _unwrap(problems, "ai", raw["ai"])
+    problems.unknown_keys("ai", table, _AI_KEYS)
     base = cfg.ai
     cfg.ai = AIConfig(
         enabled=_as_bool(problems, "ai.enabled", table.get("enabled", base.enabled), base.enabled),
+        protocol=_as_str(
+            problems, "ai.protocol", table.get("protocol", base.protocol), base.protocol
+        ),
         base_url=_as_str(problems, "ai.base_url", table.get("base_url", base.base_url), base.base_url),
         model=_as_str(problems, "ai.model", table.get("model", base.model), base.model),
         api_key=_as_str(problems, "ai.api_key", table.get("api_key", base.api_key), base.api_key),
@@ -1340,6 +1419,12 @@ def _parse_ai(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None:
             table.get("auto_clean_duplicates", base.auto_clean_duplicates),
             base.auto_clean_duplicates),
     )
+    if cfg.ai.protocol not in AI_PROTOCOLS:
+        problems.add("ai.protocol", f"不支持的协议：{cfg.ai.protocol}")
+    if not cfg.ai.base_url.startswith(("http://", "https://")):
+        problems.add("ai.base_url", "API 地址必须以 http:// 或 https:// 开头")
+    if not cfg.ai.model.strip():
+        problems.add("ai.model", "模型 ID 不能为空")
 
 
 def _unwrap(problems: _Problems, where: str, value: Any) -> Mapping[str, Any]:

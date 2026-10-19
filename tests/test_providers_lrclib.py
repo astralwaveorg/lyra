@@ -60,7 +60,7 @@ class FakeClock:
 def default_config(**overrides: object) -> LrcLibProviderConfig:
     base: dict[str, object] = {
         "client_name": "Lyra",
-        "client_version": "1.0.0",
+        "client_version": "1.1.0",
         "client_url": CLIENT_URL,
         "minimum_request_interval_seconds": 0.0,
         "circuit_breaker_threshold": 5,
@@ -390,7 +390,7 @@ def test_必须带官方要求的两个标识头(lrclib):
     assert sent.get("Lrclib-Client") == expected
     assert sent.get("X-User-Agent") == sent.get("Lrclib-Client")
     # 标识串形态：<AppName>/<version> (<URL>)
-    assert expected.startswith("Lyra/1.0.0 (")
+    assert expected.startswith("Lyra/1.1.0 (")
     assert expected.endswith(")")
 
 

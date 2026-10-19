@@ -23,13 +23,16 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 
 __all__ = [
-    "AIError", "Judgement", "review_duplicate", "extract_json",
-    "text_overlap", "lyric_lines", "orphan_coverage",
+    "AIError", "Judgement", "review_duplicate", "test_connection",
+    "resolve_endpoint", "extract_json", "text_overlap", "lyric_lines",
+    "orphan_coverage",
 ]
 
 
@@ -182,8 +185,205 @@ def _clip(text: str, *, max_lines: int = 24, max_chars: int = 1200) -> str:
     return body[:max_chars]
 
 
+#: 已经带完整 endpoint 的地址，不再拼接路径。
+_ENDPOINT_SUFFIXES = (
+    "/chat/completions",
+    "/chatcompletion",
+    "/chatcompletion_v2",
+    "/responses",
+    "/messages",
+)
+
+
+def resolve_endpoint(protocol: str, base_url: str) -> str:
+    """把用户填写的 API 地址规范成可请求的 endpoint。
+
+    支持两种写法：
+    - base URL，例如 ``https://api.openai.com/v1``；
+    - 完整 endpoint，例如 ``.../v1/chat/completions``。
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise AIError("API 地址必须以 http:// 或 https:// 开头")
+    if url.endswith(_ENDPOINT_SUFFIXES):
+        return url
+
+    if protocol == "anthropic":
+        if url.endswith("/v1"):
+            return url + "/messages"
+        if urlsplit(url).hostname == "api.anthropic.com":
+            return url + "/v1/messages"
+        return url + "/v1/messages"
+
+    if protocol == "openai_responses":
+        if url.endswith("/v1"):
+            return url + "/responses"
+        if urlsplit(url).hostname == "api.openai.com":
+            return url + "/v1/responses"
+        return url + "/responses"
+
+    if protocol == "openai_chat":
+        if url.endswith("/v1"):
+            return url + "/chat/completions"
+        if urlsplit(url).hostname == "api.openai.com":
+            return url + "/v1/chat/completions"
+        return url + "/chat/completions"
+
+    raise AIError(f"不支持的 AI 协议：{protocol}")
+
+
+def _request_parts(protocol: str, model: str, prompt: str, max_tokens: int) -> tuple[dict, dict]:
+    if protocol == "openai_chat":
+        return (
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": 0.1,
+            },
+            {},
+        )
+    if protocol == "openai_responses":
+        return (
+            {
+                "model": model,
+                "input": prompt,
+                "max_output_tokens": max_tokens,
+            },
+            {},
+        )
+    if protocol == "anthropic":
+        return (
+            {
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": 0.1,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            {"anthropic-version": "2023-06-01"},
+        )
+    raise AIError(f"不支持的 AI 协议：{protocol}")
+
+
+def _extract_text(protocol: str, payload: object) -> str:
+    if not isinstance(payload, dict):
+        raise AIError("AI 返回结构不符合预期")
+    if protocol == "openai_chat":
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AIError("AI 返回结构不符合预期") from exc
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                str(part.get("text") or "")
+                for part in content
+                if isinstance(part, dict)
+            )
+        return str(content)
+
+    if protocol == "openai_responses":
+        text = payload.get("output_text")
+        if isinstance(text, str) and text.strip():
+            return text
+        chunks: list[str] = []
+        for item in payload.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
+                    chunks.append(str(part.get("text") or ""))
+        if chunks:
+            return "".join(chunks)
+        raise AIError("AI 返回结构不符合预期")
+
+    if protocol == "anthropic":
+        chunks = [
+            str(part.get("text") or "")
+            for part in payload.get("content") or []
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        if chunks:
+            return "".join(chunks)
+        raise AIError("AI 返回结构不符合预期")
+
+    raise AIError(f"不支持的 AI 协议：{protocol}")
+
+
+def _call(
+    *,
+    protocol: str,
+    base_url: str,
+    model: str,
+    api_key: str,
+    timeout: float,
+    prompt: str,
+    max_tokens: int,
+    client: httpx.Client | None = None,
+) -> tuple[str, str]:
+    if not api_key.strip():
+        raise AIError("未配置 AI 密钥")
+    endpoint = resolve_endpoint(protocol, base_url)
+    body, extra_headers = _request_parts(protocol, model, prompt, max_tokens)
+    headers = {"Content-Type": "application/json", **extra_headers}
+    if protocol == "anthropic":
+        headers["x-api-key"] = api_key
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    own = client is None
+    if client is None:
+        client = httpx.Client(timeout=timeout)
+    try:
+        response = client.post(endpoint, json=body, headers=headers)
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text.strip().replace("\n", " ")[:200]
+        raise AIError(f"AI 请求失败：HTTP {exc.response.status_code} {detail}") from exc
+    except httpx.HTTPError as exc:
+        raise AIError(f"AI 请求失败：{exc}") from exc
+    finally:
+        if own:
+            client.close()
+    return _extract_text(protocol, payload), endpoint
+
+
+def test_connection(
+    *,
+    protocol: str,
+    base_url: str,
+    model: str,
+    api_key: str,
+    timeout: float,
+    client: httpx.Client | None = None,
+) -> dict:
+    """发一条最小请求，确认地址、协议、模型和 token 可用。"""
+    started = time.monotonic()
+    text, endpoint = _call(
+        protocol=protocol,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        timeout=timeout,
+        prompt="只回复 OK，不要解释。",
+        max_tokens=32,
+        client=client,
+    )
+    return {
+        "ok": True,
+        "protocol": protocol,
+        "model": model,
+        "endpoint": endpoint,
+        "sample": text.strip()[:100],
+        "latency_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
 def review_duplicate(
     *,
+    protocol: str = "openai_chat",
     base_url: str,
     model: str,
     api_key: str,
@@ -224,38 +424,17 @@ def review_duplicate(
         b_name=orphan_name, b_lines=len(orphan_text.splitlines()),
         b_text=_clip(orphan_text),
     )
-    own = client is None
-    if client is None:
-        client = httpx.Client(timeout=timeout)
-    try:
-        response = client.post(
-            base_url,
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 300,
-                "temperature": 0.1,
-            },
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPStatusError as exc:
-        raise AIError(f"AI 请求失败：HTTP {exc.response.status_code}") from exc
-    except httpx.HTTPError as exc:
-        raise AIError(f"AI 请求失败：{exc}") from exc
-    finally:
-        if own:
-            client.close()
-
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise AIError("AI 返回结构不符合预期") from exc
-    data = extract_json(str(content))
+    content, _endpoint = _call(
+        protocol=protocol,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        timeout=timeout,
+        prompt=prompt,
+        max_tokens=300,
+        client=client,
+    )
+    data = extract_json(content)
 
     keep = str(data.get("keep") or "unknown").strip()
     if keep.upper() in ("A", "EXISTING"):

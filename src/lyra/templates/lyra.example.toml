@@ -215,6 +215,22 @@ admin_username = "admin"
 admin_password = ""
 
 # ===========================================================================
+# 大模型（可选）
+# ===========================================================================
+[ai]
+# openai_chat | openai_responses | anthropic
+protocol = "openai_chat"
+enabled = false
+# 可填 base URL（含 /v1）或完整 endpoint
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+# 建议用环境变量 LYRA_AI_API_KEY；设置页保存的 token 在 data/ai-token（0600）
+api_key = ""
+timeout_seconds = 30
+max_requests_per_run = 12
+auto_clean_duplicates = false
+
+# ===========================================================================
 # 写入事务
 # ===========================================================================
 [write]

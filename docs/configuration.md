@@ -143,7 +143,7 @@ base_url = ""
 ```toml
 [providers.lrclib]
 client_name = "Lyra"
-client_version = "1.0.0"
+client_version = "1.1.0"
 client_url = "https://github.com/astralwaveorg/lyra"
 authorization_ref = ""
 minimum_request_interval_seconds = 0.5
@@ -262,23 +262,59 @@ minimum_request_interval_seconds = 0.34
 | `no_synced_intervals_days` | `[30, 90, 180]` | 有候选但无同步歌词的复查间隔 |
 | `transient_backoff_seconds` | `[60, 300, 1800, 7200, 21600]` | 临时网络错误退避 |
 
-## AI 辅助 `[ai]`
+## 大模型 `[ai]`
 
 默认关闭，只用于「两份歌词是不是同一首、哪份更完整」这类语义判断。
 
 ```toml
 [ai]
 enabled = false
-base_url = "https://api.minimax.chat/v1/text/chatcompletion_v2"
-model = "MiniMax-Text-01"
+protocol = "openai_chat"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
 api_key = ""
 timeout_seconds = 30
 max_requests_per_run = 12
 auto_clean_duplicates = false
-auto_clean_orphan_sidecars = false
 ```
 
-密钥建议用 `LYRA_AI_API_KEY` 注入。即使模型判断可以清理，程序仍要求确定性的歌词行覆盖条件，并把文件移入回收站而不是删除。
+### 协议
+
+| `protocol` | 请求 endpoint | 默认地址示例 |
+| --- | --- | --- |
+| `openai_chat` | `/chat/completions` | `https://api.openai.com/v1` |
+| `openai_responses` | `/responses` | `https://api.openai.com/v1` |
+| `anthropic` | `/v1/messages` | `https://api.anthropic.com` |
+
+`base_url` 可以填 base URL，也可以填完整 endpoint。填完整地址时 Lyra 不再拼接路径：
+
+```toml
+# OpenAI 兼容服务
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+
+# 完整 endpoint 也可以
+base_url = "https://api.example.com/v1/chat/completions"
+
+# Anthropic
+protocol = "anthropic"
+base_url = "https://api.anthropic.com"
+model = "claude-sonnet-4-5"
+```
+
+OpenAI 官方的 base URL 需要包含 `/v1`；其他兼容服务如果要求不同的路径，直接填完整 endpoint 最稳妥。
+
+### 设置页
+
+「设置 → 大模型」可以配置协议、API 地址、模型 ID、Token、超时和单轮请求上限，并提供「测试连接」按钮。保存后立即生效，不需要重启。
+
+Token 的处理：
+
+- 设置页保存的 Token 写入 `data/ai-token`，权限 `0600`，不进入数据库，也不会在接口里返回。
+- 环境变量 `LYRA_AI_API_KEY` 优先级最高；设置页不能覆盖它。
+- 配置文件里的 `api_key` 可以被设置页保存的 Token 覆盖；清除设置页 Token 后回退到配置文件。
+
+即使模型判断可以清理，程序仍要求确定性的歌词行覆盖条件，并把文件移入回收站而不是删除。
 
 ## 环境变量
 

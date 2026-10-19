@@ -268,3 +268,124 @@ def test_批量删除走回收站且逐项容错(tmp_path, flac_factory):
     assert d["skipped"] == ["A/不存在.flac"]
     trash = tmp_path / "data" / "trash" / d["batch"]
     assert (trash / "A" / "1.flac").is_file(), "回收站里必须保留原相对路径"
+
+
+# ---------------------------------------------------------------------------
+# 协议适配
+# ---------------------------------------------------------------------------
+
+
+def _payload_json() -> str:
+    return json.dumps(
+        {"same_song": True, "confidence": 0.9, "keep": "A", "reason": "同一首"},
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("protocol", "response_json", "expected_path"),
+    [
+        (
+            "openai_chat",
+            {"choices": [{"message": {"content": _payload_json()}}]},
+            "/v1/chat/completions",
+        ),
+        (
+            "openai_responses",
+            {"output_text": _payload_json()},
+            "/v1/responses",
+        ),
+        (
+            "anthropic",
+            {"content": [{"type": "text", "text": _payload_json()}]},
+            "/v1/messages",
+        ),
+    ],
+)
+def test_三种协议都能请求并解析(protocol: str, response_json: dict, expected_path: str):
+    seen: dict = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        seen["headers"] = dict(request.headers)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=response_json)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    judgement = review_duplicate(
+        protocol=protocol,
+        base_url="https://api.test/v1",
+        model="test-model",
+        api_key="test-key",
+        timeout=5,
+        audio={"title": "t", "artists": ["a"]},
+        existing_name="a.lrc",
+        existing_text=_LRC,
+        orphan_name="b.lrc",
+        orphan_text=_LRC,
+        client=client,
+    )
+    assert judgement.same_song is True
+    assert seen["url"].endswith(expected_path)
+    assert seen["body"]["model"] == "test-model"
+    if protocol == "anthropic":
+        assert seen["headers"]["x-api-key"] == "test-key"
+        assert seen["headers"]["anthropic-version"] == "2023-06-01"
+        assert "system" not in seen["body"]
+    else:
+        assert seen["headers"]["authorization"] == "Bearer test-key"
+
+
+def test_Responses数组返回也能解析():
+    def handler(request: httpx.Request):
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "content": [
+                            {"type": "output_text", "text": _payload_json()},
+                        ]
+                    }
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    judgement = review_duplicate(
+        protocol="openai_responses",
+        base_url="https://api.test/v1",
+        model="m",
+        api_key="k",
+        timeout=5,
+        audio={},
+        existing_name="a",
+        existing_text=_LRC,
+        orphan_name="b",
+        orphan_text=_LRC,
+        client=client,
+    )
+    assert judgement.keep == "existing"
+
+
+def test_连接测试返回endpoint和延迟():
+    def handler(request: httpx.Request):
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "OK"}}]}
+        )
+
+    from lyra.ai import test_connection
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = test_connection(
+        protocol="openai_chat",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o-mini",
+        api_key="k",
+        timeout=5,
+        client=client,
+    )
+    assert result["ok"] is True
+    assert result["endpoint"] == "https://api.openai.com/v1/chat/completions"
+    assert result["sample"] == "OK"
+    assert result["latency_ms"] >= 0

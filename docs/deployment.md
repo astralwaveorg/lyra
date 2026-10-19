@@ -204,7 +204,7 @@ curl -s http://127.0.0.1:8080/api/v1/health
 返回：
 
 ```json
-{"ok":true,"version":"1.0.0","schema_version":12,"write_enabled":true,"busy":false}
+{"ok":true,"version":"1.1.0","schema_version":12,"write_enabled":true,"busy":false}
 ```
 
 `busy: true` 表示有长任务在运行，不代表故障。
