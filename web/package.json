@@ -12,18 +12,18 @@
   "dependencies": {
     "@element-plus/icons-vue": "2.3.2",
     "element-plus": "2.14.7",
-    "pinia": "3.0.4",
+    "pinia": "4.1.0",
     "vue": "3.5.44",
-    "vue-router": "4.6.4"
+    "vue-router": "5.4.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.10",
     "@vue/test-utils": "2.5.1",
-    "jsdom": "26.1.0",
-    "typescript": "5.9.3",
-    "vite": "7.3.7",
-    "vitest": "3.2.7",
-    "vue-tsc": "3.1.8"
+    "jsdom": "30.1.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5",
+    "vue-tsc": "3.3.13"
   },
   "description": "Lyra web interface",
   "license": "MIT",
