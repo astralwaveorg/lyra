@@ -62,7 +62,11 @@ artifacts = ["src/lyra/web/**"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-filterwarnings = ["error::DeprecationWarning"]
+filterwarnings = [
+    "error::DeprecationWarning",
+    # zhconv 仍通过 pkg_resources 读取字典；该警告来自上游，不是 Lyra 代码。
+    "ignore:pkg_resources is deprecated as an API:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

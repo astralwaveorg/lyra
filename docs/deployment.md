@@ -275,7 +275,7 @@ python -m pip install -r docs/requirements.txt
 mkdocs serve
 ```
 
-推送到 `main` 后，`.github/workflows/docs.yml` 会构建并部署到 GitHub Pages。首次使用需要在仓库 Settings → Pages 中把 Source 设为 **GitHub Actions**，地址为：
+推送到 `main` 后，`.github/workflows/docs.yml` 会构建并推送到 `gh-pages` 分支。首次使用需要在仓库 Settings → Pages 中把 Source 设为 **Deploy from a branch**，分支选 `gh-pages`，地址为：
 
 ```text
 https://astralwaveorg.github.io/lyra/
@@ -294,7 +294,7 @@ mkdocs build --strict
 - Description：`Self-hosted lyrics, tags, and library organization for a local music collection`
 - Topics：`music`、`lyrics`、`musicbrainz`、`self-hosted`、`nas`、`docker`
 - Social preview：上传 `docs/assets/social-preview.png`
-- Pages Source：GitHub Actions
+- Pages Source：Deploy from a branch，分支 `gh-pages`
 - Discussions：可选，用于用法问答；安全问题仍走 Security Advisories
 
 这些设置不在代码里，克隆仓库后需要手动配置一次。
