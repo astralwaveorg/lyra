@@ -1,0 +1,11 @@
+{
+  "id": 4000002,
+  "name": "Instrumental Piece",
+  "trackName": "Instrumental Piece",
+  "artistName": "Some Artist",
+  "albumName": "",
+  "duration": 180.0,
+  "instrumental": true,
+  "plainLyrics": null,
+  "syncedLyrics": null
+}

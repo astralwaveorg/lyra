@@ -1,0 +1,101 @@
+# Advanced deployment: Lyra plus an optional local MusicBrainz mirror and a
+# self-hosted NetEase API.
+#
+# Most users should use ../compose.yaml instead. This file is for installations
+# that already run a MusicBrainz mirror in Docker and want tag scraping to use
+# it over the internal network.
+#
+#   cp deploy/.env.example deploy/.env
+#   docker compose -f deploy/compose.yaml up -d
+#
+# The MusicBrainz network must exist before starting. The NetEase service is
+# optional and only starts with --profile netease.
+
+name: lyra-advanced
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+services:
+  netease-api:
+    image: binaryify/netease_cloud_music_api:latest
+    profiles: ["netease"]
+    restart: unless-stopped
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+    logging: *default-logging
+
+  lyra:
+    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-1.0.0}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+      - musicbrainz
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      LYRA_CONFIG: /config/lyra.toml
+      LYRA_LIBRARY_ROOT: /music
+      LYRA_DATA_DIR: /data
+      LYRA_WEB_BIND: 0.0.0.0
+      LYRA_WEB_PORT: "8080"
+      LYRA_ADMIN_USERNAME: "${LYRA_ADMIN_USERNAME:-admin}"
+      LYRA_ADMIN_PASSWORD: "${LYRA_ADMIN_PASSWORD:-}"
+      LYRA_LRCLIB_AUTHORIZATION_REF: "${LYRA_LRCLIB_AUTHORIZATION_REF:-}"
+      LYRA_ACOUSTID_API_KEY: "${LYRA_ACOUSTID_API_KEY:-}"
+      LYRA_AI_API_KEY: "${LYRA_AI_API_KEY:-}"
+    volumes:
+      - "${LIBRARY_HOST_PATH:?Set LIBRARY_HOST_PATH}:/music:rw"
+      - "${CONFIG_HOST_DIR:-../config}:/config:ro"
+      - "${DATA_HOST_PATH:-../data}:/data:rw"
+    ports:
+      - "127.0.0.1:${LYRA_PORT:-48004}:8080"
+    logging: *default-logging
+
+  lyra-watch:
+    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-1.0.0}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+      - musicbrainz
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      LYRA_CONFIG: /config/lyra.toml
+      LYRA_LIBRARY_ROOT: /music
+      LYRA_DATA_DIR: /data
+      LYRA_ADMIN_USERNAME: "${LYRA_ADMIN_USERNAME:-admin}"
+      LYRA_ADMIN_PASSWORD: "${LYRA_ADMIN_PASSWORD:-}"
+      LYRA_LRCLIB_AUTHORIZATION_REF: "${LYRA_LRCLIB_AUTHORIZATION_REF:-}"
+      LYRA_ACOUSTID_API_KEY: "${LYRA_ACOUSTID_API_KEY:-}"
+      LYRA_AI_API_KEY: "${LYRA_AI_API_KEY:-}"
+    volumes:
+      - "${LIBRARY_HOST_PATH:?Set LIBRARY_HOST_PATH}:/music:rw"
+      - "${CONFIG_HOST_DIR:-../config}:/config:ro"
+      - "${DATA_HOST_PATH:-../data}:/data:rw"
+    command: ["watch"]
+    healthcheck:
+      disable: true
+    depends_on:
+      - lyra
+    logging: *default-logging
+
+networks:
+  musicbrainz:
+    external: true
+    name: "${MUSICBRAINZ_NETWORK:-musicbrainz_default}"

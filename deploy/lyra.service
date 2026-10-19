@@ -1,0 +1,36 @@
+[Unit]
+Description=Lyra music library service
+Documentation=https://astralwaveorg.github.io/lyra/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Create a dedicated account or change these to an existing unprivileged user.
+User=1000
+Group=1000
+WorkingDirectory=/opt/lyra
+
+Environment=LYRA_CONFIG=/etc/lyra/lyra.toml
+Environment=LYRA_DATA_DIR=/var/lib/lyra
+Environment=LYRA_WEB_BIND=127.0.0.1
+Environment=LYRA_WEB_PORT=8080
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/lyra/.venv/bin/lyra serve
+# To run the background watcher as a second unit, copy this file and replace
+# the line above with:
+# ExecStart=/opt/lyra/.venv/bin/lyra watch
+
+Restart=on-failure
+RestartSec=10
+
+# Adjust the library path to the directory configured in lyra.toml.
+ReadWritePaths=/srv/music /var/lib/lyra
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,5 @@
+{
+  "message": "The requested track was not found",
+  "name": "NotFound",
+  "statusCode": 404
+}

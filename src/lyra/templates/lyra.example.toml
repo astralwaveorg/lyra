@@ -1,0 +1,231 @@
+# Lyra 配置模板
+# ---------------------------------------------------------------------------
+# 用法：
+#   1. 复制为 lyra.toml（该文件已被 .gitignore 排除，不会入库）
+#      cp lyra.example.toml lyra.toml
+#   2. 或用 `lyra config init` 自动生成
+#   3. `lyra config check` 校验并打印生效配置
+#
+# 取值优先级：环境变量 LYRA_* > 本文件 > 内置默认值
+# 所有路径都可以改；源码内不含任何绝对路径，换机器只改本文件即可。
+# ---------------------------------------------------------------------------
+
+config_version = 1
+
+# ===========================================================================
+# 受管根：列表结构，阶段一只启用一个；未来加库不改架构
+# ===========================================================================
+[[roots]]
+name = "main"
+# library = 就地管理（补歌词、补标签）
+# inbox   = 新增文件源，将来自动刮削后整理进 library（阶段三）
+role = "library"
+# path 是「服务视角」的路径：裸机部署就是真实路径；容器部署是容器内路径
+path = "~/Music"
+# host_path 仅供 CLI/文档提示，不参与任何逻辑；容器部署可留空
+host_path = ""
+# 是否按只读方式处理该根（审计模式）。写入需要 false
+read_only = false
+enabled = true
+
+# ===========================================================================
+# 存储：必须在受管根之外
+# ===========================================================================
+[storage]
+data_dir = "./data"
+
+# ===========================================================================
+# 监听与发现
+# ===========================================================================
+[watch]
+# auto | inotify | fsevents | poll
+backend = "auto"
+# 文件稳定判定：连续 stable_seconds 秒无变化，且至少采样 stable_samples 次
+stable_seconds = 60
+stable_samples = 3
+# 轻量清单核对间隔
+reconcile_interval_seconds = 900
+# 每日完整核对时刻（本地时区）
+full_scan_local_time = "03:30"
+timezone = "Asia/Shanghai"
+
+# ===========================================================================
+# 歌词来源
+#   qq     = 主源（华语覆盖较好；部分地区或网络可能不可用）
+#   lrclib = 辅源（官方授权；服务端可能 503，必须可降级）
+# 未在 enabled 中列出的来源绝不会被使用。
+# ===========================================================================
+[providers]
+enabled = ["qq", "netease", "lrclib"]
+
+[providers.qq]
+minimum_request_interval_seconds = 2
+# 每轮最多几个有意义的查询
+query_limit_per_round = 3
+candidates_per_query = 20
+# 每轮详情+歌词请求总预算
+detail_and_lyric_limit_per_round = 6
+# 上游给出 Retry-After 且等待很短时的有界内联重试（0 = 不重试）
+max_inline_retries = 2
+max_inline_retry_wait_seconds = 5
+
+[providers.netease]
+# 网易云音乐。歌词为毫秒精度 [00:00.000]。
+# 与 QQ 的曲库覆盖并不重合，多一个来源多一次命中机会。
+minimum_request_interval_seconds = 1.5
+query_limit_per_round = 3
+candidates_per_query = 20
+detail_and_lyric_limit_per_round = 6
+request_timeout_seconds = 20
+max_inline_retries = 2
+max_inline_retry_wait_seconds = 5
+
+[providers.lrclib]
+# LRCLIB 无 API key 机制，只要求这两个客户端标识头：
+#   X-User-Agent: <name>/<version> (<url>)
+#   Lrclib-Client: <name>/<version> (<url>)
+# 注意：LRCLIB 会过滤某些默认客户端标识（例如 Jellyfin-Server）。
+# 若收到 403，那不是「请求太频繁」（过频是 429），而是标识被拦。
+client_name = "Lyra"
+client_version = "1.0.0"
+client_url = "https://github.com/astralwaveorg/lyra"
+# 授权 reference（注册合规用，公开可验证；填你自己的，勿提交到公开仓库）
+authorization_ref = ""
+# 官方文档口径（https://lrclib.net/docs）：
+#   - 公共 API 限额约 20 次/秒；官方建议请求间延迟 200~500ms
+#   - 过频返回 429 + Retry-After
+#   - 服务端过载返回 503 ServerOverloaded + Retry-After（与 429 区别对待，但同属可自愈）
+# 取 0.5s（=2 次/秒），落在建议区间的保守端，比官方上限低一个数量级。
+minimum_request_interval_seconds = 0.5
+max_backoff_seconds = 3600
+# 连续失败多少次触发熔断
+circuit_breaker_threshold = 5
+circuit_breaker_initial_seconds = 1800
+# 过载时的有界内联重试：LRCLIB 会说「Retry-After: 1」，
+# 等它说的秒数再试，比直接退避 60 秒有效得多。上限防止锤击。
+max_inline_retries = 2
+max_inline_retry_wait_seconds = 5
+
+# MusicBrainz 标签来源。默认使用公共 API（每秒最多 1 次请求）。
+# 大规模扫描建议自建镜像，把 base_url 指向镜像并把间隔调到 0.2 左右。
+[providers.musicbrainz]
+enabled = true
+base_url = "https://musicbrainz.org"
+minimum_request_interval_seconds = 1.1
+request_timeout_seconds = 20
+search_limit = 8
+detail_limit = 3
+
+# 阶段二：指纹兜底（AcoustID）
+[providers.acoustid]
+# 声学指纹。缺 MBID 或替换候选有歧义时，用音频本身确认录音。
+enabled = false
+api_key = ""
+# 公网服务；自建/代理时改这里
+base_url = "https://api.acoustid.org"
+
+# ===========================================================================
+# 处理策略
+# ===========================================================================
+[policy]
+# 总开关。false 时全库只读，任何入口都不会写音乐
+write_enabled = true
+# auto = 不设人工批准队列（用户已授权自动写入）
+write_mode = "auto"
+
+# 歌词输出：用户确认「内嵌与 sidecar 两者都要」
+write_sidecar_lrc = true
+embed_lyrics = true
+
+# 0 字节 / 纯空白 .lrc 视为不存在，可安全填充
+fill_empty_lrc = true
+
+# 已有「有效同步歌词」时跳过（无收益、只有风险）。
+# 想强制全量重写就改成 false。
+skip_if_valid_synced = true
+
+# 清理无时间轴的内嵌歌词（精确字段白名单，绝不碰 LYRICIST / TEXT）
+clear_plain_embedded = true
+
+# 未显式启用的来源绝不使用
+allow_other_providers = false
+
+[policy.matching]
+# 时长闸门：源候选时长与本地音频时长之差上限（秒）
+max_duration_delta_seconds = 2
+# 最优候选与次优的最小分差，低于此值视为歧义
+min_score_margin = 0.15
+# 最低总分（0~1）
+min_confidence = 0.75
+# 时长差 ≤ 此值时，即使「最优与次优接近」也直接接受，不送复核。
+# 用途：LRCLIB 上同一首歌常有多条元数据完全相同的记录，判为歧义纯属浪费人工。
+# 注意：它**不绕过**版本校验与置信度下限——时长相同并不区分版本
+# （例如现场版与录音室版可能时长完全相同；
+#   A.I.N.Y. 的重生版差 0.20s，而正确的原版差 0.80s）。
+# 设为 0 即关闭这条规则，恢复「同分即复核」。
+auto_accept_within_seconds = 1.0
+
+[policy.tags]
+# 标签刮削：监控进程按间隔自动扫描全库。
+auto_scan = true
+scan_interval_hours = 24
+# 自动写入「本地为空、来源有值」的字段；冲突永不自动覆盖。
+auto_write = true
+# 缺 MBID 或有歧义时用 AcoustID 指纹确认（需 fpcalc 与 api_key）。
+fingerprint = true
+# 单轮最多自动写入多少首，避免一次改动过大。
+max_auto_write_per_run = 300
+# 时长差超过此值不自动写入，交人工看一眼。
+max_duration_delta_seconds = 5.0
+
+# ===========================================================================
+# 缓存与重试
+# ===========================================================================
+[retry]
+# 正常完成搜索但无合格候选：初次后 7 天、再 30 天、再 90 天，之后暂停
+not_found_intervals_days = [7, 30, 90]
+# 有候选但无同步歌词
+no_synced_intervals_days = [30, 90, 180]
+# 临时网络错误的退避（秒）
+transient_backoff_seconds = [60, 300, 1800, 7200, 21600]
+
+# ===========================================================================
+# 歌词输出格式
+# ===========================================================================
+[lyrics]
+encoding = "utf-8"
+bom = false
+line_ending = "lf"
+# line_lrc = 逐行 LRC（逐字源降级为行级）
+format = "line_lrc"
+# 翻译与罗马音默认关闭，不能用翻译替代原文
+translation = false
+romanization = false
+
+# ===========================================================================
+# Web 界面
+# ===========================================================================
+[web]
+bind = "127.0.0.1"
+port = 8080
+auth_required = true
+# 首次启动时若未设置密码，会生成随机密码并写入数据目录
+# initial-password.txt。生产环境建议用环境变量 LYRA_ADMIN_PASSWORD 注入。
+admin_username = "admin"
+admin_password = ""
+
+# ===========================================================================
+# 写入事务
+# ===========================================================================
+[write]
+# 只给「人工确认过」的写入做整份备份。
+# 自动接受（时长吻合+分数达标+标题艺人达标）的一类不做备份：写错概率低，
+# 而每个文件整份复制代价极高（单个文件 24~142MB，全库可能十几 GB）。
+# 置 false 即「凡是写入都备份」。
+backup_review_only = true
+# 写入前完整备份原文件（含内嵌写入时）
+backup_before_write = true
+# 备份是否自动淘汰（false = 永不自动删，达到水位即停止新增写入）
+backup_auto_prune = false
+# 备份目录容量水位（字节）；超过则停止新增写入并告警。0 = 不限制
+backup_max_bytes = 0

@@ -1,0 +1,11 @@
+{
+  "id": 4000001,
+  "name": "Plain Only",
+  "trackName": "Plain Only",
+  "artistName": "Some Artist",
+  "albumName": "Some Album",
+  "duration": 200.0,
+  "instrumental": false,
+  "plainLyrics": "第一行\n第二行\n",
+  "syncedLyrics": null
+}

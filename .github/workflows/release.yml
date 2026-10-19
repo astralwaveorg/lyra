@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare release assets
+        run: |
+          cp compose.yaml lyra.compose.yaml
+          cp .env.example lyra.env.example
+          cp deploy/lyra.container.toml.example lyra.container.toml.example
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            lyra.compose.yaml
+            lyra.env.example
+            lyra.container.toml.example
+            CHANGELOG.md
+
+      - name: Wait for image digest
+        run: |
+          echo "The multi-arch image is published by the Docker image workflow."
+          echo "Tag: ghcr.io/${{ github.repository }}:${{ github.ref_name }}"

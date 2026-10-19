@@ -1,0 +1,358 @@
+/* ==========================================================================
+   Element Plus 主题映射
+   --------------------------------------------------------------------------
+   原则：Element Plus 只提供行为与结构，颜色、圆角、边框全部取自设计令牌。
+   不覆盖组件内部类名（那会随版本失效），只覆盖它公开的 CSS 变量。
+   ========================================================================== */
+
+:root,
+:root[data-theme='dark'] {
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: var(--accent-strong);
+  --el-color-primary-light-5: #7d92ff;
+  --el-color-primary-light-7: rgba(109, 134, 255, 0.55);
+  --el-color-primary-light-8: rgba(109, 134, 255, 0.35);
+  --el-color-primary-light-9: var(--accent-soft);
+  --el-color-primary-dark-2: #5b74f0;
+
+  --el-color-success: var(--ok);
+  --el-color-success-light-9: var(--ok-soft);
+  --el-color-warning: var(--warn);
+  --el-color-warning-light-9: var(--warn-soft);
+  --el-color-danger: var(--danger);
+  --el-color-danger-light-9: var(--danger-soft);
+  --el-color-error: var(--danger);
+  --el-color-info: var(--text-3);
+  --el-color-info-light-9: var(--surface-3);
+
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--bg);
+  --el-bg-color-overlay: var(--elevated);
+  --el-fill-color: var(--surface-2);
+  --el-fill-color-light: var(--surface-2);
+  --el-fill-color-lighter: var(--surface-2);
+  --el-fill-color-blank: var(--surface);
+  --el-fill-color-dark: var(--surface-3);
+  --el-fill-color-darker: var(--surface-3);
+
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text-2);
+  --el-text-color-secondary: var(--text-3);
+  --el-text-color-placeholder: var(--text-3);
+  --el-text-color-disabled: var(--text-3);
+
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-border-color-extra-light: var(--border);
+  --el-border-color-dark: var(--border-strong);
+  --el-border-color-darker: var(--border-strong);
+
+  --el-mask-color: rgba(6, 9, 14, 0.66);
+  --el-box-shadow-light: var(--shadow-md);
+  --el-box-shadow: var(--shadow-lg);
+}
+
+:root[data-theme='light'] {
+  --el-color-primary-light-3: #6f81ea;
+  --el-color-primary-light-5: #8695ee;
+  --el-color-primary-light-7: #b7c1f6;
+  --el-color-primary-light-8: #d3d9fa;
+  --el-color-primary-light-9: #eef0fd;
+  --el-color-primary-dark-2: #3a50d6;
+  --el-mask-color: rgba(16, 24, 39, 0.42);
+}
+
+/* ------------------------------------------------------------------ 基础件 */
+
+.el-button {
+  --el-button-border-color: var(--border);
+  --el-button-bg-color: var(--surface);
+  --el-button-hover-border-color: var(--border-strong);
+  --el-button-hover-bg-color: var(--surface-2);
+  --el-button-active-bg-color: var(--surface-3);
+  font-weight: 500;
+  border-radius: var(--r-md);
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--accent);
+  --el-button-border-color: var(--accent);
+  --el-button-hover-bg-color: var(--accent-strong);
+  --el-button-hover-border-color: var(--accent-strong);
+  --el-button-active-bg-color: var(--accent);
+  font-weight: 550;
+}
+
+.el-button--small {
+  height: 30px;
+}
+
+/* 禁用态必须看起来就是禁用的：覆盖了主色变量后，Element Plus 的
+   禁用色会跟着变成主色，按钮看起来仍然可点。 */
+.el-button.is-disabled,
+.el-button.is-disabled:hover,
+.el-button.is-disabled:focus {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.el-button.is-text {
+  --el-button-hover-bg-color: var(--surface-2);
+}
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  border-radius: var(--r-md);
+  box-shadow: 0 0 0 1px var(--border) inset;
+  background: var(--surface);
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--border-strong) inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 0 3px var(--accent-soft);
+}
+
+.el-input__inner {
+  color: var(--text);
+}
+
+.el-input__inner::placeholder {
+  color: var(--text-3);
+}
+
+.el-select-dropdown__item.is-selected {
+  color: var(--accent-strong);
+}
+
+.el-checkbox__inner {
+  border-radius: 4px;
+}
+
+/* 控件统一 34px 高，避免不同组件高低不齐 */
+.el-input--default .el-input__wrapper,
+.el-select--default .el-select__wrapper,
+.el-input-number--default .el-input__wrapper,
+.el-date-editor.el-input__wrapper {
+  min-height: 34px;
+}
+
+/* ------------------------------------------------------------------ 表格 */
+
+.el-table {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--surface-2);
+  --el-table-border-color: var(--border);
+  --el-table-row-hover-bg-color: var(--surface-2);
+  --el-table-header-text-color: var(--text-3);
+  --el-table-text-color: var(--text-2);
+  font-size: 13px;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 550;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  height: 38px;
+  padding: 0;
+}
+
+.el-table td.el-table__cell {
+  padding: 10px 0;
+}
+
+.el-table__inner-wrapper::before {
+  display: none;
+}
+
+.el-table .cell {
+  padding: 0 12px;
+  line-height: 1.55;
+}
+
+.el-table__empty-block {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------------ 弹层 */
+
+.el-dialog {
+  --el-dialog-bg-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+}
+
+.el-dialog__header {
+  padding: 18px 20px 10px;
+  margin-right: 0;
+}
+
+.el-dialog__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.el-dialog__body {
+  padding: 8px 20px 16px;
+  color: var(--text-2);
+}
+
+.el-dialog__footer {
+  padding: 6px 20px 18px;
+}
+
+.el-drawer {
+  --el-drawer-bg-color: var(--surface);
+}
+
+.el-drawer__header {
+  margin-bottom: 0;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.el-drawer__body {
+  padding: 16px 20px 24px;
+}
+
+.el-overlay {
+  /* 全屏模糊在移动端代价高，遮罩本身已经足够区分层次 */
+  background-color: var(--el-mask-color);
+}
+
+.el-skeleton__item {
+  background: var(--skeleton);
+}
+
+.el-skeleton__item.is-animated {
+  background: linear-gradient(
+    90deg,
+    var(--skeleton) 25%,
+    var(--surface-3) 37%,
+    var(--skeleton) 63%
+  );
+  background-size: 400% 100%;
+}
+
+.el-message-box {
+  --el-messagebox-border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.el-message {
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--elevated);
+}
+
+.el-popper.is-light {
+  background: var(--elevated);
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-md);
+}
+
+.el-popper.is-light .el-popper__arrow::before {
+  background: var(--elevated);
+  border-color: var(--border) !important;
+}
+
+/* ------------------------------------------------------------------ 其它 */
+
+.el-tag {
+  --el-tag-border-radius: 6px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.el-tag.el-tag--info {
+  background: var(--surface-3);
+  border-color: transparent;
+  color: var(--text-2);
+}
+
+.el-pagination {
+  --el-pagination-bg-color: transparent;
+  --el-pagination-button-bg-color: transparent;
+  --el-pagination-hover-color: var(--accent);
+  --el-pagination-text-color: var(--text-2);
+  font-weight: 500;
+  justify-content: flex-end;
+}
+
+.el-tabs__item {
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.el-tabs__item.is-active {
+  color: var(--text);
+}
+
+.el-tabs__nav-wrap::after {
+  background-color: var(--border);
+  height: 1px;
+}
+
+.el-progress-bar__outer {
+  background: var(--surface-3);
+}
+
+.el-alert {
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+}
+
+.el-alert--error.is-light {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.el-descriptions {
+  --el-descriptions-item-bordered-label-background: var(--surface-2);
+}
+
+.el-descriptions__body {
+  background: transparent;
+}
+
+.el-switch.is-checked .el-switch__core {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.el-dropdown-menu {
+  background: var(--elevated);
+  border: 1px solid var(--border);
+}
+
+.el-empty {
+  padding: 28px 0;
+}
+
+.el-loading-mask {
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+/* 未选中开关的轨道要明显区别于卡片背景，否则只剩一个白色圆点。 */
+.el-switch {
+  --el-switch-off-color: var(--text-3);
+}
+
+.el-switch:not(.is-checked) .el-switch__core {
+  border-color: var(--text-3);
+  background: var(--text-3);
+}

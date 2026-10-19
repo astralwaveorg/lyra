@@ -1,0 +1,74 @@
+# 构建上下文排除清单
+#
+# 实测踩过：没有这个文件时，`COPY src ./src` 会把 macOS 的 `._*`
+# 资源分叉文件一并带进镜像，`pip install` 又把它烤进 site-packages——
+# 实测线上多出 30 个 `._*.py`。它们不影响运行，但属于产物污染：
+# 体积、审计（说不清包里到底有什么）、以及将来真出问题时多一层干扰。
+
+# ---- macOS 资源分叉与系统文件 ----
+#
+# 必须同时写 `._*` 与 `**/._*`。实测只写前者不够：Docker 的匹配是对**完整
+# 相对路径**做的，`._*` 里的 `*` 不跨 `/`，于是 `src/lyra/._api.py` 这样的
+# 嵌套文件照样进镜像，最后被 pip 烤进 site-packages（实测线上又多出 185 个）。
+._*
+**/._*
+.DS_Store
+**/.DS_Store
+.AppleDouble
+**/.AppleDouble
+.LSOverride
+
+# ---- Python 字节码与缓存 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+
+# ---- 前端依赖与本地产物 ----
+#
+# 依赖在镜像里用 `npm ci` 重新安装（可复现），本地 node_modules 不必进上下文。
+# 构建产物也排除：Dockerfile 只从构建阶段取，不信任工作区里的旧文件。
+web/node_modules/
+web/dist/
+site/
+src/lyra/web/
+
+# ---- 本地配置与凭据（绝不进镜像）----
+lyra.toml
+*.local.toml
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# ---- 运行时数据 ----
+data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+*.log
+backups/
+scratch/
+
+# ---- 不需要进镜像的开发材料 ----
+#
+# 注意：`tests/` 与 `tools/` 在下面被排除，所以**镜像内不能跑测试**。
+# 这是刻意的——生产镜像不该带开发依赖（pytest 等）。
+# 代码一致性改用文件哈希比对验收（见 docs/development.md）。
+tests/
+tools/
+docs/
+.github/
+.git/
+.gitignore

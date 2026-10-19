@@ -1,0 +1,89 @@
+site_name: Lyra
+site_description: 自托管音乐库歌词、标签与整理工具
+site_url: https://astralwaveorg.github.io/lyra/
+repo_url: https://github.com/astralwaveorg/lyra
+repo_name: astralwaveorg/lyra
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+copyright: MIT License · Lyra contributors
+
+theme:
+  name: material
+  language: zh
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: 切换到浅色
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到深色
+
+nav:
+  - 首页: index.md
+  - 开始:
+      - 安装与升级: installation.md
+      - 配置参考: configuration.md
+      - 使用指南: usage.md
+  - 功能:
+      - 标签刮削: tags.md
+      - 曲库整理: organize.md
+  - 运维:
+      - 部署与反向代理: deployment.md
+      - 维护与备份: maintenance.md
+      - 故障排查: troubleshooting.md
+  - 参考:
+      - 架构: architecture.md
+      - API: api.md
+      - 开发: development.md
+  - 项目:
+      - 贡献: contributing.md
+      - 安全: security.md
+      - 赞助与社群: sponsor.md
+      - 路线图: roadmap.md
+      - 更新记录: changelog.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.inlinehilite
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/astralwaveorg/lyra

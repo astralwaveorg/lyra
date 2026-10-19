@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend for API tests
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Python package
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest -q
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      - name: Type check
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: web
+        run: npm run test
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: lyra:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          mkdir -p /tmp/lyra-ci/config /tmp/lyra-ci/data /tmp/lyra-ci/library
+          cp deploy/lyra.container.toml.example /tmp/lyra-ci/config/lyra.toml
+          chmod -R 777 /tmp/lyra-ci
+          docker run -d --name lyra-ci \
+            -v /tmp/lyra-ci/config:/config:ro \
+            -v /tmp/lyra-ci/data:/data \
+            -v /tmp/lyra-ci/library:/music \
+            -e LYRA_CONFIG=/config/lyra.toml \
+            -e LYRA_LIBRARY_ROOT=/music \
+            -e LYRA_DATA_DIR=/data \
+            -e LYRA_ADMIN_PASSWORD=ci-password-123 \
+            -p 127.0.0.1:18080:8080 \
+            lyra:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/api/v1/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs lyra-ci
+          exit 1
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f lyra-ci || true
+
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+      - run: pip install -r docs/requirements.txt
+      - run: mkdocs build --strict

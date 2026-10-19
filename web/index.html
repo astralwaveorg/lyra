@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b0e13" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Lyra</title>
+    <script>
+      // 首帧之前定主题，避免深色页面先白闪一下。
+      (function () {
+        try {
+          var saved = localStorage.getItem('lyra-theme')
+          var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+          var theme = saved === 'light' || saved === 'dark' ? saved : prefersLight ? 'light' : 'dark'
+          document.documentElement.dataset.theme = theme
+        } catch (e) {}
+      })()
+    </script>
+    <style>
+      html { background: #0b0e13 }
+      html[data-theme='light'] { background: #f4f6fb }
+      #boot {
+        position: fixed; inset: 0; display: grid; place-items: center;
+        font: 500 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: #7f8ca3; letter-spacing: 0.04em;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="boot">载入中</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

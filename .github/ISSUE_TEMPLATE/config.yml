@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用文档
+    url: https://astralwaveorg.github.io/lyra/
+    about: 安装、配置、部署和常见问题
+  - name: 交流群
+    url: https://github.com/astralwaveorg/lyra/blob/main/docs/sponsor.md
+    about: 扫码加入 Lyra 官方交流群
+  - name: 安全漏洞
+    url: https://github.com/astralwaveorg/lyra/security/advisories/new
+    about: 请私下报告安全问题，不要公开提交

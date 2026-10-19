@@ -1,0 +1,22 @@
+[
+  {
+    "id": 5000001,
+    "trackName": "Sigur Rós Song",
+    "artistName": "Earth, Wind & Fire",
+    "albumName": "Test Album",
+    "duration": 240.0,
+    "instrumental": false,
+    "plainLyrics": "aaa\n",
+    "syncedLyrics": null
+  },
+  {
+    "id": 5000002,
+    "trackName": "Another",
+    "artistName": "Earth, Wind & Fire",
+    "albumName": "Test Album",
+    "duration": 300.0,
+    "instrumental": false,
+    "plainLyrics": null,
+    "syncedLyrics": "[00:01.00]hi\n"
+  }
+]

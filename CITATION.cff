@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use Lyra in a project or publication, please cite it as below."
+title: Lyra
+abstract: Self-hosted lyrics, tags, and library organization for a local music collection.
+type: software
+authors:
+  - name: Lyra contributors
+repository-code: https://github.com/astralwaveorg/lyra
+url: https://astralwaveorg.github.io/lyra/
+license: MIT
+version: 1.0.0
+date-released: 2026-10-19
+keywords:
+  - music
+  - lyrics
+  - musicbrainz
+  - self-hosted
+  - nas

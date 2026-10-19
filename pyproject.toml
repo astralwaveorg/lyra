@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lyra"
+version = "1.0.0"
+description = "Self-hosted lyrics, tags, and library organization for a local music collection"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+license-files = ["LICENSE"]
+authors = [{ name = "Lyra contributors" }]
+keywords = ["music", "lyrics", "tags", "musicbrainz", "self-hosted", "nas"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "mutagen>=1.47",
+    "httpx>=0.27",
+    "watchdog>=4.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "tomli-w>=1.0",
+    # 繁简归一化：目标库标签常用繁体，QQ 返回简体，直接比较会失配。
+    "zhconv>=1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/astralwaveorg/lyra"
+Documentation = "https://astralwaveorg.github.io/lyra/"
+Repository = "https://github.com/astralwaveorg/lyra"
+Issues = "https://github.com/astralwaveorg/lyra/issues"
+Changelog = "https://github.com/astralwaveorg/lyra/blob/main/CHANGELOG.md"
+Sponsor = "https://github.com/astralwaveorg/lyra/blob/main/docs/sponsor.md"
+
+[project.scripts]
+lyra = "lyra.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lyra"]
+# 前端产物由 web/ 构建得到，目录本身在 .gitignore 里（不入库）。
+# 必须显式列为 artifacts：否则在有 git 的工作区里 pip wheel . 会按
+# .gitignore 把它排除掉，打出一个没有前端的包。
+artifacts = ["src/lyra/web/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

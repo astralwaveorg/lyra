@@ -1,0 +1,178 @@
+# Lyra 容器内配置模板
+#
+# 这份模板用**容器内路径**（/library、/data、/config）。
+# 把它复制到宿主机的一个目录，再以只读方式挂进容器：
+#
+#   mkdir -p ./config
+#   cp deploy/lyra.container.toml.example ./config/lyra.toml
+#   $EDITOR ./config/lyra.toml
+#
+# 该文件含授权凭据，已在 .gitignore 中排除，请勿提交到公开仓库。
+
+config_version = 1
+
+[[roots]]
+name = "library"
+role = "library"
+# 容器内路径。宿主机路径由 compose 的 LIBRARY_HOST_PATH 映射过来
+path = "/library"
+# 仅供 CLI/文档提示，不参与逻辑
+host_path = ""
+# 审计阶段可以改成 true 以彻底禁止写入
+read_only = false
+enabled = true
+
+[storage]
+data_dir = "/data"
+
+[watch]
+backend = "auto"
+# 等文件稳定再处理：慢速复制不会被提前处理
+stable_seconds = 60
+stable_samples = 3
+reconcile_interval_seconds = 900
+full_scan_local_time = "03:30"
+timezone = "Asia/Shanghai"
+
+[providers]
+enabled = ["qq", "netease", "lrclib"]
+
+[providers.qq]
+# QQ 的可用性受地区和网络影响；部分地区会返回 500
+minimum_request_interval_seconds = 2
+query_limit_per_round = 3
+candidates_per_query = 20
+detail_and_lyric_limit_per_round = 6
+max_inline_retries = 2
+max_inline_retry_wait_seconds = 5
+
+[providers.netease]
+# 网易云音乐。歌词为毫秒精度 [00:00.000]。
+# 与 QQ 的曲库覆盖并不重合，多一个来源多一次命中机会。
+minimum_request_interval_seconds = 1.5
+query_limit_per_round = 3
+candidates_per_query = 20
+detail_and_lyric_limit_per_round = 6
+request_timeout_seconds = 20
+max_inline_retries = 2
+max_inline_retry_wait_seconds = 5
+
+[providers.lrclib]
+client_name = "Lyra"
+client_version = "1.0.0"
+client_url = "https://github.com/astralwaveorg/lyra"
+# 授权 reference：优先用环境变量 LYRA_LRCLIB_AUTHORIZATION_REF 注入，
+# 避免把凭据写进任何文件。留空表示只用客户端标识头（LRCLIB 不要求 key）。
+authorization_ref = ""
+minimum_request_interval_seconds = 0.5
+max_backoff_seconds = 3600
+circuit_breaker_threshold = 5
+circuit_breaker_initial_seconds = 1800
+max_inline_retries = 2
+max_inline_retry_wait_seconds = 5
+
+[providers.musicbrainz]
+# 公共 API 每秒最多 1 次请求；自建镜像可把间隔调到 0.2 左右。
+enabled = true
+base_url = "https://musicbrainz.org"
+minimum_request_interval_seconds = 1.1
+request_timeout_seconds = 20
+search_limit = 8
+detail_limit = 3
+
+[providers.acoustid]
+# 声学指纹：缺 MBID 或有歧义时用音频本身确认录音。
+# 需要镜像内的 fpcalc（Dockerfile 已安装）。
+enabled = false
+api_key = ""
+base_url = "https://api.acoustid.org"
+
+[policy]
+# 已获明确授权自动写入；随时可设为 false 全局只读
+write_enabled = true
+
+[policy.tags]
+auto_scan = true
+scan_interval_hours = 24
+auto_write = true
+fingerprint = true
+max_auto_write_per_run = 2000
+max_duration_delta_seconds = 5.0
+write_mode = "auto"
+# 内嵌与同名 .lrc 两者都写：多设备与 U 盘/车载需要文件自足
+write_sidecar_lrc = true
+embed_lyrics = true
+# 0 字节/纯空白 .lrc 视为不存在，可安全填充
+fill_empty_lrc = true
+# 已有有效同步歌词则跳过（无收益只有风险）
+skip_if_valid_synced = true
+clear_plain_embedded = true
+allow_other_providers = false
+
+[policy.matching]
+# 时长闸门：识别版本差异的主要判据
+max_duration_delta_seconds = 2
+min_score_margin = 0.15
+min_confidence = 0.75
+# 时长差 ≤ 此值时，即使候选难分高下也直接接受（消除重复条目造成的假歧义）。
+# 不绕过版本校验：时长相同不足以区分现场版/重生版。
+auto_accept_within_seconds = 1.0
+
+[retry]
+not_found_intervals_days = [7, 30, 90]
+no_synced_intervals_days = [30, 90, 180]
+transient_backoff_seconds = [60, 300, 1800, 7200, 21600]
+
+[lyrics]
+encoding = "utf-8"
+bom = false
+line_ending = "lf"
+format = "line_lrc"
+translation = false
+romanization = false
+
+[web]
+# 容器内监听所有接口，宿主机只发布到回环，由反向代理对外提供 HTTPS
+bind = "0.0.0.0"
+port = 8080
+auth_required = true
+# 管理员凭据。
+# 密码**刻意不写进源码**（源码会被提交、可能公开）。建议由这里或环境变量
+# LYRA_ADMIN_PASSWORD 提供；两处都没有时才退化为随机密码并写入数据目录。
+# 本文件含凭据，已在 .gitignore 中排除，请勿提交到公开仓库。
+admin_username = "admin"
+admin_password = ""
+
+[write]
+# 只给「人工确认过」的写入做整份备份。
+# 自动接受（时长吻合+分数达标+标题艺人达标）的一类不做备份：写错概率低，
+# 而每个文件整份复制代价极高（单个文件 24~142MB，全库可能十几 GB）。
+# 置 false 即「凡是写入都备份」。
+backup_review_only = true
+backup_before_write = true
+backup_auto_prune = false
+backup_max_bytes = 0
+
+[ai]
+# AI 只做语义判断：「两份歌词是不是同一首歌、留哪一份」。
+# Lyra 自己的匹配全靠可验证的证据（时长/版本/标题/艺人），但答不了
+# 「两份看起来都像的歌词里，哪一份属于这首歌」——那只能看内容。
+#
+# 是否允许清理由**确定性**的歌词行覆盖决定（孤儿那份有没有多出歌词行），
+# 不由模型一句话决定；动作是移入回收站（可还原），不是删除。
+enabled = false
+base_url = "https://api.minimax.chat/v1/text/chatcompletion_v2"
+model = "MiniMax-Text-01"
+# 建议用环境变量 LYRA_AI_API_KEY 提供密钥，不要写进本文件
+api_key = ""
+timeout_seconds = 30.0
+# 一轮最多问几次：既防超支，也防一次点击把上游打爆
+max_requests_per_run = 12
+# 高置信度的重复歌词是否自动清理（仍要求「歌词行 100% 被现有那份覆盖」）
+auto_clean_duplicates = false
+# 自动清理「确实多余」的孤儿 .lrc：
+#   - 内容与现有 .lrc 重复（歌词行 100% 被覆盖，作词/作曲/标题行不计）
+#   - 整个曲库里没有对应音频的
+# 曲库里有同名音频（可能在别的目录）的**不动**——那可能是放错目录。
+# 动作是移入回收站（保留相对路径、可还原），不是删除。
+auto_clean_orphan_sidecars = false

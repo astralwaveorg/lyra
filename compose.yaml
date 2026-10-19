@@ -1,0 +1,89 @@
+# Lyra — Docker Compose
+#
+#   cp .env.example .env
+#   mkdir -p config data
+#   cp deploy/lyra.container.toml.example config/lyra.toml
+#   $EDITOR .env config/lyra.toml
+#   docker compose up -d
+#
+# The public image is published to GHCR. Use `--build` to build from this
+# checkout instead, for example while developing.
+
+name: lyra
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+services:
+  lyra:
+    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-1.0.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      LYRA_CONFIG: /config/lyra.toml
+      LYRA_LIBRARY_ROOT: /music
+      LYRA_DATA_DIR: /data
+      LYRA_WEB_BIND: 0.0.0.0
+      LYRA_WEB_PORT: "8080"
+      LYRA_ADMIN_USERNAME: "${LYRA_ADMIN_USERNAME:-admin}"
+      LYRA_ADMIN_PASSWORD: "${LYRA_ADMIN_PASSWORD:-}"
+      LYRA_LRCLIB_AUTHORIZATION_REF: "${LYRA_LRCLIB_AUTHORIZATION_REF:-}"
+      LYRA_ACOUSTID_API_KEY: "${LYRA_ACOUSTID_API_KEY:-}"
+      LYRA_AI_API_KEY: "${LYRA_AI_API_KEY:-}"
+    volumes:
+      - "${LIBRARY_HOST_PATH:?Set LIBRARY_HOST_PATH in .env}:/music:rw"
+      - "${CONFIG_HOST_DIR:-./config}:/config:ro"
+      - "${DATA_HOST_PATH:-./data}:/data:rw"
+    ports:
+      - "127.0.0.1:${LYRA_PORT:-8080}:8080"
+    logging: *default-logging
+
+  lyra-watch:
+    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-1.0.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      LYRA_CONFIG: /config/lyra.toml
+      LYRA_LIBRARY_ROOT: /music
+      LYRA_DATA_DIR: /data
+      LYRA_ADMIN_USERNAME: "${LYRA_ADMIN_USERNAME:-admin}"
+      LYRA_ADMIN_PASSWORD: "${LYRA_ADMIN_PASSWORD:-}"
+      LYRA_LRCLIB_AUTHORIZATION_REF: "${LYRA_LRCLIB_AUTHORIZATION_REF:-}"
+      LYRA_ACOUSTID_API_KEY: "${LYRA_ACOUSTID_API_KEY:-}"
+      LYRA_AI_API_KEY: "${LYRA_AI_API_KEY:-}"
+    volumes:
+      - "${LIBRARY_HOST_PATH:?Set LIBRARY_HOST_PATH in .env}:/music:rw"
+      - "${CONFIG_HOST_DIR:-./config}:/config:ro"
+      - "${DATA_HOST_PATH:-./data}:/data:rw"
+    command: ["watch"]
+    # The watcher has no HTTP server; the image health check does not apply.
+    healthcheck:
+      disable: true
+    depends_on:
+      - lyra
+    logging: *default-logging

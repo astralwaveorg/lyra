@@ -1,0 +1,49 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- 本地配置与凭据（务必不入库）----
+# 你的 lyra.toml 含 LRCLIB 授权 reference 与 AcoustID key
+lyra.toml
+*.local.toml
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# ---- 运行时数据 ----
+data/
+/config/
+*.db
+*.db-wal
+*.db-shm
+logs/
+*.log
+backups/
+scratch/
+
+# ---- 编辑器 / 系统 ----
+.DS_Store
+.idea/
+.vscode/
+
+# ---- 前端构建产物 ----
+# 由 `web/` 源码构建（npm run build），Docker 镜像里也会重新构建。
+# 产物不入库，避免「源码改了、产物忘了更新」的静默漂移。
+src/lyra/web/index.html
+src/lyra/web/assets/
+web/node_modules/
+web/dist/
+
+# ---- 文档构建产物 ----
+site/

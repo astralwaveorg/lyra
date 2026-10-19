@@ -1,0 +1,123 @@
+{
+  "说明": "测试样本的来源与可信度。real=true 表示响应体来自真实接口；real=false 表示按公开接口结构手工构造。歌词正文已替换为合成文本，仅保留时间轴、元信息和字段结构，用于测试解析与分类。",
+  "抓取环境": {
+    "QQ 接口": "从能够访问 QQ 音乐的网络抓取；不同地区或网络可能返回 500。",
+    "LRCLIB 接口": "从本地网络抓取。抓取期间服务多次返回 503 ServerOverloaded，部分正常响应按公开结构构造。"
+  },
+  "fixtures": {
+    "qq_search_artist_gem_piaoxiangbeifang.json": {
+      "real": true,
+      "method": "GET",
+      "endpoint": "https://c.y.qq.com/soso/fcgi-bin/client_search_cp",
+      "http_status": 200,
+      "备注": "包含标题、歌手、时长和 songmid，用于验证搜索与时长闸门。"
+    },
+    "qq_search_artist_huangmingzhi_piaoxiangbeifang.json": {
+      "real": true,
+      "method": "GET",
+      "endpoint": "https://c.y.qq.com/soso/fcgi-bin/client_search_cp",
+      "http_status": 200,
+      "备注": "code=0 但 subcode=-10002，用于验证『查询被拒绝』与『没有匹配』的区别。"
+    },
+    "qq_search_artist_ampersand_full.json": {
+      "real": true,
+      "method": "GET",
+      "endpoint": "https://c.y.qq.com/soso/fcgi-bin/client_search_cp",
+      "http_status": 200,
+      "备注": "歌手串含 & 时查询被拒绝，用于验证多策略降级。"
+    },
+    "qq_search_title_only_piaoxiangbeifang.json": {
+      "real": true,
+      "method": "GET",
+      "endpoint": "https://c.y.qq.com/soso/fcgi-bin/client_search_cp",
+      "http_status": 200,
+      "备注": "仅标题查询返回结果，用于验证标题不足以命中时必须结合时长。"
+    },
+    "qq_search_artist_gem_paomo.json": {
+      "real": true,
+      "method": "GET",
+      "endpoint": "https://c.y.qq.com/soso/fcgi-bin/client_search_cp",
+      "http_status": 200,
+      "备注": "搜索结果含翻唱或 Remix，用于验证不能直接取第一条。"
+    },
+    "qq_lyric_piaoxiangbeifang_live.json": {
+      "real": true,
+      "method": "GET",
+      "endpoint": "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg",
+      "http_status": 200,
+      "备注": "标准逐行 LRC 结构；正文已替换为合成文本。"
+    },
+    "qq_lyric_paomo.json": {
+      "real": true,
+      "method": "GET",
+      "endpoint": "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg",
+      "http_status": 200,
+      "备注": "标准逐行 LRC 结构与元信息；正文已替换为合成文本。"
+    },
+    "qq_lyric_qrc.json": {
+      "real": false,
+      "构造依据": "按 QRC 公开格式合成：行前缀 [start_ms,dur_ms]，逐字后缀 (start_ms,dur_ms)。",
+      "备注": "验证 QRC 到行级 LRC 的降级；正文为合成文本。"
+    },
+    "qq_lyric_base64.json": {
+      "real": false,
+      "构造依据": "信封取自真实响应，lyric 为 LRC 的 base64 编码。",
+      "备注": "验证 base64 解码分支。"
+    },
+    "qq_lyric_retcode_error.json": {
+      "real": false,
+      "构造依据": "subcode 取自真实拒绝响应，retcode 为合成。",
+      "备注": "验证 retcode 非 0 必须抛错。"
+    },
+    "qq_search_missing_data.json": {
+      "real": false,
+      "构造依据": "在真实响应信封基础上删除 data。",
+      "备注": "验证 SchemaChangedError。"
+    },
+    "qq_search_missing_song.json": {
+      "real": false,
+      "构造依据": "保留 data 但删除 data.song。",
+      "备注": "验证 SchemaChangedError。"
+    },
+    "qq_search_unparseable_items.json": {
+      "real": false,
+      "构造依据": "list 非空但每条都缺少 songmid/songname。",
+      "备注": "验证契约变化不会被当成空结果。"
+    },
+    "lrclib_get_synced.json": {
+      "real": false,
+      "构造依据": "字段名取自公开 API 文档，歌词为合成文本。",
+      "备注": "验证同步歌词解析。"
+    },
+    "lrclib_get_plain.json": {
+      "real": false,
+      "构造依据": "syncedLyrics 为 null，plainLyrics 有内容。",
+      "备注": "验证纯文本歌词。"
+    },
+    "lrclib_get_instrumental.json": {
+      "real": false,
+      "构造依据": "instrumental=true，歌词字段为 null。",
+      "备注": "验证纯音乐。"
+    },
+    "lrclib_get_404.json": {
+      "real": false,
+      "构造依据": "错误信封与 503 响应同构，name 取 NotFound。",
+      "备注": "验证 404 是正常未命中。"
+    },
+    "lrclib_get_malformed.json": {
+      "real": false,
+      "构造依据": "只保留 id 与 duration。",
+      "备注": "验证 SchemaChangedError。"
+    },
+    "lrclib_search_ok.json": {
+      "real": false,
+      "构造依据": "按 /api/search 数组约定合成。",
+      "备注": "验证 404 后退化到搜索。"
+    },
+    "lrclib_search_malformed.json": {
+      "real": false,
+      "构造依据": "返回对象而非数组。",
+      "备注": "验证 SchemaChangedError。"
+    }
+  }
+}

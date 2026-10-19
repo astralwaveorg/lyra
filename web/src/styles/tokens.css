@@ -1,0 +1,114 @@
+/* ==========================================================================
+   设计令牌
+   --------------------------------------------------------------------------
+   只有这一处定义颜色与尺度，组件里不允许出现字面量色值。
+   主题切换靠 <html data-theme> 上的变量覆盖完成，无需任何组件感知。
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* 画布与层次 */
+  --bg: #0b0e13;
+  --bg-grad: radial-gradient(1200px 620px at 78% -12%, rgba(90, 116, 255, 0.16), transparent 62%),
+    radial-gradient(900px 480px at 4% 104%, rgba(44, 196, 160, 0.09), transparent 60%);
+  --surface: #12161f;
+  --surface-2: #171c27;
+  --surface-3: #1d2431;
+  --elevated: #161b25;
+  --border: #232b39;
+  --border-strong: #2f3949;
+  --skeleton: #26303f;
+
+  /* 文字 */
+  --text: #e8ecf5;
+  --text-2: #aab6c8;
+  --text-3: #78859a;
+  --text-invert: #0b0e13;
+
+  /* 主色与语义色 */
+  --accent: #6d86ff;
+  --accent-strong: #8a9dff;
+  --accent-soft: rgba(109, 134, 255, 0.14);
+  --accent-line: rgba(109, 134, 255, 0.42);
+  --ok: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.14);
+  --warn: #f0b429;
+  --warn-soft: rgba(240, 180, 41, 0.14);
+  --danger: #f4646c;
+  --danger-soft: rgba(244, 100, 108, 0.14);
+  --info: #56b6f5;
+  --info-soft: rgba(86, 182, 245, 0.14);
+
+  /* 数据可视化：顺序固定，图例与图元共用同一组 */
+  --c1: #6d86ff;
+  --c2: #34d399;
+  --c3: #f0b429;
+  --c4: #56b6f5;
+  --c5: #c084fc;
+  --c6: #fb923c;
+  --c7: #2dd4bf;
+  --c8: #f4646c;
+
+  /* 尺度 */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 10px 28px -14px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 26px 60px -28px rgba(0, 0, 0, 0.8);
+  --sidebar-w: 236px;
+  --topbar-h: 58px;
+  --page-max: 1440px;
+
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #f4f6fb;
+  --bg-grad: radial-gradient(1100px 560px at 82% -14%, rgba(109, 134, 255, 0.16), transparent 62%),
+    radial-gradient(820px 420px at 0% 106%, rgba(45, 190, 156, 0.1), transparent 60%);
+  --surface: #ffffff;
+  --surface-2: #f7f9fd;
+  --surface-3: #eef2f9;
+  --elevated: #ffffff;
+  --border: #e3e9f2;
+  --border-strong: #d2dae7;
+  --skeleton: #e4e9f2;
+
+  --text: #101827;
+  --text-2: #4d5a6d;
+  --text-3: #77839a;
+  --text-invert: #ffffff;
+
+  --accent: #4c63e6;
+  --accent-strong: #3a50d6;
+  --accent-soft: rgba(76, 99, 230, 0.1);
+  --accent-line: rgba(76, 99, 230, 0.34);
+  --ok: #0f9d70;
+  --ok-soft: rgba(15, 157, 112, 0.1);
+  --warn: #b97309;
+  --warn-soft: rgba(185, 115, 9, 0.1);
+  --danger: #d6444d;
+  --danger-soft: rgba(214, 68, 77, 0.09);
+  --info: #1a7fc1;
+  --info-soft: rgba(26, 127, 193, 0.09);
+
+  --c1: #4c63e6;
+  --c2: #0f9d70;
+  --c3: #b97309;
+  --c4: #1a7fc1;
+  --c5: #7c3aed;
+  --c6: #c2410c;
+  --c7: #0d9488;
+  --c8: #d6444d;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 39, 0.06);
+  --shadow-md: 0 12px 28px -18px rgba(16, 24, 39, 0.34);
+  --shadow-lg: 0 30px 60px -30px rgba(16, 24, 39, 0.34);
+}
