@@ -10,6 +10,17 @@ Lyra 是一个自托管的音乐库维护工具。它扫描本地曲库，补齐
 
 它面向这样的场景：曲库已经在 NAS 或本地磁盘上，文件以 FLAC、MP3、OGG 为主，标签和歌词参差不齐，但不希望交给某个云端服务批量改写。Lyra 默认只监听本机，所有写操作都可预览、可备份、可回滚。
 
+## 赞助与交流
+
+Lyra 是 MIT 许可的开源项目，所有功能免费。如果它帮你省下了整理曲库的时间，可以请作者喝杯咖啡；也欢迎加入交流群反馈问题。赞赏完全自愿，不影响功能与更新。
+
+<p align="center">
+  <img src="docs/assets/wechat.jpg" width="160" alt="微信赞赏码">
+  <img src="docs/assets/alipay.jpg" width="160" alt="支付宝赞赏码">
+  <img src="docs/assets/community.jpg" width="200" alt="Lyra 交流群">
+</p>
+<p align="center"><sub>微信 · 支付宝 · 交流群（二维码有效期至 2026-10-26）</sub></p>
+
 ![概览](docs/assets/screenshots/overview.png)
 
 ![重复音频分类与一键处理](docs/assets/screenshots/dedupe.png)

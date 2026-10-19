@@ -21,7 +21,7 @@ Lyra 是 MIT 许可的开源项目，所有功能都可以免费使用。赞助�
 
 扫码加入 Lyra 官方交流群，反馈问题、交流部署经验。
 
-![Lyra 官方交流群](assets/community.jpg){ width="320" }
+<img src="assets/community.jpg" alt="Lyra 官方交流群" width="320">
 
 > 群二维码有效期至 **2026-10-26**。过期后请在 GitHub Issues 中反馈，作者会更新。
 > 群里不提供破解、盗版资源或付费代整理服务。
