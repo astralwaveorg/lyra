@@ -106,3 +106,28 @@ def test_全部没有时间轴时如实报告(ctx) -> None:
     )
     assert lyrics is None
     assert used is None
+
+
+def test_lrclib能从记录里看出有没有时间轴() -> None:
+    """搜索结果里带 syncedLyrics 字段 → 界面能提前知道，不用逐条去取。"""
+    from lyra.providers.lrclib import LrcLibProvider
+
+    provider = LrcLibProvider.__new__(LrcLibProvider)
+    with_sync = {
+        "id": 1, "trackName": "Kansas City", "artistName": "The Beatles",
+        "albumName": None, "duration": 160.0,
+        "instrumental": False, "syncedLyrics": "[00:01.00]x\n", "plainLyrics": "x\n",
+    }
+    without_sync = {
+        "id": 2, "trackName": "Kansas City", "artistName": "Wilbert Harrison",
+        "albumName": None, "duration": 150.0,
+        "instrumental": False, "syncedLyrics": None, "plainLyrics": "x\n",
+    }
+    unknown = {
+        "id": 3, "trackName": "Kansas City", "artistName": "The Beatles",
+        "albumName": None, "duration": 160.0, "instrumental": False,
+    }
+    assert provider._record_to_candidate(with_sync).extra["hasTimeline"] == "true"
+    assert provider._record_to_candidate(without_sync).extra["hasTimeline"] == "false"
+    # 字段缺失时**不下结论**：上游偶尔会省略它们
+    assert "hasTimeline" not in provider._record_to_candidate(unknown).extra

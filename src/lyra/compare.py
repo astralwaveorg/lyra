@@ -289,6 +289,11 @@ def list_candidates(
         for score in mine[:per_provider]:
             candidate = by_id.get(score.provider_id)
             gates = evaluate_gates(context, score, cfg.policy.matching)
+            # 来源能不能提前看出「这份歌词没有时间轴」。LRCLIB 的搜索结果
+            # 里带 syncedLyrics 字段，可以直接判断；其它来源给不出结论，
+            # 就是 null（不知道），界面据此决定要不要提示。
+            hint = (candidate.extra or {}).get("hasTimeline") if candidate else None
+            has_timeline = None if hint is None else hint == "true"
             options.append(
                 {
                     "provider": provider_name,
@@ -303,6 +308,7 @@ def list_candidates(
                     "artist_score": score.artist_score,
                     "version_ok": score.version_ok,
                     "has_artists": score.has_artists,
+                    "has_timeline": has_timeline,
                     "rejected": score.rejected,
                     "reject_reason": score.reject_reason,
                     "is_best": (provider_name, score.provider_id) == best_id,
