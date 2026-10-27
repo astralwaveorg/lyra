@@ -657,7 +657,14 @@ def _lyrics_conflict(embedded: EmbeddedLyricsFinding, sidecar: SidecarFinding) -
     """
     if embedded.parsed is None or sidecar.parsed is None:
         return False
-    valid = {LyricsState.SYNCED, LyricsState.SYNCED_SUSPICIOUS, LyricsState.PLAIN_TEXT}
+    # 占位文案也算「有内容」：一边写着「纯音乐」、另一边是真歌词，
+    # 内容确实对不上，必须报出来让人处理。
+    valid = {
+        LyricsState.SYNCED,
+        LyricsState.SYNCED_SUSPICIOUS,
+        LyricsState.PLAIN_TEXT,
+        LyricsState.PLACEHOLDER,
+    }
     if embedded.state not in valid or sidecar.state not in valid:
         return False
     a = embedded.parsed.normalized_hash

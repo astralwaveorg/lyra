@@ -442,3 +442,47 @@ def test_文本报告可生成(flac_factory, tmp_path: Path):
     text = render_audit_text(_audit(root))
     assert "Lyra 库审计报告" in text
     assert "0 字节" in text
+
+
+# ---------------------------------------------------------------------------
+# 纯音乐占位文案：不是异常
+# ---------------------------------------------------------------------------
+
+
+def test_纯音乐占位文案不算时间轴异常(flac_factory, tmp_path: Path):
+    """「此歌曲为没有填词的纯音乐」准确描述了这首歌的状态。
+
+    把它算成「时间轴异常」，几十首纯器乐就会在健康页上挂红灯，
+    而它们其实什么都不缺——不需要任何人处理。
+    """
+    root = tmp_path / "lib"
+    flac_factory(root / "album" / "01 器乐.flac",
+                 entries=[("TITLE", "器乐"), ("ARTIST", "X")])
+    (root / "album" / "01 器乐.lrc").write_text(
+        "[00:00.00]此歌曲为没有填词的纯音乐，请您欣赏\n", encoding="utf-8"
+    )
+
+    result = _audit(root)
+    track = _by_rel(result)["album/01 器乐.flac"]
+
+    assert track.sidecar.state is LyricsState.PLACEHOLDER
+    assert track.effective_state is LyricsState.PLACEHOLDER
+    assert IssueCode.SUSPICIOUS_LYRICS not in _issues(track)
+    assert IssueCode.NO_LYRICS not in _issues(track)
+    assert IssueCode.MISSING_SIDECAR not in _issues(track)
+
+
+def test_占位与真歌词不一致仍要报出来(flac_factory, tmp_path: Path):
+    """一边是占位、一边是真歌词 —— 内容确实对不上，要交人判断。"""
+    root = tmp_path / "lib"
+    flac_factory(root / "album" / "01 歌.flac",
+                 entries=[("TITLE", "歌"), ("ARTIST", "X"),
+                          ("LYRICS", "[00:00.00]第一行\n[00:10.00]第二行")])
+    (root / "album" / "01 歌.lrc").write_text(
+        "[00:00.00]此歌曲为没有填词的纯音乐，请您欣赏\n", encoding="utf-8"
+    )
+
+    result = _audit(root)
+    track = _by_rel(result)["album/01 歌.flac"]
+
+    assert IssueCode.LYRICS_MISMATCH in _issues(track)
