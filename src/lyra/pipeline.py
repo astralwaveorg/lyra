@@ -801,15 +801,29 @@ def _fetch_one(
                 reason=decision.reason + "；但前若干候选的歌词内容完全一致，视为确认",
             )
 
-    # 取歌词：优先最优候选所在来源
+    # 取歌词：按分数从高到低找**第一个带时间轴**的候选。
+    #
+    # 为什么不是「只取最优候选」：最优候选的歌词可能没有时间轴
+    # （LRCLIB 同一首歌的多条记录，有的有同步歌词、有的只有纯文本）。
+    # 旧实现遇到这种情况就整首歌放弃——分数更高的候选白白浪费，
+    # 而下面那条有时间轴的候选根本没被试过。
     best = decision.best
     assert best is not None
     if resolved_lyrics is not None:
         lyrics, lyrics_error = resolved_lyrics, None
+        used = best
     else:
-        lyrics, lyrics_error = _fetch_lyrics(
-            providers[best.provider], all_candidates, best, store, cfg, target
+        lyrics, used, lyrics_error = _lyrics_with_timeline(
+            providers, all_candidates, boosted, store, cfg, target
         )
+        if used is not None and used is not best:
+            # 换了候选就要重算依据：分数、时长差、来源都可能不同。
+            best = used
+            decision = replace(
+                decision,
+                best=used,
+                reason=decision.reason + f"；改用有时间轴的候选（{used.provider}）",
+            )
 
     if lyrics is None:
         outcome = (
@@ -920,6 +934,58 @@ def _fetch_lyrics(
         # suspicious 也拒绝自动写入：占位文案、越界、全零时间都不能落盘
         return None, None
     return raw, None
+
+
+#: 找「有时间的歌词」时最多试几个候选。前几个通常就够（同一个来源
+#: 的不同版本），再多只是白白消耗上游请求。
+_TIMELINE_FALLBACK_CANDIDATES = 5
+
+
+def _lyrics_with_timeline(
+    providers: dict[str, Provider],
+    candidates: Sequence[Candidate],
+    scores: Sequence[CandidateScore],
+    store: StateStore,
+    cfg: Config,
+    target: TrackTarget,
+    *,
+    limit: int = _TIMELINE_FALLBACK_CANDIDATES,
+) -> tuple[RawLyrics | None, CandidateScore | None, str | None]:
+    """按分数顺序找**第一个带时间轴**的候选并取回它的歌词。
+
+    为什么不能只看最优候选：
+        最优候选的歌词**可能没有时间轴**。LRCLIB 上同一首歌有多条记录，
+        有的版本有同步歌词，有的只有纯文本。实际 `07 Kansas City.flac`：
+        最优的网易候选（0.86）只有纯文本，于是整首歌**什么都没拿到**——
+        而分数第二的 LRCLIB 候选（0.98）是有时间轴的。
+
+    所以这里按分数从高到低逐个试，取第一个带时间轴的。这样「推荐 =
+    最高分」与「结果都必须有时间轴」就不再互相打架。
+
+    返回 (歌词, 用到的候选, 错误说明)。
+    """
+    ordered = sorted(
+        scores, key=lambda s: (-s.score, s.duration_delta if s.duration_delta is not None else 1e9)
+    )
+    last_error: str | None = None
+    tried = 0
+    for score in ordered:
+        if score.rejected:
+            continue
+        provider = providers.get(score.provider)
+        if provider is None:
+            continue
+        tried += 1
+        if tried > limit:
+            break
+        lyrics, error = _fetch_lyrics(
+            provider, candidates, score, store, cfg, target
+        )
+        if lyrics is not None:
+            return lyrics, score, None
+        if error:
+            last_error = error
+    return None, None, last_error
 
 
 def _record_negative(

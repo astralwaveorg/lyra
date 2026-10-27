@@ -227,6 +227,17 @@ class LrcLibProvider(HttpProviderBase):
             extra["instrumental"] = "true" if instrumental else "false"
         if duration is not None:
             extra["duration"] = str(duration)
+        # **这条记录有没有时间轴**，搜索结果里就能看出来（记录带 syncedLyrics
+        # 字段）。界面上要能一眼看出「这份歌词没有时间轴」，不必逐条去取。
+        # 两个字段都没出现时**不下结论**——上游偶尔会省略它们（实际遇到过
+        # 服务全程 503），把「不知道」当成「没有」会误伤正确候选。
+        synced_raw = record.get("syncedLyrics")
+        plain_raw = record.get("plainLyrics")
+        if isinstance(synced_raw, str) or isinstance(plain_raw, str):
+            has_timeline = bool(
+                isinstance(synced_raw, str) and synced_raw.strip()
+            )
+            extra["hasTimeline"] = "true" if has_timeline else "false"
 
         return Candidate(
             provider=self.name,

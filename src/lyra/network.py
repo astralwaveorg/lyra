@@ -377,6 +377,26 @@ def feature_uses_proxy(feature: str) -> bool:
     return bool(_state.features.get(feature, False))
 
 
+def _bypass_pattern(host: str) -> str | None:
+    """把主机名变成 httpx 的挂载模式。
+
+    必须处理 IPv6：``all://*::1`` 会被 httpx 当成端口（``Invalid port``），
+    客户端一建就抛异常——表现为接口 500。IPv6 只能写成 ``all://[::1]``
+    （httpx 自己处理 NO_PROXY 里的 IPv6 也是这个写法）。
+    """
+    name = (host or "").strip().lower()
+    if not name:
+        return None
+    if ":" in name and not name.startswith("["):
+        if name.count(":") > 1:
+            return f"all://[{name}]"
+        # 端口不属于「主机名」：直连名单按主机匹配，端口交给 URL 自己
+        name = name.split(":", 1)[0]
+    if not name or any(ch.isspace() for ch in name):
+        return None
+    return f"all://*{name}"
+
+
 def client_for(
     feature: str,
     *,
@@ -395,7 +415,13 @@ def client_for(
     proxy = _state.proxy if enabled else ""
     if proxy and kwargs.get("transport") is None:
         kwargs["proxy"] = proxy
-        mounts = {f"all://*{host}": None for host in _state.bypass_hosts}
+        mounts = {
+            pattern: None
+            for pattern in (
+                _bypass_pattern(host) for host in _state.bypass_hosts
+            )
+            if pattern
+        }
         if mounts:
             kwargs["mounts"] = mounts
     else:

@@ -256,6 +256,22 @@ def test_内网服务即使开代理也直连(tmp_path: Path) -> None:
         assert "all://*192.168.1.10" in patterns
 
 
+def test_IPv6直连主机不会让客户端建不起来(tmp_path: Path) -> None:
+    """回归：``::1`` 直接拼进挂载模式会被 httpx 当成端口，客户端一建就抛。
+
+    实际表现是开了代理之后接口 500（Invalid port: ':1'）。
+    """
+    set_active_network(
+        "http://10.0.1.8:7890",
+        dict.fromkeys(PROXY_FEATURES, True),
+        ["::1", "localhost", "127.0.0.1", "lyra-netease-api"],
+    )
+    with client_for("lrclib", timeout=5) as client:
+        patterns = {pattern.pattern for pattern in client._mounts}
+        assert "all://[::1]" in patterns
+        assert "all://*lyra-netease-api" in patterns
+
+
 def test_配置文件里的代理被加载并校验(tmp_path: Path) -> None:
     cfg_file = tmp_path / "lyra.toml"
     cfg_file.write_text(

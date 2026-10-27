@@ -781,11 +781,15 @@ def _decide_core(
     # 排序口径：**分数优先，时长更近者优先**。
     #
     # 有意不把「来源」放在时长前面（默认）：按服务排序等于用品牌
-    # 代替质量。来源只在分数与时长都相同时作为最后的稳定 tie-break。
+    # 代替质量。来源只在分数与时长都相同时作为最后的稳定 tie-break——
+    # 而且用的是**配置里的来源优先顺序**（`providers.enabled`），
+    # 不是来源名字的字母序：字母序会让 `lrclib` 排在 `qq` 前面，
+    # 与「同分时优先用配置的主源」相悖。
     accepted.sort(
         key=lambda s: (
             -s.score,
             s.duration_delta if s.duration_delta is not None else 1e9,
+            s.provider_rank,
             s.provider,
             s.provider_id,
         )
