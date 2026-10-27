@@ -544,12 +544,25 @@ export type TagSettings = {
   revision: string
 }
 
+export type ProxyFeature = 'lrclib' | 'musicbrainz' | 'acoustid' | 'cover'
+
 export type NetworkSettings = {
   proxy: string
   source: 'settings' | 'config' | 'env' | 'none'
   effective_proxy: string
   environment_proxy: string
   schemes: string[]
+  features: ProxyFeature[]
+  use_proxy: Record<ProxyFeature, boolean>
+  proxy_reachable: boolean | null
+  proxy_status: 'none' | 'ok' | 'unreachable'
+}
+
+export type NetworkTestResult = {
+  ok: boolean
+  proxy: string
+  reachable: boolean | null
+  message: string
 }
 
 export type AIProtocol = 'openai_chat' | 'openai_responses' | 'anthropic'
@@ -562,6 +575,7 @@ export type AISettings = {
   timeout_seconds: number
   max_requests_per_run: number
   auto_clean_duplicates: boolean
+  use_proxy: boolean
   has_api_key: boolean
   api_key_source: 'env' | 'settings' | 'config' | 'none'
   protocols: AIProtocol[]
@@ -570,7 +584,14 @@ export type AISettings = {
 
 export type AISettingsInput = Partial<Pick<
   AISettings,
-  'enabled' | 'protocol' | 'base_url' | 'model' | 'timeout_seconds' | 'max_requests_per_run' | 'auto_clean_duplicates'
+  | 'enabled'
+  | 'protocol'
+  | 'base_url'
+  | 'model'
+  | 'timeout_seconds'
+  | 'max_requests_per_run'
+  | 'auto_clean_duplicates'
+  | 'use_proxy'
 >> & {
   api_key?: string
   clear_api_key?: boolean
@@ -583,6 +604,7 @@ export type AITestResult = {
   endpoint: string
   sample: string
   latency_ms: number
+  use_proxy: boolean
 }
 
 export type TagLinkCandidate = {

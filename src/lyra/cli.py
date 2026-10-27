@@ -26,18 +26,19 @@ from .config import (
     DEFAULT_CONFIG_FILENAME,
     Config,
     ConfigError,
+    apply_ai_settings_values,
     apply_tag_policy_values,
     load_config,
 )
 from .db import open_store
 from .network import (
-    apply_proxy_environment,
+    active_network,
     environment_proxy,
     load_network_settings,
     mask_proxy_url,
     proxy_bypass_hosts,
-    read_saved_proxy,
-    restore_proxy_environment,
+    read_saved_network,
+    set_active_network,
 )
 
 __all__ = ["main", "build_parser"]
@@ -291,6 +292,11 @@ def cmd_config_check(args: argparse.Namespace, cfg: Config) -> int:
     print(f"数据目录: {cfg.storage.data_dir}")
     if cfg.network.proxy:
         print(f"网络代理: {mask_proxy_url(cfg.network.proxy)}（{cfg.network.proxy_source}）")
+        enabled = "、".join(
+            name for name in sorted(cfg.network.use_proxy) if cfg.network.use_proxy[name]
+        )
+        print(f"  走代理的功能: {enabled or '无'}")
+        print(f"  大模型走代理: {'是' if cfg.ai.use_proxy else '否'}")
     elif cfg.network.proxy_source == "env":
         print("网络代理: 沿用环境变量")
     else:
@@ -875,17 +881,28 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     def _apply_saved_network() -> None:
         """设置页保存代理后，换掉已经建立的来源客户端。
 
-        代理是 ``httpx.Client`` 构造时读取的环境变量，改环境不会影响旧
+        代理是 ``httpx.Client`` 构造时定下来的，之后改设置不会影响旧
         客户端；因此这里重建一份，并在写入锁里替换，避免关闭正在使用的
         连接。监控进程每 30 秒检查一次，Web 端保存后最多等半分钟。
         """
-        saved = read_saved_proxy(cfg.storage.resolved_data_dir)
-        if saved is None or saved == cfg.network.proxy:
+        saved, features = read_saved_network(cfg.storage.resolved_data_dir)
+        if saved is None and features is None:
             return
-        cfg.network.proxy = saved
-        apply_proxy_environment(saved, proxy_bypass_hosts(cfg))
+        if saved is not None:
+            cfg.network.proxy = saved
+        if features is not None:
+            cfg.network.use_proxy.update(features)
+        before = active_network()
+        set_active_network(
+            cfg.network.proxy or environment_proxy(),
+            cfg.network.use_proxy,
+            proxy_bypass_hosts(cfg),
+        )
+        after = active_network()
+        if (before.proxy, before.features) == (after.proxy, after.features):
+            return
         cfg.network.proxy_source = (
-            "settings" if saved else ("env" if environment_proxy() else "none")
+            "settings" if after.proxy else ("env" if environment_proxy() else "none")
         )
         fresh = create_providers(cfg.providers)
         with lock:
@@ -893,8 +910,13 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
             providers[:] = fresh
         for provider in old:
             provider.close()
+        enabled = "、".join(
+            name for name in sorted(after.features) if after.features[name]
+        )
         print(
-            f"[watch] 代理设置已更新：{mask_proxy_url(saved) if saved else '未设置'}",
+            f"[watch] 代理设置已更新："
+            f"{mask_proxy_url(after.proxy) if after.proxy else '未设置'}"
+            f"（走代理的功能：{enabled or '无'}）",
             flush=True,
         )
 
@@ -907,8 +929,23 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             print(f"[watch] 标签策略读取失败，沿用配置文件：{exc}", flush=True)
 
+    def _apply_saved_ai_settings() -> None:
+        """设置页保存的大模型设置优先于配置文件。
+
+        不读的话，监控进程会一直用配置文件里的旧值——比如设置页里把
+        「使用网络代理」关掉了，监控这边还在走代理。
+        """
+        raw = store.get_meta("settings.ai")
+        if not raw:
+            return
+        try:
+            apply_ai_settings_values(cfg, json.loads(raw))
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            print(f"[watch] 大模型设置读取失败，沿用配置文件：{exc}", flush=True)
+
     tag_policy_revision = store.get_meta("settings.revision") or ""
     _apply_saved_tag_policy()
+    _apply_saved_ai_settings()
 
     def _process_new_files(root, paths, *, lock):  # noqa: ANN001, ANN202
         """对「本轮新出现的文件」走完整流程：先本地补 .lrc，再联网抓取剩下的。
@@ -1395,7 +1432,6 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 + (f"／已降级: {s.degrade_reason}" if s.degraded else "")
             )
         store.close()
-        restore_proxy_environment()
     return 0
 
 
@@ -1713,9 +1749,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         load_network_settings(cfg)
         return int(args.func(args, cfg))
     finally:
-        # 命令行进程通常很快就退出；恢复环境变量可避免同进程内连续
-        # 调用 main() 的测试或嵌入式用法继承上一轮的代理。
-        restore_proxy_environment()
+        # 同进程内连续调用 main() 时（例如测试），别让上一轮的代理设置
+        # 留在进程状态里。
+        set_active_network("", {}, [])
 
 
 if __name__ == "__main__":

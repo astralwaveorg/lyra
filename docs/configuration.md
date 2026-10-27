@@ -202,9 +202,15 @@ minimum_request_interval_seconds = 0.34
 [network]
 proxy = ""
 direct_hosts = ["qq.com", "163.com", "126.net", "gtimg.cn"]
+
+[network.use_proxy]
+lrclib = true
+musicbrainz = true
+acoustid = true
+cover = false
 ```
 
-用于访问 LRCLIB、MusicBrainz、AcoustID、大模型和封面等外部服务。支持 `http://`、`https://`、`socks5://`、`socks5h://`，必须写明端口：
+代理地址用于访问境外服务。支持 `http://`、`https://`、`socks5://`、`socks5h://`，必须写明端口：
 
 ```toml
 [network]
@@ -212,11 +218,25 @@ proxy = "http://10.0.1.8:7890"
 # proxy = "socks5://10.0.1.8:7890"
 ```
 
-设置页「网络代理」保存的值优先于配置文件。两者都没有指定时，沿用容器或系统的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。设置页保存到 `data/network.json`（权限 `0600`），`lyra` 与 `lyra-watch` 共用；监控进程约 30 秒内应用新值。
+### 按功能决定谁走代理
 
-`direct_hosts` 里的主机即使开了代理也直连。默认是国内歌词来源与它们的封面站点：代理是给境外服务找路的，国内来源本来通，绕一圈只会多一跳，还可能因为出口 IP 变了被拒。改成空数组可以让所有请求都走代理。
+代理多半跑在另一台机器上（笔记本上的代理软件）。那台机器一停代理，走代理的功能会一起失败——连本来直连就通的国内接口也一起挂掉。所以代理**不是全局的**，而是逐个功能开关：
 
-回环地址、内网 IP、Docker 服务名，以及配置里指向内网的网易云 API / MusicBrainz 镜像会自动绕过代理，不受 `direct_hosts` 影响。
+| 功能 | 开关 | 说明 |
+| --- | --- | --- |
+| 歌词来源 LRCLIB | `lrclib` | 境外服务，默认走代理 |
+| 标签 MusicBrainz | `musicbrainz` | 境外服务，默认走代理 |
+| 指纹 AcoustID | `acoustid` | 境外服务，默认走代理 |
+| 按链接下载封面 | `cover` | 看链接是境内还是境外，默认直连 |
+| 大模型 | `[ai] use_proxy` | 地址是自己填的，默认走代理 |
+
+QQ 音乐、网易云音乐（含自建 API）、短链跳转这些**国内来源始终直连**，没有开关——它们不需要代理，绕一圈反而多一跳，还可能因出口 IP 变了被拒。
+
+设置页「网络代理」里可以逐项开关，并能看到代理端口通不通。保存到 `data/network.json`（权限 `0600`），`lyra` 与 `lyra-watch` 共用；监控进程约 30 秒内应用。
+
+`direct_hosts` 里的主机即使开了代理也直连：自建的网易云 API、自建的 MusicBrainz 镜像都在内网，送到代理端再绕回来只会失败。
+
+未在设置页保存代理地址时，沿用容器或系统的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 作为代理地址（同样只作用于开了开关的功能）。Lyra 不会改写自己的环境变量。
 
 ## 处理策略 `[policy]`
 
@@ -298,7 +318,16 @@ api_key = ""
 timeout_seconds = 30
 max_requests_per_run = 12
 auto_clean_duplicates = false
+use_proxy = true
 ```
+
+### 是否走代理
+
+`use_proxy` 决定大模型请求是否经代理。大模型接口地址是自己填的：国内服务
+（如 `https://api.minimax.cn`）直连通常更稳，境外服务（如
+`https://api.openai.com`）需要代理。所以这个开关独立于其它功能。
+
+关掉它之后，大模型请求**连环境变量里的代理也不走**。
 
 ### 协议
 
@@ -328,7 +357,7 @@ OpenAI 官方的 base URL 需要包含 `/v1`；其他兼容服务如果要求不
 
 ### 设置页
 
-「设置 → 大模型」可以配置协议、API 地址、模型 ID、Token、超时和单轮请求上限，并提供「测试连接」按钮。保存后立即生效，不需要重启。
+「设置 → 大模型」可以配置协议、API 地址、模型 ID、Token、超时、单轮请求上限和「使用网络代理」，并提供「测试连接」按钮。保存后立即生效，不需要重启。
 
 Token 的处理：
 

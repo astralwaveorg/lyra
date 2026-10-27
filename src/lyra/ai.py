@@ -29,6 +29,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .network import active_network, client_for, proxy_reachable
+
 __all__ = [
     "AIError", "Judgement", "review_duplicate", "test_connection",
     "resolve_endpoint", "extract_json", "text_overlap", "lyric_lines",
@@ -311,6 +313,21 @@ def _extract_text(protocol: str, payload: object) -> str:
     raise AIError(f"不支持的 AI 协议：{protocol}")
 
 
+def _transport_error_text(exc: Exception, *, use_proxy: bool) -> str:
+    """连接失败要说清是**代理**的问题还是接口本身的问题。
+
+    实际踩过的坑：代理跑在另一台机器上，那台机器一停代理，错误只有
+    「[Errno 111] Connection refused」——使用者只会怀疑自己的密钥，
+    而真正的原因是代理没开。报错里点名代理，才不会白折腾。
+    """
+    proxy = active_network().proxy if use_proxy else ""
+    if not proxy:
+        return str(exc)
+    if not proxy_reachable(proxy):
+        return f"连不上代理 {proxy}（{exc}）"
+    return f"经代理 {proxy} 请求失败（{exc}）"
+
+
 def _call(
     *,
     protocol: str,
@@ -321,6 +338,7 @@ def _call(
     prompt: str,
     max_tokens: int,
     client: httpx.Client | None = None,
+    use_proxy: bool = True,
 ) -> tuple[str, str]:
     if not api_key.strip():
         raise AIError("未配置 AI 密钥")
@@ -334,7 +352,9 @@ def _call(
 
     own = client is None
     if client is None:
-        client = httpx.Client(timeout=timeout)
+        # `use_proxy=False` = 不走任何代理（连环境变量里的也不走）。
+        # 大模型接口常常在国内直连就通，没必要被另一台机器上的代理拖累。
+        client = client_for("ai", use_proxy=use_proxy, timeout=timeout)
     try:
         response = client.post(endpoint, json=body, headers=headers)
         response.raise_for_status()
@@ -343,7 +363,9 @@ def _call(
         detail = exc.response.text.strip().replace("\n", " ")[:200]
         raise AIError(f"AI 请求失败：HTTP {exc.response.status_code} {detail}") from exc
     except httpx.HTTPError as exc:
-        raise AIError(f"AI 请求失败：{exc}") from exc
+        raise AIError(
+            f"AI 请求失败：{_transport_error_text(exc, use_proxy=use_proxy)}"
+        ) from exc
     finally:
         if own:
             client.close()
@@ -358,6 +380,7 @@ def test_connection(
     api_key: str,
     timeout: float,
     client: httpx.Client | None = None,
+    use_proxy: bool = True,
 ) -> dict:
     """发一条最小请求，确认地址、协议、模型和 token 可用。"""
     started = time.monotonic()
@@ -370,6 +393,7 @@ def test_connection(
         prompt="只回复 OK，不要解释。",
         max_tokens=32,
         client=client,
+        use_proxy=use_proxy,
     )
     return {
         "ok": True,
@@ -378,6 +402,7 @@ def test_connection(
         "endpoint": endpoint,
         "sample": text.strip()[:100],
         "latency_ms": round((time.monotonic() - started) * 1000),
+        "use_proxy": bool(use_proxy and active_network().proxy),
     }
 
 
@@ -394,6 +419,7 @@ def review_duplicate(
     orphan_name: str,
     orphan_text: str,
     client: httpx.Client | None = None,
+    use_proxy: bool = True,
 ) -> Judgement:
     """让模型判断两份歌词是不是同一首，并建议留哪一份。
 
@@ -433,6 +459,7 @@ def review_duplicate(
         prompt=prompt,
         max_tokens=300,
         client=client,
+        use_proxy=use_proxy,
     )
     data = extract_json(content)
 

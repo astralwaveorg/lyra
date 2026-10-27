@@ -26,15 +26,22 @@ enabled = true
 data_dir = "/data"
 
 [network]
-# 用于访问 LRCLIB、MusicBrainz、AcoustID、大模型和封面等外部服务。
+# 代理地址。用于访问境外服务（LRCLIB、MusicBrainz、AcoustID、大模型）。
 # 支持 http://、https://、socks5://、socks5h://；留空表示不在配置里指定。
 # 设置页保存的值优先于这里；两者都没有时才沿用系统环境变量
 # HTTP_PROXY / HTTPS_PROXY / ALL_PROXY。
 # 例：proxy = "http://10.0.1.8:7890"
 proxy = ""
 
-# 即使开了代理也直连的主机。默认是国内歌词来源与它们的封面站点。
+# 即使开了代理也直连的主机。自建的网易云 API、自建的 MusicBrainz 镜像都在内网。
 direct_hosts = ["qq.com", "163.com", "126.net", "gtimg.cn"]
+
+# 哪些功能经代理访问。国内来源（QQ、网易云）始终直连。
+[network.use_proxy]
+lrclib = true
+musicbrainz = true
+acoustid = true
+cover = false
 
 [watch]
 backend = "auto"

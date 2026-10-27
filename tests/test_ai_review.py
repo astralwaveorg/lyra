@@ -389,3 +389,71 @@ def test_连接测试返回endpoint和延迟():
     assert result["endpoint"] == "https://api.openai.com/v1/chat/completions"
     assert result["sample"] == "OK"
     assert result["latency_ms"] >= 0
+
+
+def test_连接失败要点名代理而不是只说连接被拒(monkeypatch):
+    """代理跑在另一台机器上，它一停，错误就只剩「Connection refused」。
+
+    使用者看到那句话只会怀疑自己的密钥。报错里必须写明是代理连不上。
+    """
+    import httpx
+
+    import lyra.ai as ai_module
+    from lyra.ai import AIError, test_connection
+
+    def handler(request: httpx.Request):
+        raise httpx.ConnectError("[Errno 111] Connection refused")
+
+    from lyra.network import NetworkState
+
+    monkeypatch.setattr(
+        ai_module, "active_network",
+        lambda: NetworkState(proxy="http://10.0.1.8:7890"),
+    )
+    monkeypatch.setattr(ai_module, "proxy_reachable", lambda *_a, **_k: False)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(AIError) as excinfo:
+        test_connection(
+            protocol="openai_chat",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key="k",
+            timeout=5,
+            client=client,
+            use_proxy=True,
+        )
+    message = str(excinfo.value)
+    assert "10.0.1.8:7890" in message, message
+    assert "代理" in message, message
+
+
+def test_关掉代理后错误不再提代理(monkeypatch):
+    """关了代理就是直连，错误信息里不该再出现代理地址。"""
+    import httpx
+
+    import lyra.ai as ai_module
+    from lyra.ai import AIError, test_connection
+
+    def handler(request: httpx.Request):
+        raise httpx.ConnectError("[Errno 111] Connection refused")
+
+    from lyra.network import NetworkState
+
+    monkeypatch.setattr(
+        ai_module, "active_network",
+        lambda: NetworkState(proxy="http://10.0.1.8:7890"),
+    )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(AIError) as excinfo:
+        test_connection(
+            protocol="openai_chat",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key="k",
+            timeout=5,
+            client=client,
+            use_proxy=False,
+        )
+    assert "10.0.1.8" not in str(excinfo.value)

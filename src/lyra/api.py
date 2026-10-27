@@ -76,13 +76,16 @@ from .lrc import (
 )
 from .match import build_context, score_candidates
 from .network import (
+    PROXY_FEATURES,
     PROXY_SCHEMES,
-    apply_proxy_environment,
+    client_for,
     environment_proxy,
     load_network_settings,
+    mask_proxy_url,
     proxy_bypass_hosts,
-    restore_proxy_environment,
-    write_saved_proxy,
+    proxy_reachable,
+    set_active_network,
+    write_saved_network,
 )
 from .providers.base import Candidate, ProviderError, TrackQuery
 from .rename import apply_general_rename
@@ -488,7 +491,6 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         try:
             yield
         finally:
-            restore_proxy_environment()
             if owned_store:
                 state.close()
 
@@ -2603,17 +2605,55 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         }
 
     def _network_settings_view() -> dict[str, Any]:
+        proxy = cfg.network.proxy
+        reachable: bool | None = None
+        if proxy:
+            reachable = proxy_reachable(proxy)
         return {
-            "proxy": cfg.network.proxy,
+            "proxy": proxy,
             "source": cfg.network.proxy_source,
-            "effective_proxy": cfg.network.proxy or environment_proxy(),
+            "effective_proxy": proxy or environment_proxy(),
             "environment_proxy": environment_proxy(),
             "schemes": list(PROXY_SCHEMES),
+            "features": list(PROXY_FEATURES),
+            "use_proxy": dict(cfg.network.use_proxy),
+            "proxy_reachable": reachable,
+            "proxy_status": (
+                "none" if not proxy else ("ok" if reachable else "unreachable")
+            ),
         }
 
     @app.get("/api/v1/settings/network", dependencies=[Depends(require_auth)])
     def network_settings_view() -> dict[str, Any]:
         return _network_settings_view()
+
+    @app.post("/api/v1/settings/network/test", dependencies=[Depends(require_auth)])
+    def test_network_settings() -> dict[str, Any]:
+        """探测代理端口能不能连上。
+
+        代理常常跑在另一台机器上，那台机器一停代理，走代理的功能会
+        全部失败——但报错只有一句「Connection refused」。这里给一个直接
+        的「代理通不通」的答案，省得逐个功能去试。
+        """
+        proxy = cfg.network.proxy or environment_proxy()
+        if not proxy:
+            return {
+                "ok": True,
+                "proxy": "",
+                "reachable": None,
+                "message": "没有配置代理，所有请求直连",
+            }
+        reachable = proxy_reachable(proxy, force=True)
+        return {
+            "ok": True,
+            "proxy": mask_proxy_url(proxy),
+            "reachable": reachable,
+            "message": (
+                f"代理 {mask_proxy_url(proxy)} 可以连上"
+                if reachable
+                else f"代理 {mask_proxy_url(proxy)} 连不上，走代理的功能会失败"
+            ),
+        }
 
     @app.put("/api/v1/settings/network", dependencies=[Depends(require_auth)])
     def update_network_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2627,9 +2667,15 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         before = replace(cfg.network)
         try:
             apply_network_settings_values(cfg, payload)
-            write_saved_proxy(cfg.storage.resolved_data_dir, cfg.network.proxy)
-            apply_proxy_environment(
-                cfg.network.proxy, proxy_bypass_hosts(cfg)
+            write_saved_network(
+                cfg.storage.resolved_data_dir,
+                cfg.network.proxy,
+                cfg.network.use_proxy,
+            )
+            set_active_network(
+                cfg.network.proxy or environment_proxy(),
+                cfg.network.use_proxy,
+                proxy_bypass_hosts(cfg),
             )
             cfg.network.proxy_source = (
                 "settings"
@@ -2665,6 +2711,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             "timeout_seconds": cfg.ai.timeout_seconds,
             "max_requests_per_run": cfg.ai.max_requests_per_run,
             "auto_clean_duplicates": cfg.ai.auto_clean_duplicates,
+            "use_proxy": cfg.ai.use_proxy,
             "has_api_key": bool(cfg.ai.api_key.strip()),
             "api_key_source": source,
             "protocols": list(AI_PROTOCOLS),
@@ -2742,6 +2789,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 model=temp_cfg.ai.model,
                 api_key=temp_cfg.ai.api_key,
                 timeout=temp_cfg.ai.timeout_seconds,
+                use_proxy=temp_cfg.ai.use_proxy,
             )
         except AIError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3673,6 +3721,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                         existing_text=existing_text,
                         orphan_name=item["rel_path"],
                         orphan_text=orphan_text,
+                        use_proxy=cfg.ai.use_proxy,
                     )
                 except AIError as exc:
                     results.append({"rel_path": item["rel_path"], "error": str(exc)})
@@ -4213,9 +4262,12 @@ def _resolve_short_link(url: str) -> str:
 
     QQ 音乐 App 分享出来的 `c6.y.qq.com/base/fcgi-bin/u?__=xxx` 与网易云的
     `163cn.tv/xxx` 都要经过 302 才能看到歌曲 id，这一步只能联网做。
+
+    短链都是国内的，**不走代理**：`client_for` 对未知功能一律直连。
     """
     try:
-        with httpx.Client(
+        with client_for(
+            "shortlink",
             follow_redirects=True,
             timeout=httpx.Timeout(20.0),
             headers={"User-Agent": _SHORT_LINK_UA},

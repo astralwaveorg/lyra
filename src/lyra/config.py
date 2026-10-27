@@ -21,7 +21,13 @@ from typing import Any
 
 from . import __version__
 from .models import RootRole
-from .network import DEFAULT_DIRECT_HOSTS, mask_proxy_url, normalize_proxy_url
+from .network import (
+    DEFAULT_DIRECT_HOSTS,
+    DEFAULT_FEATURE_PROXY,
+    PROXY_FEATURES,
+    mask_proxy_url,
+    normalize_proxy_url,
+)
 
 __all__ = [
     "ConfigError",
@@ -114,15 +120,21 @@ class NetworkConfig:
     环境变量里已有 ``HTTP_PROXY`` / ``ALL_PROXY``，仍会沿用。``proxy_source``
     仅用于设置页说明，不接受配置文件写入。
 
-    ``direct_hosts`` 里的主机即使开了代理也直连。默认是国内歌词来源与
-    它们的封面站点：代理是给境外服务用的，国内来源绕一圈只会多一跳，
-    还可能因为出口 IP 变了被拒。
+    ``use_proxy`` 逐个功能决定**谁走代理**：境外服务（LRCLIB、
+    MusicBrainz、AcoustID）需要代理才能出去，国内来源（QQ、网易云）
+    直连就通，不设开关。
+
+    ``direct_hosts`` 里的主机即使开了代理也直连：自建的网易云 API、
+    自建的 MusicBrainz 镜像都在内网，送到代理端再绕回来只会失败。
     """
 
     proxy: str = ""
     proxy_source: str = "none"
     direct_hosts: list[str] = field(
         default_factory=lambda: list(DEFAULT_DIRECT_HOSTS)
+    )
+    use_proxy: dict[str, bool] = field(
+        default_factory=lambda: dict(DEFAULT_FEATURE_PROXY)
     )
 
 
@@ -342,7 +354,7 @@ class LyricsFormatConfig:
     romanization: bool = False
 
 
-NETWORK_SETTINGS_FIELDS = ("proxy",)
+NETWORK_SETTINGS_FIELDS = ("proxy", "use_proxy")
 """设置页可修改的网络字段。"""
 
 
@@ -362,6 +374,7 @@ AI_SETTINGS_FIELDS = (
     "timeout_seconds",
     "max_requests_per_run",
     "auto_clean_duplicates",
+    "use_proxy",
 )
 
 AI_SETTINGS_BOUNDS: dict[str, tuple[float, float]] = {
@@ -389,6 +402,14 @@ class AIConfig:
     """一轮最多问几次：既防超支，也防一次点击把上游打爆。"""
     auto_clean_duplicates: bool = False
     """高置信度的重复歌词是否自动移入回收站（可还原）。"""
+    use_proxy: bool = True
+    """大模型请求是否走网络代理。
+
+    默认跟随全局代理设置。但代理常常跑在另一台机器上（笔记本上的代理
+    软件），那台机器一停代理，**连本来直连就通的大模型接口也会一起
+    失败**。所以这里单独给一个开关：国内接口可以关掉代理直连，
+    境外接口再打开。
+    """
 
 
 @dataclass(slots=True)
@@ -526,7 +547,7 @@ def apply_tag_policy_values(cfg: Config, values: Mapping[str, Any]) -> TagPolicy
 def apply_network_settings_values(
     cfg: Config, values: Mapping[str, Any]
 ) -> NetworkConfig:
-    """校验设置页提交的代理地址。
+    """校验设置页提交的代理设置。
 
     只接受白名单字段；空字符串是合法值，表示清除保存的代理。非法值
     直接抛 `ValueError`，由接口原样返回给设置页。
@@ -534,12 +555,23 @@ def apply_network_settings_values(
     if not isinstance(values, Mapping):
         raise ValueError("设置必须是对象")
     proxy = cfg.network.proxy
+    features = dict(cfg.network.use_proxy)
     for key, raw in values.items():
         if key not in NETWORK_SETTINGS_FIELDS:
             raise ValueError(f"未知设置项：{key}")
         if key == "proxy":
             proxy = normalize_proxy_url(raw)
-    cfg.network = replace(cfg.network, proxy=proxy)
+        elif key == "use_proxy":
+            if not isinstance(raw, Mapping):
+                raise ValueError("use_proxy 必须是对象")
+            unknown = set(raw) - set(PROXY_FEATURES)
+            if unknown:
+                raise ValueError(f"未知功能：{sorted(unknown)[0]}")
+            for name, value in raw.items():
+                if not isinstance(value, bool):
+                    raise ValueError(f"{name} 必须是布尔值")
+                features[name] = value
+    cfg.network = replace(cfg.network, proxy=proxy, use_proxy=features)
     return cfg.network
 
 
@@ -554,7 +586,7 @@ def apply_ai_settings_values(cfg: Config, values: Mapping[str, Any]) -> AIConfig
     for key, raw in values.items():
         if key not in AI_SETTINGS_FIELDS:
             raise ValueError(f"未知设置项：{key}")
-        if key in ("enabled", "auto_clean_duplicates"):
+        if key in ("enabled", "auto_clean_duplicates", "use_proxy"):
             if not isinstance(raw, bool):
                 raise ValueError(f"{key} 必须是布尔值")
             setattr(ai, key, raw)
@@ -682,7 +714,7 @@ _ROOT_KEYS = {
     "ignore_dirs", "ignore_globs",
 }
 _STORAGE_KEYS = {"data_dir"}
-_NETWORK_KEYS = {"proxy", "direct_hosts"}
+_NETWORK_KEYS = {"proxy", "direct_hosts", "use_proxy"}
 _WATCH_KEYS = {
     "backend", "stable_seconds", "stable_samples", "reconcile_interval_seconds",
     "full_scan_local_time", "timezone",
@@ -742,6 +774,7 @@ _WRITE_KEYS = {
 _AI_KEYS = {
     "enabled", "protocol", "base_url", "model", "api_key",
     "timeout_seconds", "max_requests_per_run", "auto_clean_duplicates",
+    "use_proxy",
 }
 _TOP_KEYS = {
     "config_version", "roots", "storage", "watch", "network", "providers",
@@ -898,6 +931,16 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
         except ValueError as exc:
             problems.add("network.proxy", str(exc))
             proxy = ""
+        features = dict(DEFAULT_FEATURE_PROXY)
+        raw_features = table.get("use_proxy")
+        if raw_features is not None:
+            sub = _unwrap(problems, "network.use_proxy", raw_features)
+            problems.unknown_keys("network.use_proxy", sub, set(PROXY_FEATURES))
+            for name, value in sub.items():
+                if not isinstance(value, bool):
+                    problems.add(f"network.use_proxy.{name}", "应为布尔值")
+                    continue
+                features[name] = value
         cfg.network = NetworkConfig(
             proxy=proxy,
             direct_hosts=_as_str_list(
@@ -906,6 +949,7 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                 table.get("direct_hosts", list(DEFAULT_DIRECT_HOSTS)),
                 list(DEFAULT_DIRECT_HOSTS),
             ),
+            use_proxy=features,
         )
 
     # ---- watch ----
@@ -1490,6 +1534,10 @@ def _parse_ai(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None:
             problems, "ai.auto_clean_duplicates",
             table.get("auto_clean_duplicates", base.auto_clean_duplicates),
             base.auto_clean_duplicates),
+        use_proxy=_as_bool(
+            problems, "ai.use_proxy",
+            table.get("use_proxy", base.use_proxy),
+            base.use_proxy),
     )
     if cfg.ai.protocol not in AI_PROTOCOLS:
         problems.add("ai.protocol", f"不支持的协议：{cfg.ai.protocol}")

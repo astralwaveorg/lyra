@@ -1,18 +1,32 @@
-"""出站代理配置。
+"""出站代理：**按功能**决定走不走代理。
 
-代理地址来自三处，优先级从高到低：
+## 为什么不是「全局一个代理」
+
+代理是给**境外**服务找一条能出去的路：LRCLIB、MusicBrainz、AcoustID
+这些站点在国内直连经常超时或干脆连不上。但同一个进程里还有一堆**本来
+直连就通**的国内服务（QQ 音乐、网易云、自建的网易云 API、自建的
+MusicBrainz 镜像），它们走代理只会多一跳，还可能因为出口 IP 变了被拒。
+
+更麻烦的是：代理通常跑在另一台机器上（笔记本上的代理软件）。那台机器
+一停代理，若所有请求都死抱着代理不放，**连直连就通的国内接口也一起
+挂掉**，界面上只剩一句「Connection refused」，使用者只会怀疑自己的
+密钥。
+
+所以这里的设计是：
+
+- 代理地址只有一份（设置页 / 配置文件 / 环境变量三选一）；
+- **每个境外功能各有一个开关**（`[network.use_proxy]`），决定它走不走代理；
+- 国内来源（QQ、网易云）**永远直连**，没有开关——它们不需要代理；
+- Lyra **不再改写进程的环境变量**。每个 HTTP 客户端按自己的功能决定
+  用不用代理（见 `client_for`），「关掉开关」就一定不走代理。
+
+## 代理地址从哪来
+
+优先级从高到低：
 
 1. 设置页保存的 ``data/network.json``
 2. ``lyra.toml`` 的 ``[network] proxy``
 3. 容器/系统环境变量 ``HTTP_PROXY``、``HTTPS_PROXY``、``ALL_PROXY``
-
-设置页保存后立即改写当前进程的环境变量；``lyra-watch`` 会周期性读取
-同一个文件，换掉已经建立的 HTTP 客户端。这样 Web 与监控两个容器不必
-重启就能共用一份代理设置。
-
-本地回环与内网服务必须绕过代理，否则自建网易云 API、MusicBrainz 镜像
-会被送到代理端再绕回来。这里按“私有地址、无点主机名、Docker 内部名”
-自动收集例外，不把公网域名写死。
 """
 
 from __future__ import annotations
@@ -20,57 +34,84 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-from collections.abc import Iterable, Sequence
+import socket
+import time
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
+
+import httpx
 
 if TYPE_CHECKING:
     from .config import Config
 
 __all__ = [
     "PROXY_SCHEMES",
+    "PROXY_FEATURES",
+    "DEFAULT_FEATURE_PROXY",
     "DEFAULT_DIRECT_HOSTS",
     "NETWORK_FILENAME",
-    "apply_proxy_environment",
+    "NetworkState",
+    "active_network",
+    "client_for",
     "environment_proxy",
+    "feature_uses_proxy",
     "load_network_settings",
     "local_no_proxy_hosts",
     "mask_proxy_url",
     "normalize_proxy_url",
     "proxy_bypass_hosts",
-    "read_saved_proxy",
-    "restore_proxy_environment",
-    "write_saved_proxy",
+    "proxy_reachable",
+    "read_saved_network",
+    "set_active_network",
+    "write_saved_network",
 ]
 
 PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
 """``httpx`` 支持的代理协议。SOCKS 需要安装 ``httpx[socks]``。"""
 
-DEFAULT_DIRECT_HOSTS = ("qq.com", "163.com", "126.net", "gtimg.cn")
-"""默认直连的国内歌词来源与封面站点。
+PROXY_FEATURES = ("lrclib", "musicbrainz", "acoustid", "cover")
+"""可以单独决定是否走代理的功能。
 
-代理的意义是给境外服务（LRCLIB、MusicBrainz、AcoustID、大模型）找一条
-能出去的路；国内来源本来就通，绕一圈反而多一跳，还可能因为出口 IP
-变了被拒。所以默认让它们直连，用户可以在 ``[network] direct_hosts``
-里改。
+- ``lrclib``：LRCLIB 歌词来源（境外）
+- ``musicbrainz``：MusicBrainz 标签（境外）
+- ``acoustid``：AcoustID 声学指纹（境外）
+- ``cover``：按链接下载封面（看链接是境内还是境外，默认直连）
+
+大模型不在这里：它的开关跟着大模型设置走（``[ai] use_proxy``），
+因为接口地址本来就是使用者自己填的。
+"""
+
+DEFAULT_FEATURE_PROXY: dict[str, bool] = {
+    "lrclib": True,
+    "musicbrainz": True,
+    "acoustid": True,
+    "cover": False,
+}
+"""各功能默认是否走代理。
+
+境外来源默认走代理（不然多半连不上）；按链接下载封面默认直连
+（绝大多数封面链接是国内 CDN，绕一圈反而慢）。
+"""
+
+DEFAULT_DIRECT_HOSTS = ("qq.com", "163.com", "126.net", "gtimg.cn")
+"""即使开了代理也直连的主机。
+
+主要是**自建服务**与国内站点：自建的网易云 API、自建的 MusicBrainz
+镜像都在内网，送到代理端再绕回来只会失败。也可以自己改。
 """
 
 NETWORK_FILENAME = "network.json"
 
-_ENV_KEYS = (
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "all_proxy",
-    "no_proxy",
-)
-"""会被设置页接管的变量。只接管这些，不碰用户的其他环境变量。"""
+_probe_cache: dict[str, tuple[float, bool]] = {}
+_PROBE_TTL_SECONDS = 10.0
 
-_original_env: dict[str, str | None] | None = None
+
+# ---------------------------------------------------------------------------
+# 代理地址的读写
+# ---------------------------------------------------------------------------
 
 
 def normalize_proxy_url(raw: Any) -> str:
@@ -134,38 +175,59 @@ def _settings_path(data_dir: Path) -> Path:
     return data_dir / NETWORK_FILENAME
 
 
-def read_saved_proxy(data_dir: Path) -> str | None:
-    """读取设置页保存的代理。
+def read_saved_network(data_dir: Path) -> tuple[str | None, dict[str, bool] | None]:
+    """读取设置页保存的代理与各功能开关。
 
-    ``None`` 表示没有保存过（或文件损坏），调用方应回退到配置文件；
-    空字符串表示用户明确保存了“不使用代理”，会压过配置文件里的值。
+    返回 (代理地址, 功能开关)。代理为 ``None`` 表示没有保存过（或文件
+    损坏），调用方应回退到配置文件；空字符串表示用户明确保存了
+    「不使用代理」，会压过配置文件里的值。开关为 ``None`` 表示没保存过。
     """
     path = _settings_path(data_dir)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
-        return None
+        return None, None
     if not isinstance(payload, dict):
-        return None
+        return None, None
+
     raw = payload.get("proxy")
-    if not isinstance(raw, str):
-        return None
-    try:
-        return normalize_proxy_url(raw)
-    except ValueError:
-        return None
+    proxy: str | None = None
+    if isinstance(raw, str):
+        try:
+            proxy = normalize_proxy_url(raw)
+        except ValueError:
+            proxy = None
+
+    features: dict[str, bool] | None = None
+    raw_features = payload.get("use_proxy")
+    if isinstance(raw_features, dict):
+        features = {
+            name: bool(value)
+            for name, value in raw_features.items()
+            if name in PROXY_FEATURES and isinstance(value, bool)
+        }
+    return proxy, features
 
 
-def write_saved_proxy(data_dir: Path, proxy: str) -> None:
+def write_saved_network(
+    data_dir: Path, proxy: str, features: Mapping[str, bool]
+) -> None:
     """原子写入设置文件。含代理凭据，权限固定为 0600。"""
     proxy = normalize_proxy_url(proxy)
     data_dir.mkdir(parents=True, exist_ok=True)
     path = _settings_path(data_dir)
     tmp = path.with_name(path.name + ".tmp")
+    payload = {
+        "proxy": proxy,
+        "use_proxy": {
+            name: bool(features.get(name, False))
+            for name in PROXY_FEATURES
+        },
+    }
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"proxy": proxy}, handle, ensure_ascii=False)
+            json.dump(payload, handle, ensure_ascii=False)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -178,11 +240,19 @@ def write_saved_proxy(data_dir: Path, proxy: str) -> None:
 
 def environment_proxy() -> str:
     """当前环境里第一个可用的代理地址。"""
-    for key in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+    for key in (
+        "ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy",
+        "HTTP_PROXY", "http_proxy",
+    ):
         value = os.environ.get(key, "").strip()
         if value:
             return value
     return ""
+
+
+# ---------------------------------------------------------------------------
+# 哪些主机必须直连
+# ---------------------------------------------------------------------------
 
 
 def _is_local_host(host: str) -> bool:
@@ -217,74 +287,125 @@ def local_no_proxy_hosts(urls: Iterable[str]) -> list[str]:
     return hosts
 
 
-def _ensure_original_env() -> dict[str, str | None]:
-    global _original_env
-    if _original_env is None:
-        _original_env = {key: os.environ.get(key) for key in _ENV_KEYS}
-    return _original_env
+# ---------------------------------------------------------------------------
+# 代理是否连得上
+# ---------------------------------------------------------------------------
 
 
-def _merged_no_proxy(extra_hosts: Sequence[str]) -> str:
-    original = _ensure_original_env().get("NO_PROXY") or os.environ.get("no_proxy") or ""
-    hosts = [item.strip() for item in original.split(",") if item.strip()]
-    for host in extra_hosts:
-        host = host.strip()
-        if host and host not in hosts:
-            hosts.append(host)
-    return ",".join(hosts)
+def proxy_reachable(proxy: str, timeout: float = 1.5, *, force: bool = False) -> bool:
+    """代理端口能不能连上。
 
+    只做 TCP 探测：代理是什么协议、转发到哪里，都不重要——连不上就是
+    连不上，后面所有请求都会失败。SOCKS5 同样是 TCP，探测方式一致。
 
-def apply_proxy_environment(
-    proxy: str,
-    no_proxy_hosts: Sequence[str] = (),
-) -> None:
-    """让后续创建的 httpx 客户端使用指定代理。
-
-    ``proxy`` 为空时恢复调用前的环境变量，也就是继续沿用系统原有设置。
-    只用 ``ALL_PROXY`` 也能覆盖 http/https；SOCKS 时额外清掉 HTTP(S)_PROXY，
-    避免旧的 HTTP 代理抢在 SOCKS 前面。
+    结果缓存十秒：一次界面刷新不该连着探好几次。`force` 用于「测试」
+    按钮——使用者刚点完就是要立刻知道结果。
     """
-    proxy = normalize_proxy_url(proxy)
-    original = _ensure_original_env()
+    try:
+        parsed = urlsplit(normalize_proxy_url(proxy))
+    except ValueError:
+        return False
+    host = parsed.hostname
+    port = parsed.port
+    if not host or not port:
+        return False
 
-    if not proxy:
-        for key, value in original.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-        return
+    now = time.monotonic()
+    cached = _probe_cache.get(proxy)
+    if not force and cached and now - cached[0] < _PROBE_TTL_SECONDS:
+        return cached[1]
 
-    scheme = urlsplit(proxy).scheme.lower()
-    for key in ("ALL_PROXY", "all_proxy"):
-        os.environ[key] = proxy
-    if scheme in ("http", "https"):
-        for key in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
-            os.environ[key] = proxy
+    ok = False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            ok = True
+    except OSError:
+        ok = False
+
+    _probe_cache[proxy] = (now, ok)
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# 当前生效的网络状态
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class NetworkState:
+    """进程内当前生效的网络设置。"""
+
+    proxy: str = ""
+    """代理地址（空 = 没有代理）。"""
+
+    features: dict[str, bool] = field(
+        default_factory=lambda: dict(DEFAULT_FEATURE_PROXY)
+    )
+    """各功能是否走代理。"""
+
+    bypass_hosts: list[str] = field(default_factory=list)
+    """即使走代理也要直连的主机（内网服务、直连名单）。"""
+
+
+_state = NetworkState()
+
+
+def set_active_network(
+    proxy: str,
+    features: Mapping[str, bool] | None = None,
+    bypass_hosts: Sequence[str] = (),
+) -> NetworkState:
+    """更新进程内生效的网络设置，并返回当前状态。"""
+    merged = dict(DEFAULT_FEATURE_PROXY)
+    for name in PROXY_FEATURES:
+        merged[name] = bool(
+            (features or {}).get(name, DEFAULT_FEATURE_PROXY[name])
+        )
+    _state.proxy = normalize_proxy_url(proxy)
+    _state.features = merged
+    _state.bypass_hosts = list(bypass_hosts)
+    return _state
+
+
+def active_network() -> NetworkState:
+    """当前生效的网络设置。"""
+    return _state
+
+
+def feature_uses_proxy(feature: str) -> bool:
+    """这个功能是否走代理。"""
+    return bool(_state.features.get(feature, False))
+
+
+def client_for(
+    feature: str,
+    *,
+    use_proxy: bool | None = None,
+    **kwargs: Any,
+) -> httpx.Client:
+    """按功能建立 HTTP 客户端：只有开了这个功能的代理才走代理。
+
+    - 走代理：显式传 ``proxy``，内网与直连名单用 ``mounts`` 排除；
+    - 不走代理：**连环境变量里的代理也不认**（``trust_env=False``），
+      否则「关掉开关」却仍在走代理，界面上的开关就成了摆设。
+
+    注入 ``transport`` 的测试路径不受影响：那时不该连真实代理。
+    """
+    enabled = feature_uses_proxy(feature) if use_proxy is None else bool(use_proxy)
+    proxy = _state.proxy if enabled else ""
+    if proxy and kwargs.get("transport") is None:
+        kwargs["proxy"] = proxy
+        mounts = {f"all://*{host}": None for host in _state.bypass_hosts}
+        if mounts:
+            kwargs["mounts"] = mounts
     else:
-        for key in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
-            os.environ.pop(key, None)
-
-    merged = _merged_no_proxy(no_proxy_hosts)
-    if merged:
-        os.environ["NO_PROXY"] = merged
-        os.environ["no_proxy"] = merged
-    else:
-        os.environ.pop("NO_PROXY", None)
-        os.environ.pop("no_proxy", None)
+        kwargs.setdefault("trust_env", False)
+    return httpx.Client(**kwargs)
 
 
-def restore_proxy_environment() -> None:
-    """把环境变量恢复到本进程第一次接管代理之前的状态。"""
-    global _original_env
-    if _original_env is None:
-        return
-    for key, value in _original_env.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
-    _original_env = None
+# ---------------------------------------------------------------------------
+# 与配置文件的衔接
+# ---------------------------------------------------------------------------
 
 
 def _all_urls(cfg: Config) -> list[str]:
@@ -292,6 +413,7 @@ def _all_urls(cfg: Config) -> list[str]:
         cfg.providers.netease.base_url,
         cfg.providers.musicbrainz.base_url,
         cfg.providers.acoustid.base_url,
+        cfg.ai.base_url,
     ]
 
 
@@ -308,21 +430,31 @@ def proxy_bypass_hosts(cfg: Config) -> list[str]:
 
 
 def load_network_settings(cfg: Config) -> None:
-    """加载保存值/配置文件，并把结果写入当前进程环境。
+    """加载保存值/配置文件，并把结果写进进程内状态。
 
     启动时调用一次；设置页保存后也会调用。``proxy_source`` 只用于界面
     提示，不写进配置文件。
     """
-    saved = read_saved_proxy(cfg.storage.resolved_data_dir)
-    if saved is not None:
-        cfg.network.proxy = saved
-        if saved:
-            cfg.network.proxy_source = "settings"
-        else:
-            cfg.network.proxy_source = "env" if environment_proxy() else "none"
+    saved_proxy, saved_features = read_saved_network(
+        cfg.storage.resolved_data_dir
+    )
+    if saved_proxy is not None:
+        cfg.network.proxy = saved_proxy
+        cfg.network.proxy_source = (
+            "settings" if saved_proxy else ("env" if environment_proxy() else "none")
+        )
     elif cfg.network.proxy:
         cfg.network.proxy_source = "config"
     else:
         cfg.network.proxy_source = "env" if environment_proxy() else "none"
 
-    apply_proxy_environment(cfg.network.proxy, proxy_bypass_hosts(cfg))
+    if saved_features is not None:
+        for name, value in saved_features.items():
+            cfg.network.use_proxy[name] = value
+
+    set_active_network(
+        # 没有显式配置时沿用环境变量里的代理地址——但**只**给开了开关的功能。
+        cfg.network.proxy or environment_proxy(),
+        cfg.network.use_proxy,
+        proxy_bypass_hosts(cfg),
+    )

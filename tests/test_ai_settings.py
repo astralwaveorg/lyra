@@ -158,6 +158,7 @@ def test_测试连接使用表单token但不写文件(
             "endpoint": "https://api.test/v1/chat/completions",
             "sample": "OK",
             "latency_ms": 1,
+            "use_proxy": kwargs.get("use_proxy", True),
         }
 
     monkeypatch.setattr(ai_module, "test_connection", fake_test)
@@ -175,3 +176,60 @@ def test_测试连接使用表单token但不写文件(
         assert response.json()["ok"] is True
         assert called["api_key"] == "form-token"
         assert not (tmp_path / "data" / "ai-token").exists()
+
+
+def test_大模型可以单独不使用代理(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """代理多半跑在另一台机器上，它一停，连国内接口也一起挂。
+
+    所以大模型设置里要有「使用网络代理」的独立开关：关掉就是直连，
+    不受全局代理设置影响。
+    """
+    cfg = _cfg(tmp_path)
+    called = {}
+
+    def fake_test(**kwargs):
+        called.update(kwargs)
+        return {
+            "ok": True,
+            "protocol": kwargs["protocol"],
+            "model": kwargs["model"],
+            "endpoint": "https://api.test/v1/chat/completions",
+            "sample": "OK",
+            "latency_ms": 1,
+            "use_proxy": kwargs.get("use_proxy", True),
+        }
+
+    monkeypatch.setattr(ai_module, "test_connection", fake_test)
+    with TestClient(create_app(cfg)) as client:
+        saved = client.put(
+            "/api/v1/settings/ai",
+            json={
+                "enabled": True,
+                "protocol": "openai_chat",
+                "base_url": "https://api.test/v1",
+                "model": "m",
+                "api_key": "token-value",
+                "use_proxy": False,
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["use_proxy"] is False
+
+        client.post(
+            "/api/v1/settings/ai/test",
+            json={"use_proxy": False},
+        )
+        assert called["use_proxy"] is False, called
+
+    # 重启后仍然保持（设置页保存的值优先于配置文件）
+    cfg2 = _cfg(tmp_path)
+    with TestClient(create_app(cfg2)) as client:
+        data = client.get("/api/v1/settings/ai").json()
+        assert data["use_proxy"] is False
+
+
+def test_默认使用全局代理(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    with TestClient(create_app(cfg)) as client:
+        data = client.get("/api/v1/settings/ai").json()
+        assert data["use_proxy"] is True

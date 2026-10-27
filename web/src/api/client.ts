@@ -18,6 +18,7 @@ import type {
   OrganizeResult,
   LyricsPreview,
   NetworkSettings,
+  NetworkTestResult,
   OrphanItem,
   RenameRow,
   ReviewPage,
@@ -350,11 +351,13 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   networkSettings: () => request<NetworkSettings>('/api/v1/settings/network'),
-  updateNetworkSettings: (settings: { proxy: string }) =>
+  updateNetworkSettings: (settings: { proxy: string; use_proxy?: Record<string, boolean> }) =>
     request<NetworkSettings & { ok: boolean }>('/api/v1/settings/network', {
       method: 'PUT',
       body: JSON.stringify(settings),
     }),
+  testNetworkSettings: () =>
+    request<NetworkTestResult>('/api/v1/settings/network/test', { method: 'POST' }),
   tagProposals: (params: { state?: string; q?: string; limit?: number; offset?: number }) =>
     request<TagProposalPage>(`/api/v1/tags/proposals${query(params)}`),
   applyTagProposal: (id: number, fields?: string[]) =>

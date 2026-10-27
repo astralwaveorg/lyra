@@ -288,7 +288,10 @@ def download_cover(
 
     own_client = client is None
     if client is None:
-        client = httpx.Client(
+        from .network import client_for
+
+        client = client_for(
+            "cover",
             timeout=timeout,
             follow_redirects=True,
             # 这些 CDN 对裸请求会返回 403/HTML：带上常见的 UA 与 Referer

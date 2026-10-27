@@ -7,6 +7,7 @@ import type {
   AISettings,
   AITestResult,
   NetworkSettings,
+  ProxyFeature,
   TagPolicy,
   TokenRow,
 } from '@/api/types'
@@ -51,7 +52,17 @@ const aiError = ref('')
 const network = ref<NetworkSettings | null>(null)
 const networkLoading = ref(false)
 const networkSaving = ref(false)
+const networkTesting = ref(false)
 const networkError = ref('')
+const networkTest = ref('')
+
+/** 每个境外功能是否走代理。国内来源（QQ、网易云）永远直连，没有开关。 */
+const PROXY_FEATURE_LABEL: Record<ProxyFeature, string> = {
+  lrclib: '歌词来源 LRCLIB',
+  musicbrainz: '标签 MusicBrainz',
+  acoustid: '指纹 AcoustID',
+  cover: '按链接下载封面',
+}
 
 const AI_PROTOCOL_LABEL: Record<AIProtocol, string> = {
   openai_chat: 'OpenAI Chat Completions',
@@ -129,6 +140,7 @@ function aiPayload() {
     timeout_seconds: ai.value.timeout_seconds,
     max_requests_per_run: ai.value.max_requests_per_run,
     auto_clean_duplicates: ai.value.auto_clean_duplicates,
+    use_proxy: ai.value.use_proxy,
   }
   if (clearAIToken.value) return { ...payload, clear_api_key: true }
   if (aiToken.value.trim()) return { ...payload, api_key: aiToken.value.trim() }
@@ -200,12 +212,34 @@ async function saveNetworkSettings() {
   networkSaving.value = true
   networkError.value = ''
   try {
-    network.value = await api.updateNetworkSettings({ proxy: network.value.proxy.trim() })
+    network.value = await api.updateNetworkSettings({
+      proxy: network.value.proxy.trim(),
+      use_proxy: { ...network.value.use_proxy },
+    })
     ElMessage.success('代理设置已保存')
   } catch (err) {
     networkError.value = err instanceof Error ? err.message : '保存失败'
   } finally {
     networkSaving.value = false
+  }
+}
+
+async function testNetworkProxy() {
+  networkTesting.value = true
+  networkTest.value = ''
+  try {
+    const result = await api.testNetworkSettings()
+    networkTest.value = result.message
+    if (result.reachable === false) {
+      ElMessage.warning(result.message)
+    } else {
+      ElMessage.success(result.message)
+    }
+  } catch (err) {
+    networkTest.value = err instanceof Error ? err.message : '测试失败'
+    ElMessage.error(networkTest.value)
+  } finally {
+    networkTesting.value = false
   }
 }
 
@@ -528,6 +562,16 @@ onMounted(async () => {
           controls-position="right"
         />
       </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">使用网络代理</div>
+          <div class="cell-meta">
+            关闭后大模型请求直连，不受「网络代理」设置影响。国内接口直连通常更稳；
+            境外接口若需要代理再打开。
+          </div>
+        </div>
+        <el-switch v-model="ai.use_proxy" />
+      </div>
       <div class="setting-actions">
         <el-button type="primary" :loading="aiSaving" @click="saveAISettings">
           保存大模型设置
@@ -546,7 +590,7 @@ onMounted(async () => {
       />
       <el-alert
         v-if="aiTest"
-        :title="`连接成功 · ${aiTest.model} · ${aiTest.latency_ms}ms`"
+        :title="`连接成功 · ${aiTest.model} · ${aiTest.latency_ms}ms · ${aiTest.use_proxy ? '经代理' : '直连'}`"
         type="success"
         :closable="false"
         show-icon
@@ -569,7 +613,7 @@ onMounted(async () => {
   <section class="card">
     <div class="card-head">
       <span class="card-title">网络代理</span>
-      <span class="card-hint">访问 LRCLIB、MusicBrainz 等境外服务时使用</span>
+      <span class="card-hint">按功能决定谁走代理；国内来源始终直连</span>
     </div>
     <div v-if="network" class="card-body col">
       <div class="setting-row">
@@ -577,7 +621,7 @@ onMounted(async () => {
           <div class="label">代理地址</div>
           <div class="cell-meta">
             支持 HTTP 与 SOCKS5，例如 http://10.0.1.8:7890 或 socks5://10.0.1.8:7890。
-            留空时沿用系统环境变量，未配置则直连。国内歌词来源始终直连，代理只用于境外服务。
+            留空时沿用系统环境变量，未配置则直连。
           </div>
         </div>
         <el-input
@@ -601,12 +645,37 @@ onMounted(async () => {
         :closable="false"
         show-icon
       />
+      <el-alert
+        v-if="network.proxy_status === 'unreachable'"
+        title="代理当前连不上，走代理的功能会失败。可以先关掉对应功能的开关。"
+        type="error"
+        :closable="false"
+        show-icon
+      />
+      <div class="setting-row" v-for="feature in network.features" :key="feature">
+        <div class="setting-text">
+          <div class="label">{{ PROXY_FEATURE_LABEL[feature] }}</div>
+          <div class="cell-meta">这个功能是否经代理访问</div>
+        </div>
+        <el-switch v-model="network.use_proxy[feature]" />
+      </div>
+      <div class="cell-meta">
+        QQ 音乐、网易云音乐等国内来源始终直连，不受这里影响；大模型的开关在大模型设置里。
+      </div>
       <div class="setting-actions">
         <el-button type="primary" :loading="networkSaving" @click="saveNetworkSettings">
           保存代理设置
         </el-button>
+        <el-button :loading="networkTesting" @click="testNetworkProxy">测试代理</el-button>
         <span class="cell-meta">保存后新的请求立即使用，监控进程约 30 秒内应用</span>
       </div>
+      <el-alert
+        v-if="networkTest"
+        :title="networkTest"
+        type="info"
+        :closable="false"
+        show-icon
+      />
       <el-alert
         v-if="networkError"
         :title="networkError"

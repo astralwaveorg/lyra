@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .. import __version__
+from ..network import client_for
 
 __all__ = [
     "EntityLink",
@@ -257,7 +258,8 @@ class MusicBrainzProvider:
         self._recording_cache: dict[str, dict] = {}
         self._work_cache: dict[str, dict] = {}
         self._artist_cache: dict[str, dict] = {}
-        self._client = httpx.Client(
+        self._client = client_for(
+            "musicbrainz",
             timeout=config.request_timeout_seconds,
             transport=transport,
             headers={

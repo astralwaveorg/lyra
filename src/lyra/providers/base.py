@@ -23,6 +23,8 @@ from typing import Protocol
 
 import httpx
 
+from ..network import client_for
+
 __all__ = [
     # 数据契约
     "TrackQuery",
@@ -485,8 +487,10 @@ class HttpProviderBase:
             self._client = client
             self._owns_client = False
         else:
-            # 所有网络调用都必须有超时，且只能是配置里的值
-            self._client = httpx.Client(
+            # 所有网络调用都必须有超时，且只能是配置里的值。
+            # 代理按**来源**决定：LRCLIB 走代理，QQ/网易云直连。
+            self._client = client_for(
+                self.name,
                 transport=transport,
                 timeout=httpx.Timeout(self._timeout),
                 follow_redirects=True,

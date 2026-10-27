@@ -36,6 +36,7 @@ import httpx
 
 from . import __version__
 from .config import AcoustIdProviderConfig
+from .network import client_for
 
 __all__ = [
     "AcoustIdClient",
@@ -149,7 +150,8 @@ class AcoustIdClient:
         self._clock = clock or time.monotonic
         self._sleep = sleep or time.sleep
         self._last_request = 0.0
-        self._client = httpx.Client(
+        self._client = client_for(
+            "acoustid",
             timeout=config.request_timeout_seconds,
             transport=transport,
             headers={"User-Agent": f"Lyra/{__version__} (+https://github.com/astralwaveorg/lyra)"},
