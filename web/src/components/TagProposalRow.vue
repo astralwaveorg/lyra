@@ -11,7 +11,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api/client'
 import type { TagFieldRow, TagProposal } from '@/api/types'
-import { fmtDuration, splitPath } from '@/utils/format'
+import { fmtAgo, fmtDuration, splitPath } from '@/utils/format'
 import { tagFieldLabel } from '@/utils/labels'
 import AppIcon from './AppIcon.vue'
 import PreviewPlayButton from './PreviewPlayButton.vue'
@@ -45,6 +45,12 @@ const selectableCount = computed(
   () => rows.value.filter((row) => row.action !== 'same').length,
 )
 const isAuto = computed(() => props.item.state === 'auto')
+/** 忽略时间只放在悬浮提示里，表格行高不受影响。 */
+const ignoredTitle = computed(() =>
+  props.item.dismissed_at
+    ? `忽略于 ${fmtAgo(props.item.dismissed_at)}`
+    : '已忽略',
+)
 const name = computed(() => splitPath(props.item.rel_path).name)
 const title = computed(() => props.item.track.title || props.item.title || name.value)
 const artists = computed(() => (props.item.track.artists ?? []).join(' / '))
@@ -271,7 +277,7 @@ async function restore() {
         >
           {{ sourceText() }}
         </el-tag>
-        <span v-if="item.state === 'ignored'" class="chip muted">已忽略</span>
+        <span v-if="item.state === 'ignored'" class="chip muted" :title="ignoredTitle">已忽略</span>
         <span v-if="isAuto" class="conf num">{{ Math.round(item.confidence * 100) }}%</span>
         <span v-if="deltaText()" class="delta">{{ deltaText() }}</span>
         <span v-if="fills.length" class="chip fill num">可补 {{ fills.length }}</span>

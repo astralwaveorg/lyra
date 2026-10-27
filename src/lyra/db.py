@@ -32,7 +32,7 @@ __all__ = [
     "TransactionState",
 ]
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 class DatabaseError(Exception):
@@ -567,6 +567,17 @@ UPDATE tag_proposals SET state='ignored' WHERE state='skipped';
 CREATE INDEX idx_tag_proposals_dismissed ON tag_proposals(state, dismissed_at);
 """
 
+_MIGRATION_15 = """
+-- 给迁移 14 转过来的「忽略」记录补上忽略时间。
+--
+-- 迁移 14 把旧的 state='skipped' 改成了 'ignored'，但那些行从来没有
+-- dismissed_at。忽略时间取 updated_at：那是当初点「跳过」的时刻，
+-- 是现有数据里最接近的真实值。
+UPDATE tag_proposals
+   SET dismissed_at = updated_at
+ WHERE state = 'ignored' AND dismissed_at IS NULL;
+"""
+
 _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -582,6 +593,7 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (12, _MIGRATION_12),
     (13, _MIGRATION_13),
     (14, _MIGRATION_14),
+    (15, _MIGRATION_15),
 )
 
 
