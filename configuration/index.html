@@ -728,6 +728,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="网络代理 [network]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        按功能决定谁走代理
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -815,7 +832,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#_5" class="md-nav__link">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        是否走代理
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
     <span class="md-ellipsis">
       
         协议
@@ -826,7 +854,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#_6" class="md-nav__link">
+  <a href="#_8" class="md-nav__link">
     <span class="md-ellipsis">
       
         设置页
@@ -842,7 +870,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_7" class="md-nav__link">
+  <a href="#_9" class="md-nav__link">
     <span class="md-ellipsis">
       
         环境变量
@@ -853,7 +881,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_8" class="md-nav__link">
+  <a href="#_10" class="md-nav__link">
     <span class="md-ellipsis">
       
         完整示例
@@ -1714,6 +1742,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="网络代理 [network]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        按功能决定谁走代理
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1801,7 +1846,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#_5" class="md-nav__link">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        是否走代理
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
     <span class="md-ellipsis">
       
         协议
@@ -1812,7 +1868,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#_6" class="md-nav__link">
+  <a href="#_8" class="md-nav__link">
     <span class="md-ellipsis">
       
         设置页
@@ -1828,7 +1884,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_7" class="md-nav__link">
+  <a href="#_9" class="md-nav__link">
     <span class="md-ellipsis">
       
         环境变量
@@ -1839,7 +1895,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_8" class="md-nav__link">
+  <a href="#_10" class="md-nav__link">
     <span class="md-ellipsis">
       
         完整示例
@@ -2132,15 +2188,60 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">[network]</span>
 <a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">proxy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">""</span>
 <a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">direct_hosts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"qq.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"163.com"</span><span class="p">,</span><span class="w"> </span><span class="s2">"126.net"</span><span class="p">,</span><span class="w"> </span><span class="s2">"gtimg.cn"</span><span class="p">]</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="k">[network.use_proxy]</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="n">lrclib</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="n">musicbrainz</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="n">acoustid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="n">cover</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
 </code></pre></div>
-<p>用于访问 LRCLIB、MusicBrainz、AcoustID、大模型和封面等外部服务。支持 <code>http://</code>、<code>https://</code>、<code>socks5://</code>、<code>socks5h://</code>，必须写明端口：</p>
+<p>代理地址用于访问境外服务。支持 <code>http://</code>、<code>https://</code>、<code>socks5://</code>、<code>socks5h://</code>，必须写明端口：</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">[network]</span>
 <a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="n">proxy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"http://10.0.1.8:7890"</span>
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="c1"># proxy = "socks5://10.0.1.8:7890"</span>
 </code></pre></div>
-<p>设置页「网络代理」保存的值优先于配置文件。两者都没有指定时，沿用容器或系统的 <code>HTTP_PROXY</code>、<code>HTTPS_PROXY</code>、<code>ALL_PROXY</code>。设置页保存到 <code>data/network.json</code>（权限 <code>0600</code>），<code>lyra</code> 与 <code>lyra-watch</code> 共用；监控进程约 30 秒内应用新值。</p>
-<p><code>direct_hosts</code> 里的主机即使开了代理也直连。默认是国内歌词来源与它们的封面站点：代理是给境外服务找路的，国内来源本来通，绕一圈只会多一跳，还可能因为出口 IP 变了被拒。改成空数组可以让所有请求都走代理。</p>
-<p>回环地址、内网 IP、Docker 服务名，以及配置里指向内网的网易云 API / MusicBrainz 镜像会自动绕过代理，不受 <code>direct_hosts</code> 影响。</p>
+<h3 id="_5">按功能决定谁走代理<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h3>
+<p>代理多半跑在另一台机器上（笔记本上的代理软件）。那台机器一停代理，走代理的功能会一起失败——连本来直连就通的国内接口也一起挂掉。所以代理<strong>不是全局的</strong>，而是逐个功能开关：</p>
+<table>
+<thead>
+<tr>
+<th>功能</th>
+<th>开关</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>歌词来源 LRCLIB</td>
+<td><code>lrclib</code></td>
+<td>境外服务，默认走代理</td>
+</tr>
+<tr>
+<td>标签 MusicBrainz</td>
+<td><code>musicbrainz</code></td>
+<td>境外服务，默认走代理</td>
+</tr>
+<tr>
+<td>指纹 AcoustID</td>
+<td><code>acoustid</code></td>
+<td>境外服务，默认走代理</td>
+</tr>
+<tr>
+<td>按链接下载封面</td>
+<td><code>cover</code></td>
+<td>看链接是境内还是境外，默认直连</td>
+</tr>
+<tr>
+<td>大模型</td>
+<td><code>[ai] use_proxy</code></td>
+<td>地址是自己填的，默认走代理</td>
+</tr>
+</tbody>
+</table>
+<p>QQ 音乐、网易云音乐（含自建 API）、短链跳转这些<strong>国内来源始终直连</strong>，没有开关——它们不需要代理，绕一圈反而多一跳，还可能因出口 IP 变了被拒。</p>
+<p>设置页「网络代理」里可以逐项开关，并能看到代理端口通不通。保存到 <code>data/network.json</code>（权限 <code>0600</code>），<code>lyra</code> 与 <code>lyra-watch</code> 共用；监控进程约 30 秒内应用。</p>
+<p><code>direct_hosts</code> 里的主机即使开了代理也直连：自建的网易云 API、自建的 MusicBrainz 镜像都在内网，送到代理端再绕回来只会失败。</p>
+<p>未在设置页保存代理地址时，沿用容器或系统的 <code>HTTP_PROXY</code>、<code>HTTPS_PROXY</code>、<code>ALL_PROXY</code> 作为代理地址（同样只作用于开了开关的功能）。Lyra 不会改写自己的环境变量。</p>
 <h2 id="policy">处理策略 <code>[policy]</code><a class="headerlink" href="#policy" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2386,8 +2487,14 @@
 <a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="n">timeout_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30</span>
 <a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="n">max_requests_per_run</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">12</span>
 <a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="n">auto_clean_duplicates</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="n">use_proxy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </code></pre></div>
-<h3 id="_5">协议<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h3>
+<h3 id="_6">是否走代理<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h3>
+<p><code>use_proxy</code> 决定大模型请求是否经代理。大模型接口地址是自己填的：国内服务
+（如 <code>https://api.minimax.cn</code>）直连通常更稳，境外服务（如
+<code>https://api.openai.com</code>）需要代理。所以这个开关独立于其它功能。</p>
+<p>关掉它之后，大模型请求<strong>连环境变量里的代理也不走</strong>。</p>
+<h3 id="_7">协议<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -2428,8 +2535,8 @@
 <a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"claude-sonnet-4-5"</span>
 </code></pre></div>
 <p>OpenAI 官方的 base URL 需要包含 <code>/v1</code>；其他兼容服务如果要求不同的路径，直接填完整 endpoint 最稳妥。</p>
-<h3 id="_6">设置页<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h3>
-<p>「设置 → 大模型」可以配置协议、API 地址、模型 ID、Token、超时和单轮请求上限，并提供「测试连接」按钮。保存后立即生效，不需要重启。</p>
+<h3 id="_8">设置页<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h3>
+<p>「设置 → 大模型」可以配置协议、API 地址、模型 ID、Token、超时、单轮请求上限和「使用网络代理」，并提供「测试连接」按钮。保存后立即生效，不需要重启。</p>
 <p>Token 的处理：</p>
 <ul>
 <li>设置页保存的 Token 写入 <code>data/ai-token</code>，权限 <code>0600</code>，不进入数据库，也不会在接口里返回。</li>
@@ -2437,7 +2544,7 @@
 <li>配置文件里的 <code>api_key</code> 可以被设置页保存的 Token 覆盖；清除设置页 Token 后回退到配置文件。</li>
 </ul>
 <p>即使模型判断可以清理，程序仍要求确定性的歌词行覆盖条件，并把文件移入回收站而不是删除。</p>
-<h2 id="_7">环境变量<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
+<h2 id="_9">环境变量<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
@@ -2497,7 +2604,7 @@
 </tbody>
 </table>
 <p>环境变量只覆盖已有配置，不会自动创建新的受管根。多根部署请使用 <code>lyra.toml</code>。</p>
-<h2 id="_8">完整示例<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h2>
+<h2 id="_10">完整示例<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h2>
 <p>仓库中的 <a href="https://github.com/astralwaveorg/lyra/blob/main/lyra.example.toml"><code>lyra.example.toml</code></a> 是本地运行模板，<a href="https://github.com/astralwaveorg/lyra/blob/main/deploy/lyra.container.toml.example"><code>deploy/lyra.container.toml.example</code></a> 是容器模板。复制后按注释修改，不要直接改模板文件。</p>
 
 
