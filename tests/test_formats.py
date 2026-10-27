@@ -375,3 +375,23 @@ def test_mp3_musicbrainz_recording_id_is_decoded(tmp_path: Path) -> None:
     assert meta.tags.get("MUSICBRAINZ_TRACKID") == [
         "0b29b591-06e6-5c22-9e06-e987fa9c3dc9"
     ]
+
+
+def test_mp3能读出TXXX写法的MBID(tmp_path: Path) -> None:
+    """Picard 等工具把 MBID 写成 TXXX 帧——那才是社区通行的写法。
+
+    实际后果：只认 UFID 的话，明明写了 MBID 的 MP3 会被报成「缺 MBID」。
+    """
+    from mutagen.id3 import ID3, TXXX
+
+    source = Path(__file__).parent / "fixtures" / "audio" / "sample_v23.mp3"
+    target = tmp_path / "txxx_mbid.mp3"
+    target.write_bytes(source.read_bytes())
+    tags = ID3(target)
+    tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id",
+                  text="02df1d18-56a6-4ad6-9568-4352bf55d313"))
+    tags.save(target)
+    meta = read_audio_meta(target, tmp_path)
+    assert meta.tags.get("MUSICBRAINZ_TRACKID") == [
+        "02df1d18-56a6-4ad6-9568-4352bf55d313"
+    ]

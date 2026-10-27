@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -438,11 +439,19 @@ def _read_match_tags(handle: Any, fmt: MediaFormat) -> dict[str, list[str]]:
                     out[key] = values
                     break
         # MusicBrainz 的几个 ID 字段用的是专用帧，单独处理
-        for key, frame in _MBID_TO_ID3.items():
-            if frame in id3:
+        for key, frames in _MBID_TO_ID3.items():
+            for frame in frames:
+                if frame not in id3:
+                    continue
+                if frame.startswith("UFID:"):
+                    value = _ufid_to_uuid(id3[frame])
+                    if value:
+                        out[key] = [value]
+                        break
                 values = _id3_values(id3[frame])
                 if values:
                     out[key] = values
+                    break
         return out
 
     # Vorbis comment：键大小写不敏感
@@ -460,14 +469,52 @@ def _read_match_tags(handle: Any, fmt: MediaFormat) -> dict[str, list[str]]:
     return out
 
 
-# MusicBrainz 标签在 ID3 中的帧名
-_MBID_TO_ID3: dict[str, str] = {
-    "MUSICBRAINZ_TRACKID": "UFID:http://musicbrainz.org",
-    "MUSICBRAINZ_RELEASETRACKID": "TXXX:MusicBrainz Release Track Id",
-    "MUSICBRAINZ_ALBUMID": "TXXX:MusicBrainz Album Id",
-    "MUSICBRAINZ_ARTISTID": "TXXX:MusicBrainz Artist Id",
-    "MUSICBRAINZ_RELEASEGROUPID": "TXXX:MusicBrainz Release Group Id",
+# MusicBrainz 标签在 ID3 中的帧名。
+#
+# **一个字段可能有多个帧，必须都认。**
+# 社区工具（Picard、foobar2000 等）写的是 TXXX:MusicBrainz Track Id，
+# 而 MusicBrainz 早期的标准是 UFID:http://musicbrainz.org。
+# 只认 UFID 的话，本项目自己写出去的 TXXX 帧读不回来——
+# 实际后果：那首 MP3 明明有 MBID，却被报成「缺 MBID」。
+_MBID_TO_ID3: dict[str, tuple[str, ...]] = {
+    "MUSICBRAINZ_TRACKID": (
+        "TXXX:MusicBrainz Track Id",
+        "UFID:http://musicbrainz.org",
+    ),
+    "MUSICBRAINZ_RELEASETRACKID": ("TXXX:MusicBrainz Release Track Id",),
+    "MUSICBRAINZ_ALBUMID": ("TXXX:MusicBrainz Album Id",),
+    "MUSICBRAINZ_ARTISTID": ("TXXX:MusicBrainz Artist Id",),
+    "MUSICBRAINZ_RELEASEGROUPID": ("TXXX:MusicBrainz Release Group Id",),
 }
+
+
+def _ufid_to_uuid(frame: Any) -> str:
+    """UFID 帧 → MusicBrainz UUID 字符串。
+
+    MB 的 UUID 前 4 字节是「类型」（录音为 0），后 12 字节才是随机部分；
+    录音类型的类型位为 0，所以整段可以直接当 UUID 读。
+    也有工具把 UUID 直接写成 36 个 ASCII 字符，两种都要认。
+    """
+    data = getattr(frame, "data", None)
+    if not data:
+        return ""
+    if isinstance(data, (list, tuple)):
+        data = bytes(data[0]) if data else b""
+    if not isinstance(data, (bytes, bytearray)):
+        return ""
+    raw = bytes(data)
+    if len(raw) == 16:
+        try:
+            return str(uuid.UUID(bytes=raw))
+        except ValueError:
+            return ""
+    text = raw.decode("ascii", errors="ignore").strip()
+    if not text:
+        return ""
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return text
 
 
 def _id3_values(frame: Any) -> list[str]:
