@@ -49,6 +49,7 @@ docker compose up -d
 | `NPM_REGISTRY` | `https://registry.npmjs.org` | npm 源 |
 | `PIP_INDEX_URL` | `https://pypi.org/simple` | PyPI 源 |
 | `PIP_TRUSTED_HOST` | 空 | 自签或镜像源的 trusted-host |
+| `DEBIAN_MIRROR_HOST` | 空 | Debian 源主机名（如 `mirrors.aliyun.com`）；只换主机名，路径不变 |
 
 网络受限时可以在 `.env` 中覆盖，例如：
 
@@ -56,6 +57,7 @@ docker compose up -d
 NPM_REGISTRY=https://registry.npmmirror.com
 PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+DEBIAN_MIRROR_HOST=mirrors.aliyun.com
 ```
 
 ## 反向代理

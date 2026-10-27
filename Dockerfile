@@ -19,6 +19,9 @@ FROM python:3.12-slim
 
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_TRUSTED_HOST=
+# 可选：把 Debian 源换成国内镜像（只换主机名，路径保持不变）。
+# 不设就用官方源——上游用户不该被强制走某个地区的镜像。
+ARG DEBIAN_MIRROR_HOST=
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -28,7 +31,14 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # fpcalc provides Chromaprint fingerprints for AcoustID lookups.
-RUN apt-get update \
+RUN set -eux; \
+    if [ -n "${DEBIAN_MIRROR_HOST}" ]; then \
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do \
+            [ -f "$f" ] || continue; \
+            sed -i "s|deb\.debian\.org|${DEBIAN_MIRROR_HOST}|g; s|security\.debian\.org|${DEBIAN_MIRROR_HOST}|g" "$f"; \
+        done; \
+    fi; \
+    apt-get update \
  && apt-get install -y --no-install-recommends libchromaprint-tools \
  && rm -rf /var/lib/apt/lists/*
 
