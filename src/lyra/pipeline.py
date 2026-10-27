@@ -564,6 +564,7 @@ def run_fetch(
     limit: int | None = None,
     force: bool = False,
     only_rel_paths: set[str] | None = None,
+    artist: str = "",
     progress: ProgressFn = _noop,
     should_yield: Callable[[], bool] | None = None,
 ) -> RunSummary:
@@ -573,6 +574,9 @@ def run_fetch(
     循环在**当前曲目处理完之后**停下，把锁让给人工操作。
 
     `only_rel_paths` 用于监听事件触发的增量批次：只处理这些文件。
+
+    `artist` 按艺人筛选曲目（**包含**即命中，不要求完全相等）：
+    一个文件可能有多个艺人，选中其中任意一个都算命中。
     """
     started = time.monotonic()
     summary = RunSummary()
@@ -582,6 +586,11 @@ def run_fetch(
         store, cfg, root, audit,
         full_scan=only_rel_paths is None, progress=progress,
     )
+    if artist.strip():
+        targets = [
+            t for t in targets
+            if _artist_matches(artist.strip(), t.context.artists)
+        ]
     summary.scanned = len(targets)
 
     by_name = {p.name: p for p in providers}
@@ -658,6 +667,27 @@ def _has_valid_synced(store: StateStore, target: TrackTarget) -> bool:
         return False
     states = {row["embedded_state"], row["sidecar_state"]}
     return LyricsState.SYNCED.value in states
+
+
+def _artist_matches(wanted: str, artists: Sequence[str]) -> bool:
+    """选中的艺人是否命中这首曲目的艺人。
+
+    口径是**包含**：选「The Beatles」应当命中「The Beatles / Tony Sheridan」
+    这样的多艺人署名；反过来也一样（选一个更长的串也应当命中）。
+    比较前先做规范化（大小写、空白、标点差异不算不同人）。
+    """
+    from .match import normalize_text
+
+    target = normalize_text(wanted)
+    if not target:
+        return True
+    for artist in artists:
+        name = normalize_text(artist)
+        if not name:
+            continue
+        if name == target or target in name or name in target:
+            return True
+    return False
 
 
 def _fetch_one(

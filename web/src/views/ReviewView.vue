@@ -48,7 +48,9 @@ const loading = ref(false)
 const safeLoading = ref(false)
 const error = ref('')
 const page = ref(1)
-const size = 10
+/** 每页显示多少首。默认 20——复核时一屏能多看几首，少翻页。 */
+const size = ref(20)
+const sizeOptions = [20, 50, 100, 200]
 const busyId = ref(0)
 const batchBusy = ref(false)
 const orphanCount = ref(0)
@@ -59,13 +61,12 @@ const total = computed(() => data.value?.total ?? 0)
 /**
  * 一首歌里「系统推荐」的那一条。
  *
- * 不能只看分数：硬闸门（时长/版本/标题/艺人）没过的候选分数可能更高，
- * 却不该被推荐。服务端已把「安全」的排在前面，所以优先取第一条安全的，
- * 没有安全项时才退回最高分。
+ * 就是**分数最高**的那条（同分时按来源优先顺序，QQ 在前）——服务端已经
+ * 排好序了。硬闸门（时长/版本/标题/艺人）有没有过，仍然逐条显示在界面上，
+ * 由人决定采不采用。
  */
 function recommendedId(group: StagedGroup): number {
-  const safeOne = group.candidates.find((candidate) => candidate.safe)
-  return safeOne ? safeOne.id : group.best_id
+  return group.candidates[0]?.id ?? group.best_id
 }
 const groups = computed<StagedGroup[]>(() => data.value?.groups ?? [])
 
@@ -223,7 +224,7 @@ async function load() {
         state: 'needs_review',
         by_track: true,
         page: page.value,
-        size,
+        size: size.value,
         // 推荐项单独成一个标签，这里必须排除，否则同一首歌会出现两次
         exclude_safe: true,
       }),
@@ -238,6 +239,12 @@ async function load() {
     loading.value = false
     safeLoading.value = false
   }
+}
+
+/** 改了每页条数：回到第一页，否则可能停在一个已经不存在的页码上。 */
+function onSizeChange() {
+  page.value = 1
+  void load()
 }
 
 async function refresh() {
@@ -555,14 +562,16 @@ onMounted(async () => {
           icon="CircleCheck"
         />
 
-        <div v-if="total > size" class="pager">
+        <div v-if="total > 0" class="pager">
           <el-pagination
             v-model:current-page="page"
-            :page-size="size"
+            v-model:page-size="size"
+            :page-sizes="sizeOptions"
             :total="total"
-            layout="total, prev, pager, next"
+            layout="total, sizes, prev, pager, next"
             background
             @current-change="load"
+            @size-change="onSizeChange"
           />
         </div>
       </template>

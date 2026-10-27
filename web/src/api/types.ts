@@ -113,6 +113,7 @@ export type Track = {
 export type TrackPage = { total: number; page: number; size: number; items: Track[] }
 
 export type StagedCandidate = {
+  provider_rank?: number
   id: number
   provider: string
   provider_id: string
@@ -241,6 +242,8 @@ export type TrackCandidate = {
   reject_reason: string | null
   is_best: boolean
   is_chosen: boolean
+  /** 这份歌词有没有时间轴：true/false 已知，null 表示来源没给结论。 */
+  has_timeline?: boolean | null
   gates: Gate[]
 }
 
@@ -762,4 +765,10 @@ export type CleanupResult = {
   trashed: number
   errors: string[]
   ops: number[]
+}
+
+/** 曲库里的艺人（按标签统计），供「按艺人刮削」筛选。 */
+export type LibraryArtist = {
+  name: string
+  count: number
 }

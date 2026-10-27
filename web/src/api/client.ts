@@ -16,6 +16,7 @@ import type {
   OrganizeOp,
   OrganizePlan,
   OrganizeResult,
+  LibraryArtist,
   LyricsPreview,
   NetworkSettings,
   NetworkTestResult,
@@ -408,6 +409,10 @@ export const api = {
     request<TaskRecord>('/api/v1/tasks/tags-scan', json(payload)),
   tasks: (limit = 12) => request<{ items: TaskRecord[]; total: number }>(`/api/v1/tasks${query({ limit })}`),
   task: (id: string) => request<TaskRecord>(`/api/v1/tasks/${id}`),
+  libraryArtists: (root?: string) =>
+    request<{ total: number; items: LibraryArtist[] }>(
+      `/api/v1/library/artists${query({ root })}`,
+    ),
   libraryDirs: (root?: string) =>
     request<LibraryDirs>(`/api/v1/library/dirs${query({ root })}`),
 

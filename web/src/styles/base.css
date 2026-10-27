@@ -762,3 +762,13 @@ p {
   background: rgba(0, 0, 0, 0.52);
   z-index: 19;
 }
+
+/* 问题类型下拉：选项文字较长（「缺内嵌歌词 · 13」），默认宽度会截断，
+   面板加宽后一屏能多看到几条，少滚动。面板挂在 body 上，必须写全局。 */
+.issue-popper {
+  width: 320px !important;
+  max-width: none !important;
+}
+.issue-popper .el-select-dropdown__item {
+  white-space: nowrap;
+}

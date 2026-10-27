@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watchEffect } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api/client'
-import type { DirNode, LibraryDirs, TaskRecord, WatchStatus } from '@/api/types'
+import type { DirNode, LibraryArtist, LibraryDirs, TaskRecord, WatchStatus } from '@/api/types'
 import { useMeta } from '@/stores/meta'
 import { fmtAgo, fmtNumber } from '@/utils/format'
 import { TASK_KIND_LABEL, TASK_STATE_LABEL } from '@/utils/labels'
@@ -21,6 +21,10 @@ const dirs = ref<LibraryDirs | null>(null)
 const dirsLoading = ref(false)
 const scopePath = ref('')
 const limit = ref<number | undefined>(undefined)
+/** 按艺人筛选（单选）。包含即命中：一个文件有多个艺人时，选中任意一个都算。 */
+const artist = ref('')
+const artists = ref<LibraryArtist[]>([])
+const artistsLoading = ref(false)
 /** 筛选：只处理符合「歌词现状」的曲目，条件之间是与关系。 */
 const lyricState = ref<'all' | 'none' | 'unsynced'>('all')
 const missingSidecar = ref(false)
@@ -62,10 +66,24 @@ const filterHint = computed(() => {
   if (missingSidecar.value) sides.push('缺 .lrc 文件')
   if (missingEmbedded.value) sides.push('缺内嵌歌词')
   const stateActive = lyricState.value !== 'all'
-  if (!sides.length) return stateActive ? '只处理该状态的曲目' : ''
-  const sideText = sides.join('或')
-  return stateActive ? `状态符合，且${sideText}` : `只处理${sideText}的曲目`
+  const parts: string[] = []
+  if (stateActive) parts.push('状态符合')
+  if (sides.length) parts.push(sides.join('或'))
+  if (artist.value) parts.push(`艺人包含「${artist.value}」`)
+  if (!parts.length) return ''
+  return `只处理${parts.join('，且')}的曲目`
 })
+
+async function loadArtists() {
+  artistsLoading.value = true
+  try {
+    artists.value = (await api.libraryArtists()).items
+  } catch {
+    /* 艺人列表取不到不影响刮削 */
+  } finally {
+    artistsLoading.value = false
+  }
+}
 
 async function loadDirs() {
   dirsLoading.value = true
@@ -99,11 +117,12 @@ async function start(kind: 'fetch' | 'apply') {
   try {
     if (kind === 'fetch') {
       const filters =
-        lyricState.value !== 'all' || missingSidecar.value || missingEmbedded.value
+        lyricState.value !== 'all' || missingSidecar.value || missingEmbedded.value || artist.value
           ? {
               lyric_state: lyricState.value === 'all' ? undefined : lyricState.value,
               missing_sidecar: missingSidecar.value,
               missing_embedded: missingEmbedded.value,
+              artist: artist.value || undefined,
             }
           : undefined
       await api.startFetch({
@@ -155,6 +174,7 @@ function summaryOf(task: TaskRecord): string {
 const runningCount = computed(() => tasks.value.filter((task) => task.state === 'running').length)
 
 onMounted(async () => {
+  void loadArtists()
   await loadTasks()
   await loadWatch()
   poll = setInterval(() => {
@@ -218,6 +238,21 @@ onUnmounted(() => clearInterval(poll))
 
       <div class="field">
         <span class="field-label">筛选</span>
+        <el-select
+          v-model="artist"
+          class="artist-select"
+          filterable
+          clearable
+          placeholder="全部艺人"
+          :loading="artistsLoading"
+        >
+          <el-option
+            v-for="item in artists"
+            :key="item.name"
+            :label="`${item.name}（${item.count}）`"
+            :value="item.name"
+          />
+        </el-select>
         <el-select v-model="lyricState" class="state-select">
           <el-option label="全部曲目" value="all" />
           <el-option label="没有歌词" value="none" />
@@ -363,6 +398,10 @@ onUnmounted(() => clearInterval(poll))
 
 .limit {
   width: 130px;
+}
+
+.artist-select {
+  width: 260px;
 }
 
 .state-select {

@@ -131,7 +131,13 @@ async function afterChange() {
     </div>
     <div class="filter-group">
       <span class="filter-label">过滤</span>
-      <el-select v-model="issue" class="filter-select" placeholder="全部问题" clearable>
+      <el-select
+        v-model="issue"
+        class="filter-select issue-select"
+        popper-class="issue-popper"
+        placeholder="全部问题"
+        clearable
+      >
         <el-option
           v-for="kind in issueKinds"
           :key="kind.code"

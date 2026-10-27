@@ -1633,6 +1633,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         return _staged(
             state, state_filter=state_filter, page=page, size=size,
             by_track=by_track, exclude_safe=exclude_safe,
+            provider_order=list(cfg.providers.enabled),
         )
 
     @app.get("/api/v1/staged/safe-batch", dependencies=[Depends(require_auth)])
@@ -2820,7 +2821,12 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="未知的歌词状态筛选")
         missing_sidecar = bool(raw_filters.get("missing_sidecar"))
         missing_embedded = bool(raw_filters.get("missing_embedded"))
-        has_filters = bool(lyric_state or missing_sidecar or missing_embedded)
+        artist = str(raw_filters.get("artist") or "").strip()
+        # 「歌词现状」类筛选走数据库里的观测；艺人筛选走文件标签，
+        # 两者**不能混在一起算**：观测表要等第一次审计才有数据，
+        # 新拷进来的目录会因此被筛成空集。
+        has_lyric_filters = bool(lyric_state or missing_sidecar or missing_embedded)
+        has_filters = has_lyric_filters or bool(artist)
 
         from .pipeline import fill_sidecars, run_apply, run_fetch
         from .providers import create_providers
@@ -2865,7 +2871,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                         _dir_paths(root) if dir_prefix or payload.get("dir") is not None
                         else None
                     )
-                    if has_filters:
+                    if has_lyric_filters:
                         root_row = state.conn.execute(
                             "SELECT id FROM roots WHERE name=?", (root.name,)
                         ).fetchone()
@@ -2896,7 +2902,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                     s = run_fetch(
                         state, cfg, root, providers,
                         limit=int(limit) if limit else None, force=force,
-                        only_rel_paths=scope, progress=progress,
+                        only_rel_paths=scope, artist=artist, progress=progress,
                     )
                     entry: dict[str, Any] = {
                         "root": root.name, "dir": dir_prefix, "scanned": s.scanned,
@@ -3553,6 +3559,44 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         return _stats(cfg, refresh=refresh)
 
     # -- 文件浏览与预览 ---------------------------------------------------
+
+    @app.get("/api/v1/library/artists", dependencies=[Depends(require_auth)])
+    def library_artists(root: str | None = None) -> dict[str, Any]:
+        """列出曲库里的艺人，供「按艺人刮削」筛选。
+
+        读的是**文件标签**而不是目录名：目录名只是整理时的快照，
+        标签才是「这首歌的艺人是谁」。一个文件可能有多个艺人
+        （合唱、群星），这里按单个艺人分别计数。
+
+        遍历整个曲库要几秒，所以结果单独缓存（与统计同一档 TTL）。
+        """
+        roots = [r for r in cfg.enabled_roots if not root or r.name == root]
+        if not roots:
+            raise HTTPException(status_code=400, detail="没有匹配的受管根")
+
+        def compute() -> list[dict[str, Any]]:
+            from .audit import audit_root
+            from .match import build_context
+
+            counts: dict[str, int] = {}
+            for root_cfg in roots:
+                for track in audit_root(root_cfg).tracks:
+                    context = build_context(track.tags, track.audio.duration)
+                    for artist in context.artists:
+                        name = artist.strip()
+                        if name:
+                            counts[name] = counts.get(name, 0) + 1
+            return [
+                {"name": name, "count": count}
+                for name, count in sorted(
+                    counts.items(), key=lambda kv: (-kv[1], kv[0].lower())
+                )
+            ]
+
+        items = _STATS_CACHE.get_or_compute(
+            "artists:" + ",".join(r.name for r in roots), compute
+        )
+        return {"total": len(items), "items": items}
 
     @app.get("/api/v1/library/dirs", dependencies=[Depends(require_auth)])
     def library_dirs(root: str | None = None) -> dict[str, Any]:
@@ -4954,6 +4998,7 @@ def _staged(
     size: int,
     by_track: bool = False,
     exclude_safe: bool = False,
+    provider_order: list[str] | None = None,
 ) -> dict[str, Any]:
     where = "1=1" if not state_filter else "s.state = ?"
     params: list[Any] = [] if not state_filter else [state_filter]
@@ -5073,6 +5118,7 @@ def _staged(
     # 保留 items（兼容既有消费方），另给 groups 供界面按曲目展示。
     grouped: dict[str, dict[str, Any]] = {}
     order: list[str] = []
+    rank_of = {name: idx for idx, name in enumerate(provider_order or [])}
     for item in items:
         key = item["rel_path"]
         if key not in grouped:
@@ -5091,6 +5137,8 @@ def _staged(
             "provider_id": item["provider_id"],
             "score": item["score"],
             "duration_delta": item["duration_delta"],
+            # 来源优先顺序：分数相同时用它裁决（QQ 在前）
+            "provider_rank": rank_of.get(item["provider"], len(rank_of)),
             "reason": item.get("reason") or (
                 # 没有判定记录时**必须说明**，不能显示成空白——
                 # 空白会被理解成「没有任何问题」，而实际是「没有记录」。
@@ -5111,9 +5159,19 @@ def _staged(
             grp["best_score"] = item["score"]
 
     for grp in grouped.values():
-        # 同曲目的候选按分数降序；把「可安全接受」的排前面，
-        # 使用者的默认选择应当是风险最低的那个
-        grp["candidates"].sort(key=lambda c: (not c["safe"], -(c["score"] or 0)))
+        # 同曲目的候选按**分数降序**排列；分数相同才按来源优先顺序
+        # （配置里的 `providers.enabled` 顺序，QQ 在前）。
+        #
+        # 为什么不再把「安全」的排前面：使用者要的就是「分数最高的那条」，
+        # 实际案例里最优的 0.86 被当成不安全而推荐了 0.83 —— 看着像
+        # 系统推荐错了。安全与否仍然逐条显示在界面上，由人决定采不采用。
+        grp["candidates"].sort(
+            key=lambda c: (
+                -(c["score"] or 0),
+                c.get("provider_rank", 99),
+                c["id"],
+            )
+        )
         grp["safe_count"] = sum(1 for c in grp["candidates"] if c["safe"])
 
     return {

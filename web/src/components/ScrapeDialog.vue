@@ -36,9 +36,29 @@ const visible = computed({
 })
 
 const fileName = computed(() => splitPath(props.path).name)
-const options = computed<TrackCandidate[]>(() => data.value?.options ?? [])
+const allOptions = computed<TrackCandidate[]>(() => data.value?.options ?? [])
+/**
+ * 只显示**有时间轴**的候选。
+ *
+ * 没有时间轴的歌词写进播放器也用不了（Lyra 的自动流程本来就不写它们），
+ * 摆在列表里只会让人白点一次。来源能提前判断的（LRCLIB 的搜索结果带
+ * syncedLyrics 字段）直接排除；判断不了的照常显示，取词预览时会提示。
+ */
+const showNoTimeline = ref(false)
+const options = computed<TrackCandidate[]>(() =>
+  showNoTimeline.value
+    ? allOptions.value
+    : allOptions.value.filter((item) => item.has_timeline !== false),
+)
+const hiddenNoTimeline = computed(
+  () => allOptions.value.length - allOptions.value.filter((i) => i.has_timeline !== false).length,
+)
 const current = computed(() => options.value.find((item) => keyOf(item) === selected.value) ?? null)
 const existing = computed(() => data.value?.has_existing_lyrics ?? false)
+/** 预览到的歌词没有时间轴时要明确说：写进去也用不了。 */
+const previewNoTimeline = computed(
+  () => preview.value !== null && preview.value.synced === false,
+)
 
 function keyOf(item: { provider: string; provider_id: string }) {
   return `${item.provider}/${item.provider_id}`
@@ -60,7 +80,8 @@ async function load() {
   replaceExisting.value = false
   try {
     data.value = await api.trackCandidates({ root: props.root, path: props.path })
-    const first = data.value.options[0]
+    showNoTimeline.value = false
+    const first = options.value[0]
     if (first) {
       selected.value = keyOf(first)
       void loadPreview(first)
@@ -284,6 +305,13 @@ watch(
               {{ preview.synced ? '有时间轴' : '无时间轴' }} · {{ preview.line_count }} 行
             </span>
           </div>
+          <el-alert
+            v-if="previewNoTimeline"
+            title="这份歌词没有时间轴，写进播放器也用不了。建议换一个候选。"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
           <el-skeleton v-if="previewLoading" animated :rows="8" />
           <el-alert v-else-if="previewError" :title="previewError" type="warning" :closable="false" />
           <LyricsViewer v-else-if="preview" :lines="preview.lines" max-height="46vh" />
@@ -343,6 +371,19 @@ watch(
 </template>
 
 <style scoped>
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.link-btn:hover {
+  color: var(--text-1);
+}
+
 .loading {
   display: flex;
   flex-direction: column;
