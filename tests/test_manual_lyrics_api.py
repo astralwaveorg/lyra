@@ -110,6 +110,11 @@ def env(tmp_path: Path, flac_factory, monkeypatch):
             _LINKED_ID: RawLyrics(
                 provider="qq", provider_id=_LINKED_ID,
                 text="[00:01.00]来自来源的正文\n[00:02.00]第二行\n", synced=True),
+            # 末行落在音频结束之后：完整版的词配到了短版文件上。
+            "2": RawLyrics(
+                provider="qq", provider_id="2",
+                text="[00:01.00]来自来源的正文\n[09:00.00]末行超出音频\n",
+                synced=True),
         },
         calls=calls,
     )
@@ -200,6 +205,29 @@ def test_预览候选不存在时给出可重试的说明(env):
         "root": "lib", "path": "专辑/歌.flac", "provider": "qq", "provider_id": "999"})
     assert r.status_code == 404
     assert "重新查询候选" in r.json()["detail"]
+
+
+def test_预览说明时间轴有没有超出音频(env):
+    """时间轴超出音频长度时必须看得出来。
+
+    同一首歌的短版常常配着完整版的时间轴：内容对得上，末行却落在
+    音频结束之后。界面要在采用之前就摆出来——否则只会在写入后
+    看到一句「时间轴异常」，使用者根本不知道该换哪一条。
+    """
+    r = env.get("/api/v1/tracks/lyrics-preview", params={
+        "root": "lib", "path": "专辑/歌.flac", "provider": "qq", "provider_id": "2",
+        "by_id": "true"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["duration_seconds"], d
+    assert d["last_timestamp_ms"] == 540_000, d
+    assert d["overrun_seconds"] > 500, d
+
+    # 正常的那一条不该被误报
+    r2 = env.get("/api/v1/tracks/lyrics-preview", params={
+        "root": "lib", "path": "专辑/歌.flac", "provider": "qq", "provider_id": "1"})
+    d2 = r2.json()
+    assert d2["overrun_seconds"] == 0, d2
 
 
 def test_采用并写入会落盘且用来源正文(env):
@@ -351,11 +379,13 @@ def test_只写入人工选中的那一条(env):
     assert "superseded" in states.values(), states
 
 
-def test_重复采用同一份歌词算成功(env):
-    """文件里已经是这份歌词时，再点一次「采用并写入」不该报失败。
+def test_重复采用同一份歌词照样写入(env):
+    """文件里已经是这份歌词时，再点一次「采用并写入」要真的写进去。
 
-    旧实现里 `summary.applied == 0` 被当成失败，使用者看到红色报错，
-    实际目标状态早已达成。
+    旧实现把「内容一样」当成「无需重复写入」，使用者看着像写入失败。
+    而内容一样**不代表文件是对的**：同一首歌的短版配了完整版的时间轴
+    （末行超出音频几十秒）就是这种情况——内容指纹相同，时间轴却是错的。
+    人工点了「采用并写入」，要的就是落盘。
     """
     payload = {
         "root": "lib", "path": "专辑/歌.flac",
@@ -369,8 +399,31 @@ def test_重复采用同一份歌词算成功(env):
     assert second.status_code == 200, second.text
     applied = second.json()["applied"]
     assert applied["ok"] is True, applied
-    assert applied["written"] == 0
-    assert applied["satisfied"] == 1
+    # 这一次是真的写了进去，而不是「无需重复写入」
+    assert applied["written"] == 1, applied
+    assert applied["satisfied"] == 0, applied
+    # 回执要说清楚「写了，但内容本来一样」，不能让人以为白改了
+    assert "已强制写入" in applied["message"], applied
+
+
+def test_显式关闭强制时内容相同就跳过(env):
+    """不想重写时（force_rewrite=false）保留旧行为：内容一样就不写。"""
+    payload = {
+        "root": "lib", "path": "专辑/歌.flac",
+        "provider": "qq", "provider_id": "1", "apply": True,
+    }
+    first = env.post("/api/v1/tracks/apply-lyrics", json=payload)
+    assert first.status_code == 200, first.text
+
+    second = env.post(
+        "/api/v1/tracks/apply-lyrics",
+        json={**payload, "replace_existing": True, "force_rewrite": False},
+    )
+    assert second.status_code == 200, second.text
+    applied = second.json()["applied"]
+    assert applied["ok"] is True, applied
+    assert applied["written"] == 0, applied
+    assert applied["satisfied"] == 1, applied
     assert "已经是" in applied["message"]
 
 

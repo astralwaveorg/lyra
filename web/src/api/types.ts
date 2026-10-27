@@ -278,6 +278,12 @@ export type LyricsPreview = {
   has_translation: boolean
   line_count: number
   timestamp_count: number
+  /** 音频时长（秒）；取不到时为 null。 */
+  duration_seconds?: number | null
+  /** 末行时间戳（毫秒）；纯文本歌词没有时间轴时为 null。 */
+  last_timestamp_ms?: number | null
+  /** 时间轴超出音频的秒数；0 表示没超出，null 表示算不出来。 */
+  overrun_seconds?: number | null
   text: string
   lines: { ms: number | null; stamp: string; text: string }[]
 }

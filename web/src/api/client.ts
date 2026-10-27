@@ -183,6 +183,8 @@ export const api = {
     provider_id: string
     apply?: boolean
     replace_existing?: boolean
+    /** 内容相同也照写。默认 true（人工点了「采用并写入」就是要落盘）。 */
+    force_rewrite?: boolean
     by_id?: boolean
   }) =>
     request<{

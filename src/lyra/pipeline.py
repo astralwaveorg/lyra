@@ -1105,6 +1105,7 @@ def _apply_one(
     summary: RunSummary,
     *,
     force: bool = False,
+    force_rewrite: bool = False,
 ) -> bool:
     """写入单个文件的歌词，返回 True 表示确实写入了。
 
@@ -1113,6 +1114,9 @@ def _apply_one(
 
     `force` 表示这是**人工明确选定**的写入：放宽「纯文本歌词不算成功」
     这类自动策略的复核要求（见 `WritePlan.force`）。
+
+    `force_rewrite` 表示人工要求**即使内容相同也重写**（见
+    `WritePlan.force_rewrite`）。
     """
     abs_path = base / row["rel_path"]
     if not abs_path.is_file():
@@ -1157,6 +1161,7 @@ def _apply_one(
         original_tags=dict(meta.tags),
         reason=f"provider={row['provider']} id={row['provider_id']}",
         force=force,
+        force_rewrite=force_rewrite,
     )
     if already_satisfied(plan):
         store.set_staged_state(row["id"], "already_satisfied")
@@ -1810,6 +1815,7 @@ def run_apply(
     only_rel_paths: set[str] | None = None,
     only_staged_ids: set[int] | None = None,
     force: bool = False,
+    force_rewrite: bool = False,
     progress: ProgressFn = _noop,
     should_yield: Callable[[], bool] | None = None,
 ) -> RunSummary:
@@ -1823,6 +1829,8 @@ def run_apply(
     待写入歌词（历史遗留），全写一遍不但白写，最终内容还取决于迭代顺序。
 
     `force` 表示人工明确选定：放宽纯文本歌词的复核要求（见 `WritePlan.force`）。
+
+    `force_rewrite` 表示人工要求即使内容相同也重写（见 `WritePlan.force_rewrite`）。
     """
     started = time.monotonic()
     summary = RunSummary()
@@ -1864,7 +1872,10 @@ def run_apply(
         wrote = False
         for attempt in range(4):
             try:
-                wrote = _apply_one(store, cfg, base, backup_dir, row, summary, force=force)
+                wrote = _apply_one(
+                    store, cfg, base, backup_dir, row, summary,
+                    force=force, force_rewrite=force_rewrite,
+                )
                 break
             except sqlite3.OperationalError as exc:
                 message = str(exc).lower()

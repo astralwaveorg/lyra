@@ -59,6 +59,15 @@ const existing = computed(() => data.value?.has_existing_lyrics ?? false)
 const previewNoTimeline = computed(
   () => preview.value !== null && preview.value.synced === false,
 )
+/**
+ * 时间轴超出音频时长：这首歌的词是别的版本（多半是完整版）配的，
+ * 末行落在音频结束之后。写进去也还是「时间轴异常」，
+ * 所以要在采用之前就说清楚，而不是等写入后才发现不对。
+ */
+const previewOverrun = computed(() => {
+  const value = preview.value?.overrun_seconds
+  return typeof value === 'number' && value > 1 ? value : 0
+})
 
 function keyOf(item: { provider: string; provider_id: string }) {
   return `${item.provider}/${item.provider_id}`
@@ -254,7 +263,7 @@ watch(
 
       <div v-if="data.has_existing_lyrics" class="existing">
         <AppIcon name="WarningFilled" :size="14" />
-        <span>这份文件已经有歌词，写入会替换它。</span>
+        <span>这份文件已经有歌词，写入会替换它（内容相同也会重写一次）。</span>
       </div>
 
       <div class="split">
@@ -308,6 +317,13 @@ watch(
           <el-alert
             v-if="previewNoTimeline"
             title="这份歌词没有时间轴，写进播放器也用不了。建议换一个候选。"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+          <el-alert
+            v-else-if="previewOverrun"
+            :title="`这份歌词的时间轴超出音频 ${Math.round(previewOverrun)} 秒，多半是别的版本的词。写进去仍会算「时间轴异常」，建议换一个候选。`"
             type="warning"
             :closable="false"
             show-icon

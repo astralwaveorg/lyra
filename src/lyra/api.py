@@ -1992,11 +1992,24 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
 
         `by_id=true` 表示这是人工链接指定的候选（见 `_fetch_candidate_lyrics`）。
         """
-        root_cfg, _abs, rel = _locate_audio(cfg, root, path)
+        root_cfg, abs_path, rel = _locate_audio(cfg, root, path)
         raw = _fetch_candidate_lyrics(
             cfg, root_cfg, rel, provider, provider_id, allow_direct=by_id
         )
         parsed = parse_lrc(raw.text)
+        # 音频时长与歌词时间轴的关系。同一首歌的短版常常配了完整版的
+        # 时间轴——内容对得上，末行却超出音频几十秒。这种文件会被判
+        # 「时间轴异常」，而界面必须在采用之前就把它摆出来，
+        # 否则使用者只会看到一句「写入失败」。
+        duration: float | None = None
+        try:
+            duration = read_audio_meta(abs_path, root_cfg.resolved_path).info.duration
+        except Exception:  # noqa: BLE001 — 时长取不到不影响预览
+            duration = None
+        overrun: float | None = None
+        last_ms = parsed.last_timestamp_ms
+        if duration and duration > 0 and last_ms is not None:
+            overrun = max(0.0, (last_ms - int(duration * 1000)) / 1000.0)
         return {
             "provider": provider,
             "provider_id": provider_id,
@@ -2005,6 +2018,9 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             "has_translation": bool(raw.translation),
             "line_count": parsed.line_count,
             "timestamp_count": parsed.timestamp_count,
+            "duration_seconds": duration,
+            "last_timestamp_ms": last_ms,
+            "overrun_seconds": overrun,
             "text": raw.text,
             "lines": [
                 {"ms": ln.ms, "stamp": ln.stamp, "text": ln.text}
@@ -2027,6 +2043,11 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="必须提供 provider 与 provider_id")
         apply_now = bool(payload.get("apply", True))
         replace_existing = bool(payload.get("replace_existing"))
+        # 人工在界面上逐条选了候选并点了写入——那就是「要写进去」的意思。
+        # 默认强制：即便文件里已经是同一份歌词也照写一遍。内容指纹相同
+        # 不代表文件是对的（同一首歌的短版配了完整版的时间轴就是这种情况），
+        # 把「已经满足」当成拒绝写入，会让人以为操作失败。
+        force_rewrite = bool(payload.get("force_rewrite", True))
         if apply_now and not cfg.policy.write_enabled:
             raise HTTPException(
                 status_code=409,
@@ -2075,6 +2096,9 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             state="staged",
             origin="manual",
         )
+        # 文件里已经是这一份了吗？写完要如实告诉使用者，不能拿
+        # 「无需重复写入」当成功回执——那看着就像写入失败。
+        already_same = _lyrics_already_same(state, location_id, digest)
         # 同一位置的其它待写入行（历史抓取留下的）就此作废：
         # 人工只认他刚选中的这一条。留着它们，批量写入会把旧的那条也写一遍，
         # 最终内容取决于迭代顺序——那是不可接受的随机性。
@@ -2107,6 +2131,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 only_staged_ids={staged_id},
                 # 人工选定就是决定：即便这条歌词没有时间轴，也要写进去。
                 force=True,
+                # 内容相同也照写：人工点了「采用并写入」，要的就是落盘。
+                force_rewrite=force_rewrite,
                 progress=lambda _line: None,
             )
 
@@ -2118,7 +2144,11 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if failed:
             message = errors[0] if errors else "写入失败"
         elif written:
-            message = ""
+            message = (
+                "已强制写入（文件里原本就是这一份，内容与时间轴按这一条重写）"
+                if (force_rewrite and already_same)
+                else ""
+            )
         elif already:
             message = "这份文件里已经是选中的这份歌词，无需重复写入"
         else:
@@ -4306,6 +4336,28 @@ def _has_existing_lyrics(state: StateStore, location_id: int) -> bool:
     return (
         str(row["embedded_state"] or "") in _LYRICS_BEARING_STATES
         or str(row["sidecar_state"] or "") in _LYRICS_BEARING_STATES
+    )
+
+
+def _lyrics_already_same(state: StateStore, location_id: int, digest: str) -> bool:
+    """该位置最近一次观测里是否已经是**这一份**歌词（内容指纹相同）。
+
+    与 `_has_existing_lyrics` 的区别：那个只问「有没有歌词」，
+    这个问「是不是同一份」。写完要如实回执——「文件里本来就是这一份」
+    与「已经写好了」是两回事，混成一句会被当成写入失败。
+    """
+    if not digest:
+        return False
+    row = state.conn.execute(
+        "SELECT embedded_hash, sidecar_hash FROM lyric_observations "
+        "WHERE location_id=? ORDER BY observed_at DESC LIMIT 1",
+        (location_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    return digest in (
+        str(row["embedded_hash"] or ""),
+        str(row["sidecar_hash"] or ""),
     )
 
 

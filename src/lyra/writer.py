@@ -264,6 +264,19 @@ class WritePlan:
     音频哈希、非歌词标签这些**安全性**校验不受影响，照旧执行。
     """
 
+    force_rewrite: bool = False
+    """即便文件里已经是同一份歌词，也照写一遍。
+
+    「已经满足就不写」是为**批量**写入省掉几十 GB 无意义备份的。
+    人工在界面上逐条选定了某一条并点了写入，那就是决定：哪怕内容
+    一字不差也要真的落盘。
+
+    为什么内容相同也要写：判定用的是规范化后的内容指纹，而**时间轴
+    是否对得上这个文件**是另一回事。同一首歌的短版配了完整版的时间轴
+    （末行超出音频几十秒）时，内容指纹相同、时间轴却是错的——
+    这种文件必须能靠重写修好，否则「内容一样」的判定会把问题永久挡住。
+    """
+
     original_full_hash: str = ""
     original_audio_hash: str = ""
     original_tags: dict[str, list[str]] = field(default_factory=dict)
@@ -334,6 +347,10 @@ def already_satisfied(plan: WritePlan) -> bool:
     做一次 49 MB 备份，全库会凭空多出约 10 GB 无意义的备份数据。
     """
     if plan.clear_only:
+        return False
+
+    if plan.force_rewrite:
+        # 人工明确要求重写：内容一致也要落盘。
         return False
 
     expected = content_hash(plan.lyrics_text) if plan.lyrics_text else ""
