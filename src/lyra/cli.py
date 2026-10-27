@@ -270,6 +270,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_config_check(args: argparse.Namespace, cfg: Config) -> int:
+    # 设置页保存的大模型设置优先于配置文件；读不到就算了，不影响检查。
+    # **只读打开**：检查命令不该创建或迁移数据库。
+    ai_use_proxy = cfg.ai.use_proxy
+    ai_from_settings = False
+    db_path = cfg.storage.resolved_data_dir / "lyra.db"
+    if db_path.is_file():
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key='settings.ai'"
+                ).fetchone()
+            finally:
+                conn.close()
+            if row:
+                saved = json.loads(row[0])
+                if isinstance(saved, dict) and isinstance(saved.get("use_proxy"), bool):
+                    ai_use_proxy = bool(saved["use_proxy"])
+                    ai_from_settings = True
+        except Exception:  # noqa: BLE001 — 检查命令不该因为读不到数据库就失败
+            pass
+
     if args.json:
         print(json.dumps(cfg.to_dict(mask_secrets=True), ensure_ascii=False, indent=2))
         return 0
@@ -296,7 +320,10 @@ def cmd_config_check(args: argparse.Namespace, cfg: Config) -> int:
             name for name in sorted(cfg.network.use_proxy) if cfg.network.use_proxy[name]
         )
         print(f"  走代理的功能: {enabled or '无'}")
-        print(f"  大模型走代理: {'是' if cfg.ai.use_proxy else '否'}")
+        print(
+            f"  大模型走代理: {'是' if ai_use_proxy else '否'}"
+            + ("（设置页）" if ai_from_settings else "（配置文件）")
+        )
     elif cfg.network.proxy_source == "env":
         print("网络代理: 沿用环境变量")
     else:
