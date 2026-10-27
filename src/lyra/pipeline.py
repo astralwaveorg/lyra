@@ -1908,5 +1908,22 @@ def run_apply(
                 f"{type(exc).__name__}: {exc}"
             )
 
+    # 写入成功 → 这一首已经有歌词了 → 队列里为它留着的候选**已经没有意义**。
+    #
+    # 为什么必须在这里做：`supersede_obsolete_reviews` 以前只有定义、
+    # 从来没人调用，于是队列里越积越多「早就写好了、却还在等人决定」的条目
+    # ——实际 58 首里有 67 条属于这种（按曲目算）。使用者看到的是
+    # 「这 58 首还要我决定」，实际其中绝大多数已经不需要了。
+    #
+    # 放在观测刷新**之后**：判定依据是「此刻文件里有什么」，
+    # 观测没刷新就清理会误判。
+    if written_paths:
+        try:
+            store.supersede_obsolete_reviews()
+        except Exception as exc:  # noqa: BLE001 — 清理失败不影响写入结果
+            summary.errors.append(
+                f"写入已完成，但清理过期复核记录失败：{type(exc).__name__}: {exc}"
+            )
+
     summary.elapsed_seconds = time.monotonic() - started
     return summary

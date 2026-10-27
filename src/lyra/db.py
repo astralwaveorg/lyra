@@ -1111,23 +1111,24 @@ class StateStore:
         )
 
     def supersede_obsolete_reviews(self) -> int:
-        """把被更优候选取代的待审查记录标记为 superseded。
+        """把「这一首已经有歌词了」的待审查记录标记为 superseded。
 
         ## 为什么需要
 
-        实际发现：同一首曲目**已经用 0.910 的候选写入过**，却仍有一条
-        0.686 的旧 needs_review 记录挂在队列里。抽查 10 条「缺判定证据」
-        的记录，全都是这种情况——它们是历次抓取留下的过期候选，
+        实际发现：同一首曲目**已经写入过歌词**，却仍有一条旧的
+        `needs_review` 记录挂在队列里。抽查 10 条「缺判定证据」的记录，
+        全都是这种情况——它们是历次抓取留下的过期候选，
         对使用者是纯噪声：他以为这首歌还需要决定，实际早就写好了。
 
         ## 判定口径
 
-        同一 location 上存在**分数更高**的 applied 或 staged 记录时，
-        较低分的 needs_review 就是过期的。只比分数、不看来源——
-        来源之间没有优劣，只有匹配质量。
+        看的是**此刻文件里有什么**（`lyric_observations` 的最新一条）：
+        已经有**真歌词**（带时间轴或纯文本）就不再需要决定。
 
-        有意**保守**：只清理严格劣于已有记录的，同分或更高的保持不动，
-        避免把真正需要判断的项误清理掉。
+        有意**保守**：
+          - 只是「纯音乐占位文案」的曲目**保留**候选——占位不是「没有歌词」
+            的证据，真歌词仍然可能把它换掉；
+          - 「时间轴异常」的也保留——候选可能正是修好它的那一条。
         """
         cur = self.conn.execute(
             """
@@ -1135,10 +1136,14 @@ class StateStore:
                SET state = 'superseded'
              WHERE state = 'needs_review'
                AND EXISTS (
-                   SELECT 1 FROM staged_lyrics better
-                    WHERE better.location_id = staged_lyrics.location_id
-                      AND better.state IN ('applied', 'staged')
-                      AND COALESCE(better.score, 0) > COALESCE(staged_lyrics.score, 0)
+                   SELECT 1 FROM lyric_observations obs
+                    WHERE obs.location_id = staged_lyrics.location_id
+                      AND obs.id = (SELECT MAX(id) FROM lyric_observations
+                                    WHERE location_id = staged_lyrics.location_id)
+                      AND (
+                            obs.embedded_state IN ('synced', 'plain_text')
+                         OR obs.sidecar_state  IN ('synced', 'plain_text')
+                      )
                )
             """
         )

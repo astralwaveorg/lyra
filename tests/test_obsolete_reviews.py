@@ -40,10 +40,27 @@ def _stage(store, location_id, pid, score, state):
     store.conn.commit()
 
 
-def test_低分复核被已写入的更优候选取代(store_with_location):
+def _observe(store, location_id, embedded_state="synced", sidecar_state="synced"):
+    """写一条「此刻文件里有什么」的观测。"""
+    store.conn.execute(
+        "INSERT INTO lyric_observations(location_id, observed_at, embedded_state,"
+        " sidecar_state, sidecar_path, issues)"
+        " VALUES(?,?,?,?,?,?)",
+        (location_id, time.time(), embedded_state, sidecar_state, None, "[]"),
+    )
+    store.conn.commit()
+
+
+def test_已经有歌词的曲目不再留在复核队列(store_with_location):
+    """实际：曲库整理完之后，队列里 58 首有 67 条属于「早就写好了」。
+
+    使用者看到的是「这 58 首还要我决定」，实际其中绝大多数不需要——
+    队列一旦掺了这种噪声，人就不再看它了。
+    """
     store, location_id = store_with_location
     _stage(store, location_id, "good", 0.91, "applied")
     _stage(store, location_id, "stale", 0.69, "needs_review")
+    _observe(store, location_id)
 
     assert store.supersede_obsolete_reviews() == 1
 
@@ -51,29 +68,33 @@ def test_低分复核被已写入的更优候选取代(store_with_location):
         r["provider_id"]: r["state"]
         for r in store.conn.execute("SELECT provider_id, state FROM staged_lyrics")
     }
-    assert states["good"] == "applied", "更优的那条不该被动到"
+    assert states["good"] == "applied", "已经写入的那条不该被动到"
     assert states["stale"] == "superseded"
 
 
-def test_同分不清理(store_with_location):
-    """只清理**严格劣于**已有记录的。同分可能是不同来源的合理候选。"""
+def test_只有占位文案的曲目保留候选(store_with_location):
+    """占位不是「没有歌词」的证据——真歌词仍可能把它换掉，候选要留着。"""
     store, location_id = store_with_location
-    _stage(store, location_id, "a", 0.80, "applied")
-    _stage(store, location_id, "b", 0.80, "needs_review")
+    _stage(store, location_id, "ph", None, "applied")
+    _stage(store, location_id, "cand", 0.80, "needs_review")
+    _observe(store, location_id, embedded_state="placeholder", sidecar_state="placeholder")
 
     assert store.supersede_obsolete_reviews() == 0
 
 
-def test_高分复核不被低分已写入取代(store_with_location):
-    """反过来不成立：待复核的分更高，说明它可能是更好的选择，要留给人判断。"""
+def test_时间轴异常的曲目保留候选(store_with_location):
+    """候选可能正是修好「时间轴异常」的那一条。"""
     store, location_id = store_with_location
-    _stage(store, location_id, "low", 0.60, "applied")
-    _stage(store, location_id, "high", 0.90, "needs_review")
+    _stage(store, location_id, "bad", None, "applied")
+    _stage(store, location_id, "cand", 0.80, "needs_review")
+    _observe(store, location_id, embedded_state="synced_suspicious",
+             sidecar_state="synced_suspicious")
 
     assert store.supersede_obsolete_reviews() == 0
 
 
-def test_没有更优记录时不动(store_with_location):
+def test_还没有歌词时不动(store_with_location):
     store, location_id = store_with_location
     _stage(store, location_id, "only", 0.70, "needs_review")
+    _observe(store, location_id, embedded_state="absent", sidecar_state="absent")
     assert store.supersede_obsolete_reviews() == 0
