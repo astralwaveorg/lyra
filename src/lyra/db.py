@@ -32,7 +32,7 @@ __all__ = [
     "TransactionState",
 ]
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class DatabaseError(Exception):
@@ -541,6 +541,16 @@ CREATE TABLE organize_plans (
 CREATE INDEX idx_organize_plans_at ON organize_plans(created_at DESC);
 """
 
+_MIGRATION_13 = """
+-- 用户手动忽略的重复组。
+--
+-- 之前「忽略这组」是直接删行，下次扫描整体重建时又原样回来，等于没忽略。
+-- 改成在组上记一个 dismissed_at：扫描重建时按 group_key 把忽略状态带过去，
+-- 组里的文件组合变了（group_key 变）就重新判断。恢复时清空这个时间戳。
+ALTER TABLE dedupe_groups ADD COLUMN dismissed_at REAL;
+CREATE INDEX idx_dedupe_groups_dismissed ON dedupe_groups(root_id, dismissed_at);
+"""
+
 _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -554,6 +564,7 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (10, _MIGRATION_10),
     (11, _MIGRATION_11),
     (12, _MIGRATION_12),
+    (13, _MIGRATION_13),
 )
 
 
@@ -2060,14 +2071,27 @@ class StateStore:
 
         为什么整体替换而不是增量合并：组是「当前磁盘事实」的投影。
         文件被删除或改名后，旧组继续留着只会让用户点进一个不存在的文件。
+
+        用户手动忽略过的组要留在这个状态里：按 group_key（分类 + 组内文件
+        集合的指纹）把 dismissed_at 带过去。文件集合变了 group_key 就变，
+        那一组会重新出现、重新判断。
         """
         now = time.time()
+        dismissed = {
+            str(row["group_key"]): row["dismissed_at"]
+            for row in self.conn.execute(
+                "SELECT group_key, dismissed_at FROM dedupe_groups "
+                "WHERE root_id=? AND dismissed_at IS NOT NULL",
+                (root_id,),
+            )
+        }
         with self.transaction() as tx:
             tx.execute("DELETE FROM dedupe_groups WHERE root_id=?", (root_id,))
             for group in groups:
                 tx.execute(
                     "INSERT INTO dedupe_groups(root_id, group_key, kind, keep_rel_path, "
-                    "keep_reason, items_json, found_at) VALUES(?,?,?,?,?,?,?)",
+                    "keep_reason, items_json, found_at, dismissed_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                     (
                         root_id,
                         str(group["group_key"]),
@@ -2076,15 +2100,22 @@ class StateStore:
                         str(group["keep_reason"]),
                         json.dumps(group["items"], ensure_ascii=False),
                         now,
+                        dismissed.get(str(group["group_key"])),
                     ),
                 )
         self.conn.commit()
 
-    def iter_dedupe_groups(self) -> Iterator[sqlite3.Row]:
-        yield from self.conn.execute(
+    def iter_dedupe_groups(
+        self, *, include_dismissed: bool = False
+    ) -> Iterator[sqlite3.Row]:
+        sql = (
             "SELECT g.*, r.name AS root_name FROM dedupe_groups g "
-            "JOIN roots r ON r.id=g.root_id ORDER BY g.found_at DESC, g.id"
+            "JOIN roots r ON r.id=g.root_id"
         )
+        if not include_dismissed:
+            sql += " WHERE g.dismissed_at IS NULL"
+        sql += " ORDER BY g.found_at DESC, g.id"
+        yield from self.conn.execute(sql)
 
     def dedupe_group(self, group_id: int) -> sqlite3.Row | None:
         return self.conn.execute(
@@ -2109,7 +2140,24 @@ class StateStore:
         self.conn.commit()
 
     def dismiss_dedupe_group(self, group_id: int) -> bool:
-        cur = self.conn.execute("DELETE FROM dedupe_groups WHERE id=?", (group_id,))
+        """把一组标记为已忽略。
+
+        之前这里是直接删行，下次扫描整体重建时又原样回来，等于没忽略。
+        现在记一个 dismissed_at，扫描重建时按 group_key 带过去。
+        """
+        cur = self.conn.execute(
+            "UPDATE dedupe_groups SET dismissed_at=? WHERE id=? AND dismissed_at IS NULL",
+            (time.time(), group_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def restore_dedupe_group(self, group_id: int) -> bool:
+        """取消忽略，这一组重新回到待处理列表。"""
+        cur = self.conn.execute(
+            "UPDATE dedupe_groups SET dismissed_at=NULL WHERE id=? AND dismissed_at IS NOT NULL",
+            (group_id,),
+        )
         self.conn.commit()
         return cur.rowcount > 0
 

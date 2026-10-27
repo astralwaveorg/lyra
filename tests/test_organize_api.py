@@ -130,6 +130,67 @@ def test_duplicate_groups_and_delete_undo(client, flac_factory) -> None:
     assert (lib / victim).is_file()
 
 
+def test_dedupe_dismiss_survives_rescan_and_can_restore(
+    client, flac_factory
+) -> None:
+    """忽略的组再扫一次也不该回来，恢复后重新出现在待处理列表。"""
+    from lyra.db import open_store
+
+    lib = client.lib
+    flac_factory(
+        lib / "副本" / "copy.flac",
+        entries=(("TITLE", "童年时"), ("ARTIST", "张国荣"), ("ALBUM", "Salute")),
+    )
+    store = open_store(client.cfg.storage.resolved_data_dir)
+    try:
+        scan_duplicates(store, client.cfg, client.cfg.roots)
+    finally:
+        store.close()
+
+    data = client.get("/api/v1/dedupe/groups").json()
+    group = data["groups"][0]
+    assert client.post(f"/api/v1/dedupe/groups/{group['id']}/dismiss").status_code == 200
+    assert client.get("/api/v1/dedupe/groups").json()["groups"] == []
+
+    store = open_store(client.cfg.storage.resolved_data_dir)
+    try:
+        scan_duplicates(store, client.cfg, client.cfg.roots)
+    finally:
+        store.close()
+    after = client.get("/api/v1/dedupe/groups").json()
+    assert after["groups"] == [], "忽略的组不该在扫描后回来"
+    assert len(after["dismissed"]) == 1
+
+    dismissed = after["dismissed"][0]
+    assert client.post(f"/api/v1/dedupe/groups/{dismissed['id']}/restore").status_code == 200
+    assert len(client.get("/api/v1/dedupe/groups").json()["groups"]) == 1
+
+
+def test_dedupe_delete_can_target_the_recommended_keep(client, flac_factory) -> None:
+    """人工改选：建议保留的那一份也能删，判错了要能改。"""
+    from lyra.db import open_store
+
+    lib = client.lib
+    flac_factory(
+        lib / "副本" / "copy.flac",
+        entries=(("TITLE", "童年时"), ("ARTIST", "张国荣"), ("ALBUM", "Salute")),
+    )
+    store = open_store(client.cfg.storage.resolved_data_dir)
+    try:
+        scan_duplicates(store, client.cfg, client.cfg.roots)
+    finally:
+        store.close()
+
+    group = client.get("/api/v1/dedupe/groups").json()["groups"][0]
+    keep = group["keep_rel_path"]
+    result = client.post(
+        "/api/v1/dedupe/delete",
+        json={"items": [{"group_id": group["id"], "path": keep}]},
+    ).json()
+    assert result["deleted"] == 1, result
+    assert not (lib / keep).exists()
+
+
 def test_dedupe_bulk_delete_by_kind_is_scoped(client, flac_factory) -> None:
     """按分类一键删除只处理该分类，参照项与其他分类不受影响。"""
     from lyra.db import open_store

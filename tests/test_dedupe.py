@@ -265,6 +265,85 @@ def test_bulk_delete_rejects_reference_and_keep(
         store.close()
 
 
+def test_manual_selection_can_delete_the_recommended_keep(
+    tmp_path: Path, flac_factory
+) -> None:
+    """判断错了要能手动改：人工选中的那份即使原本建议保留也能删。"""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    flac_factory(lib / "a.flac", entries=(("TITLE", "歌"), ("ARTIST", "甲")))
+    flac_factory(lib / "b.flac", entries=(("TITLE", "歌"), ("ARTIST", "甲")))
+    cfg = _cfg(tmp_path, lib)
+    store = open_store(tmp_path / "data")
+    try:
+        dedupe.scan_duplicates(store, cfg, cfg.roots)
+        group = next(store.iter_dedupe_groups())
+        import json
+
+        items = json.loads(group["items_json"])
+        keep = str(group["keep_rel_path"])
+        victim = next(
+            item["rel_path"] for item in items if item["rel_path"] != keep
+        )
+        result = dedupe.delete_duplicates(store, cfg, cfg.roots[0], group, [keep])
+        assert result["deleted"] == 1, result
+        assert not (lib / keep).exists()
+        assert (lib / victim).is_file()
+    finally:
+        store.close()
+
+
+def test_manual_selection_still_needs_one_copy(
+    tmp_path: Path, flac_factory
+) -> None:
+    """人工改选也不能把整组删光。"""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    flac_factory(lib / "a.flac", entries=(("TITLE", "歌"), ("ARTIST", "甲")))
+    flac_factory(lib / "b.flac", entries=(("TITLE", "歌"), ("ARTIST", "甲")))
+    cfg = _cfg(tmp_path, lib)
+    store = open_store(tmp_path / "data")
+    try:
+        dedupe.scan_duplicates(store, cfg, cfg.roots)
+        group = next(store.iter_dedupe_groups())
+        import json
+
+        rels = [item["rel_path"] for item in json.loads(group["items_json"])]
+        result = dedupe.delete_duplicates(store, cfg, cfg.roots[0], group, rels)
+        assert not result["ok"]
+        assert result["deleted"] == 0
+        assert all((lib / rel).is_file() for rel in rels)
+    finally:
+        store.close()
+
+
+def test_dismissed_group_stays_hidden_after_rescan(
+    tmp_path: Path, flac_factory
+) -> None:
+    """忽略要一直有效：再扫一次也不能自己冒出来。"""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    flac_factory(lib / "a.flac", entries=(("TITLE", "歌"), ("ARTIST", "甲")))
+    flac_factory(lib / "b.flac", entries=(("TITLE", "歌"), ("ARTIST", "甲")))
+    cfg = _cfg(tmp_path, lib)
+    store = open_store(tmp_path / "data")
+    try:
+        dedupe.scan_duplicates(store, cfg, cfg.roots)
+        group = next(store.iter_dedupe_groups())
+        assert store.dismiss_dedupe_group(int(group["id"]))
+        assert not list(store.iter_dedupe_groups())
+
+        dedupe.scan_duplicates(store, cfg, cfg.roots)
+        assert not list(store.iter_dedupe_groups()), "忽略的组不该在扫描后回来"
+        dismissed = list(store.iter_dedupe_groups(include_dismissed=True))
+        assert len(dismissed) == 1
+
+        assert store.restore_dedupe_group(int(dismissed[0]["id"]))
+        assert len(list(store.iter_dedupe_groups())) == 1
+    finally:
+        store.close()
+
+
 def test_similar_duration_span_is_not_chained() -> None:
     """1/3/5 秒不能靠相邻差被串成一组；整组跨度必须 <= 2 秒。"""
     from lyra.dedupe import _build_groups

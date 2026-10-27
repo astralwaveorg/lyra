@@ -466,6 +466,8 @@ export const api = {
     ),
   dedupeDismiss: (groupId: number) =>
     request<{ ok: boolean }>(`/api/v1/dedupe/groups/${groupId}/dismiss`, json({})),
+  dedupeRestore: (groupId: number) =>
+    request<{ ok: boolean }>(`/api/v1/dedupe/groups/${groupId}/restore`, json({})),
   dedupeDeleteSelected: (items: { group_id: number; path: string }[]) =>
     request<{ ok: boolean; deleted: number; errors: string[]; batch_ids: string[] }>(
       '/api/v1/dedupe/delete',

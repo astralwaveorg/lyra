@@ -2275,32 +2275,39 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         _invalidate_caches()
         return result
 
+    def _dedupe_group_payload(row: Any) -> dict[str, Any]:
+        try:
+            items = json.loads(str(row["items_json"]))
+        except (TypeError, ValueError):
+            items = []
+        if not isinstance(items, list):
+            items = []
+        return {
+            "id": int(row["id"]),
+            "root": str(row["root_name"]),
+            "kind": str(row["kind"]),
+            "keep_rel_path": str(row["keep_rel_path"]),
+            "keep_reason": str(row["keep_reason"]),
+            "items": items,
+            "found_at": float(row["found_at"] or 0),
+            "dismissed_at": float(row["dismissed_at"] or 0) or None,
+        }
+
     @app.get("/api/v1/dedupe/groups", dependencies=[Depends(require_auth)])
     def dedupe_groups() -> dict[str, Any]:
         groups = []
+        dismissed = []
         duplicates = 0
-        for row in state.iter_dedupe_groups():
-            try:
-                items = json.loads(str(row["items_json"]))
-            except (TypeError, ValueError):
-                items = []
-            if not isinstance(items, list):
-                items = []
+        for row in state.iter_dedupe_groups(include_dismissed=True):
+            payload = _dedupe_group_payload(row)
+            if payload["dismissed_at"]:
+                dismissed.append(payload)
+                continue
             duplicates += sum(
-                1 for item in items
+                1 for item in payload["items"]
                 if isinstance(item, dict) and item.get("suggested_delete")
             )
-            groups.append(
-                {
-                    "id": int(row["id"]),
-                    "root": str(row["root_name"]),
-                    "kind": str(row["kind"]),
-                    "keep_rel_path": str(row["keep_rel_path"]),
-                    "keep_reason": str(row["keep_reason"]),
-                    "items": items,
-                    "found_at": float(row["found_at"] or 0),
-                }
-            )
+            groups.append(payload)
         raw = state.get_meta("dedupe.last_scan_summary")
         last = {}
         if raw:
@@ -2310,6 +2317,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 last = {}
         return {
             "groups": groups,
+            "dismissed": dismissed,
             "duplicates": duplicates,
             "last_scan_at": float(state.get_meta("dedupe.last_scan_at") or 0) or None,
             "last_scan": last,
@@ -2323,6 +2331,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         row = state.dedupe_group(group_id)
         if row is None:
             raise HTTPException(status_code=404, detail="重复组不存在，请重新扫描")
+        if row["dismissed_at"]:
+            raise HTTPException(status_code=404, detail="这一组已被忽略，先恢复再处理")
         root = next((r for r in cfg.roots if r.name == row["root_name"]), None)
         if root is None:
             raise HTTPException(status_code=400, detail="该记录所属受管根当前未配置")
@@ -2399,8 +2409,16 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
 
     @app.post("/api/v1/dedupe/groups/{group_id}/dismiss", dependencies=[Depends(require_auth)])
     def dedupe_dismiss(group_id: int) -> dict[str, Any]:
+        """忽略这一组。忽略会一直有效，直到组里的文件组合发生变化。"""
         if not state.dismiss_dedupe_group(group_id):
             raise HTTPException(status_code=404, detail="重复组不存在")
+        return {"ok": True}
+
+    @app.post("/api/v1/dedupe/groups/{group_id}/restore", dependencies=[Depends(require_auth)])
+    def dedupe_restore(group_id: int) -> dict[str, Any]:
+        """取消忽略，这一组重新回到待处理列表。"""
+        if not state.restore_dedupe_group(group_id):
+            raise HTTPException(status_code=404, detail="重复组不存在或没有被忽略")
         return {"ok": True}
 
     @app.post("/api/v1/tasks/dedupe-scan", dependencies=[Depends(require_auth)])

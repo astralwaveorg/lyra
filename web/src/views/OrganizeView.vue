@@ -73,6 +73,7 @@ const visibleGroups = computed(() =>
     (group) => !kindFilter.value || group.kind === kindFilter.value,
   ),
 )
+const dismissedGroups = computed(() => dedupe.value?.dismissed ?? [])
 
 const kindStats = computed(() => {
   const stats: Record<
@@ -99,17 +100,33 @@ const kindStats = computed(() => {
 
 const selectedEntries = computed(() => {
   const out: { group: DedupeGroup; item: DedupeGroup['items'][number] }[] = []
-  for (const group of visibleGroups.value) {
+  // 统计与批量删除都按「全部组」算，不受上面的分类筛选影响：
+  // 筛选只是看哪几组，勾选才是要处理什么。
+  for (const group of dedupe.value?.groups ?? []) {
     const chosen = new Set(selections.value[group.id] ?? [])
     for (const item of group.items) {
       if (!chosen.has(item.rel_path)) continue
-      if (item.reference || item.rel_path === group.keep_rel_path) continue
+      // 人工可以改选应用原本建议保留的那一份；参照项永远不参与删除。
+      if (item.reference) continue
       out.push({ group, item })
     }
   }
   return out
 })
 const selectedCount = computed(() => selectedEntries.value.length)
+/** 组内被勾选、但应用原本建议保留的份数；用于在确认框里提示用户。 */
+const overridingKeeps = computed(() =>
+  selectedEntries.value.filter(
+    (entry) => entry.item.rel_path === entry.group.keep_rel_path,
+  ).length,
+)
+/** 会把整组删光的组：每组至少要留一份。 */
+const groupsFullyPicked = computed(() =>
+  (dedupe.value?.groups ?? []).filter((group) => {
+    const chosen = itemsToDelete(group)
+    return chosen.length > 0 && chosen.length >= group.items.length
+  }),
+)
 
 const needsReclassify = computed(() =>
   (dedupe.value?.groups ?? []).some((group) =>
@@ -134,10 +151,15 @@ async function loadDupes() {
   loadingDupes.value = true
   try {
     dedupe.value = await api.dedupeGroups()
-    // 不默认勾选任何项：同一页面上有「全部」和三个分类，
-    // 自动全选会让「删除所选」变成一次跨分类的大删除。
-    // 建议项仍用标签标出，选择由「全选当前分类」或分类一键删除完成。
+    // 「建议删除」的默认勾上：判断对了直接批量处理，判断错了把勾去掉。
+    // 「建议保留」的默认不勾，但可以手动勾——判断错了要能改选删哪一份。
     selections.value = {}
+    for (const group of dedupe.value.groups) {
+      const paths = group.items
+        .filter((item) => item.suggested_delete && !item.reference)
+        .map((item) => item.rel_path)
+      if (paths.length) selections.value[group.id] = paths
+    }
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '重复检测加载失败')
   } finally {
@@ -238,10 +260,19 @@ async function scanDupes() {
 
 function toggleItem(group: DedupeGroup, relPath: string, checked: boolean) {
   const item = group.items.find((entry) => entry.rel_path === relPath)
-  if (!item || item.reference || !item.suggested_delete || relPath === group.keep_rel_path) return
+  // 建议保留的那一份也允许勾选：判断错了要能手动改。参照项不参与删除。
+  if (!item || item.reference) return
   const current = new Set(selections.value[group.id] ?? [])
-  if (checked) current.add(relPath)
-  else current.delete(relPath)
+  if (checked) {
+    // 勾上「建议保留」的那一份，等于说「判断错了，我要删这份」。
+    // 同组其余的取消勾选，这组才留得住一份，不会变成整组删光。
+    if (relPath === group.keep_rel_path) {
+      current.clear()
+    }
+    current.add(relPath)
+  } else {
+    current.delete(relPath)
+  }
   selections.value = { ...selections.value, [group.id]: [...current] }
 }
 
@@ -249,18 +280,19 @@ function itemsToDelete(group: DedupeGroup) {
   return group.items.filter(
     (item) =>
       (selections.value[group.id] ?? []).includes(item.rel_path) &&
-      !item.reference &&
-      item.suggested_delete &&
-      item.rel_path !== group.keep_rel_path,
+      !item.reference,
   )
 }
 
 function selectVisibleSuggested() {
-  const next: Record<number, string[]> = {}
+  // 只补当前分类里没勾的，不动其它分类已经勾好的。
+  const next: Record<number, string[]> = { ...selections.value }
   for (const group of visibleGroups.value) {
-    next[group.id] = group.items
-      .filter((item) => item.suggested_delete && !item.reference)
-      .map((item) => item.rel_path)
+    const current = new Set(next[group.id] ?? [])
+    for (const item of group.items) {
+      if (item.suggested_delete && !item.reference) current.add(item.rel_path)
+    }
+    next[group.id] = [...current]
   }
   selections.value = next
 }
@@ -285,11 +317,22 @@ async function deleteSelected() {
     ElMessage.warning('先勾选要移入回收站的副本')
     return
   }
+  if (groupsFullyPicked.value.length) {
+    ElMessage.warning(
+      `有 ${groupsFullyPicked.value.length} 组会被整组删除，每组至少要保留一份`,
+    )
+    return
+  }
   const summary = selectedKindSummary()
+  const keepNote =
+    overridingKeeps.value > 0
+      ? `其中 ${overridingKeeps.value} 份是原本建议保留的，你改选了它们。\n`
+      : ''
   try {
     await ElMessageBox.confirm(
       `将删除 ${entries.length} 个已勾选副本（${summary}）。\n` +
-        '参照项、建议保留项和其他分类的文件不会被连带删除；删除后可在整理日志批量撤销。',
+        keepNote +
+        '其他分类的参照项不会被删除；删除后可在整理日志批量撤销。',
       '确认删除所选副本',
       {
         confirmButtonText: '移入回收站',
@@ -393,7 +436,17 @@ async function removeSelected(group: DedupeGroup) {
 async function dismiss(group: DedupeGroup) {
   try {
     await api.dedupeDismiss(group.id)
-    ElMessage.success('已忽略这组，下次扫描会重新判断')
+    ElMessage.success('已忽略这组，之后的扫描不会再列出来')
+    await loadDupes()
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+  }
+}
+
+async function restore(group: DedupeGroup) {
+  try {
+    await api.dedupeRestore(group.id)
+    ElMessage.success('已恢复，这组重新回到待处理列表')
     await loadDupes()
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '操作失败')
@@ -756,7 +809,8 @@ onMounted(async () => {
 
     <div class="dedupe-bar">
       <span class="cell-meta">
-        当前 {{ visibleGroups.length }} 组 · 已选 {{ selectedCount }} 个
+        共 {{ dedupe?.groups.length ?? 0 }} 组<template v-if="kindFilter">
+          · 当前显示 {{ visibleGroups.length }} 组</template> · 已选 {{ selectedCount }} 个
         <template v-if="kindFilter">
           · 本分类建议删除 {{ kindStats[kindFilter].deletable }} 个
         </template>
@@ -777,13 +831,12 @@ onMounted(async () => {
         </el-button>
         <el-button
           size="small"
-          type="primary"
-          plain
+          type="danger"
           :loading="bulkDeleting"
           :disabled="!selectedCount || needsReclassify"
           @click="deleteSelected"
         >
-          删除所选（{{ selectedCount }}）
+          批量删除所选（{{ selectedCount }}）
         </el-button>
       </div>
     </div>
@@ -819,22 +872,46 @@ onMounted(async () => {
           >
             <div class="dup-head">
               <el-checkbox
-                v-if="item.suggested_delete && !item.reference && item.rel_path !== group.keep_rel_path"
+                v-if="!item.reference"
                 :model-value="(selections[group.id] ?? []).includes(item.rel_path)"
                 @change="toggleItem(group, item.rel_path, Boolean($event))"
               >
-                选择删除
+                {{ item.rel_path === group.keep_rel_path ? '改为删除这一份' : '选择删除' }}
               </el-checkbox>
               <el-tag v-if="item.reference" size="small" type="info">其他分类保留</el-tag>
               <el-tag
-                v-else-if="item.rel_path === group.keep_rel_path"
+                v-else-if="
+                  item.rel_path === group.keep_rel_path &&
+                  !(selections[group.id] ?? []).includes(item.rel_path)
+                "
                 size="small"
                 type="success"
               >
                 建议保留
               </el-tag>
-              <el-tag v-else-if="item.suggested_delete" size="small" type="danger" effect="plain">
+              <el-tag
+                v-else-if="
+                  item.rel_path === group.keep_rel_path &&
+                  (selections[group.id] ?? []).includes(item.rel_path)
+                "
+                size="small"
+                type="warning"
+              >
+                手动删除
+              </el-tag>
+              <el-tag
+                v-else-if="
+                  item.suggested_delete &&
+                  (selections[group.id] ?? []).includes(item.rel_path)
+                "
+                size="small"
+                type="danger"
+                effect="plain"
+              >
                 建议删除
+              </el-tag>
+              <el-tag v-else-if="item.suggested_delete" size="small" type="info" effect="plain">
+                手动保留
               </el-tag>
               <span class="cell-meta">{{ item.format.toUpperCase() }}</span>
               <span class="cell-meta num">{{ fmtDuration(item.duration) }}</span>
@@ -855,6 +932,37 @@ onMounted(async () => {
               >
                 保留理由：{{ group.keep_reason }}
               </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="dismissedGroups.length" class="card group">
+        <div class="card-head">
+          <el-tag size="small" type="info">已忽略</el-tag>
+          <span class="card-hint">
+            这些组被忽略过，之后的扫描不会再列出来。组里的文件有变化时会重新判断。
+          </span>
+        </div>
+        <div class="dup-grid">
+          <div v-for="group in dismissedGroups" :key="group.id" class="dup-item">
+            <div class="dup-head">
+              <el-tag
+                size="small"
+                :type="group.kind === 'exact' ? 'danger' : group.kind === 'recording' ? 'warning' : 'info'"
+              >
+                {{ kindLabel[group.kind] }}
+              </el-tag>
+              <span class="cell-meta">{{ group.items.length }} 份</span>
+              <el-button size="small" text type="primary" @click="restore(group)">
+                恢复
+              </el-button>
+            </div>
+            <div class="dup-title">
+              {{ group.items[0]?.title || group.items[0]?.rel_path || '—' }}
+            </div>
+            <div class="path dup-path">
+              {{ group.items.map((item) => item.rel_path).join('、') }}
             </div>
           </div>
         </div>

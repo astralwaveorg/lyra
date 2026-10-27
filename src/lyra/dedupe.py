@@ -522,10 +522,8 @@ def _validate_selection(
             return [], [], by_path, f"{rel} 不属于这个重复组"
         if item.get("reference"):
             return [], [], by_path, f"{rel} 属于其他分类，不能在这里删除"
-        if rel == str(row["keep_rel_path"]):
-            return [], [], by_path, f"{rel} 是建议保留项，不能删除"
-        if not item.get("suggested_delete"):
-            return [], [], by_path, f"{rel} 不是待删除项，请刷新后重试"
+        # 人工改选时允许删掉应用原本建议保留的那一份：判断错了要能改。
+        # 参照项永远不参与删除，每组至少留一份由下面的检查兜底。
         selected.append(rel)
     if not selected:
         return [], [], by_path, "没有选中可删除的副本"
@@ -637,8 +635,9 @@ def delete_duplicates_selected(
 ) -> dict[str, Any]:
     """按组删除选中的副本；所有组先校验，再按受管根分批执行。
 
-    `selections` 是 `{group_id: [rel_path, ...]}`。只允许 `suggested_delete`
-    且不是 `reference` 的项，因此按分类一键处理不会带走别的分类。
+    `selections` 是 `{group_id: [rel_path, ...]}`。参照项（属于其它分类）
+    永远不能在这里删除；人工改选时允许删掉应用原本建议保留的那一份，
+    但每组至少要留一份，所以按分类一键处理不会带走别的分类。
     """
     if not selections:
         return {"ok": False, "deleted": 0, "errors": ["没有选中任何副本"], "batch_ids": []}
@@ -680,7 +679,7 @@ def delete_duplicates_selected(
             and any(
                 marker in error
                 for error in result.get("errors") or []
-                for marker in ("不属于", "建议保留", "至少要保留", "旧分类规则")
+                for marker in ("不属于", "其他分类", "至少要保留", "旧分类规则")
             )
         ):
             # 校验阶段失败：不要再动其它根

@@ -743,10 +743,12 @@ export type DedupeGroup = {
   keep_reason: string
   items: DedupeItem[]
   found_at: number
+  dismissed_at?: number | null
 }
 
 export type DedupeResponse = {
   groups: DedupeGroup[]
+  dismissed?: DedupeGroup[]
   duplicates: number
   last_scan_at: number | null
   last_scan: {
