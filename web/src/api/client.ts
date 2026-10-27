@@ -366,8 +366,10 @@ export const api = {
       `/api/v1/tags/proposals/${id}/apply`,
       json(fields ? { fields } : {}),
     ),
-  skipTagProposal: (id: number) =>
-    request<{ ok: boolean }>(`/api/v1/tags/proposals/${id}/skip`, json({})),
+  ignoreTagProposal: (id: number) =>
+    request<{ ok: boolean }>(`/api/v1/tags/proposals/${id}/ignore`, json({})),
+  restoreTagProposal: (id: number) =>
+    request<{ ok: boolean }>(`/api/v1/tags/proposals/${id}/restore`, json({})),
   bulkApplyTags: (payload: { ids?: number[]; scope?: 'auto' | 'fills' }) =>
     request<{ ok: boolean; files: number; fields: number; errors: string[] }>(
       '/api/v1/tags/proposals/bulk-apply',

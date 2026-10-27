@@ -19,7 +19,8 @@ import PreviewPlayButton from './PreviewPlayButton.vue'
 const props = defineProps<{ item: TagProposal; busy?: boolean }>()
 const emit = defineEmits<{
   (event: 'applied', message: string): void
-  (event: 'skipped'): void
+  (event: 'ignored'): void
+  (event: 'restored'): void
   (event: 'link', item: TagProposal): void
   (event: 'candidate', item: TagProposal, url: string): void
   (event: 'edit', item: TagProposal): void
@@ -218,12 +219,25 @@ async function applyNonName() {
   await apply([...new Set(keys)])
 }
 
-async function skip() {
+async function ignore() {
   working.value = true
   try {
-    await api.skipTagProposal(props.item.id)
-    ElMessage.success('已跳过')
-    emit('skipped')
+    await api.ignoreTagProposal(props.item.id)
+    ElMessage.success('已忽略，不会再被扫描翻出来')
+    emit('ignored')
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '操作失败')
+  } finally {
+    working.value = false
+  }
+}
+
+async function restore() {
+  working.value = true
+  try {
+    await api.restoreTagProposal(props.item.id)
+    ElMessage.success('已恢复，重新回到队列')
+    emit('restored')
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '操作失败')
   } finally {
@@ -257,6 +271,7 @@ async function skip() {
         >
           {{ sourceText() }}
         </el-tag>
+        <span v-if="item.state === 'ignored'" class="chip muted">已忽略</span>
         <span v-if="isAuto" class="conf num">{{ Math.round(item.confidence * 100) }}%</span>
         <span v-if="deltaText()" class="delta">{{ deltaText() }}</span>
         <span v-if="fills.length" class="chip fill num">可补 {{ fills.length }}</span>
@@ -267,7 +282,10 @@ async function skip() {
       </div>
 
       <div class="actions">
-        <template v-if="item.state === 'unmatched'">
+        <template v-if="item.state === 'ignored'">
+          <el-button size="small" text :loading="working" @click="restore">恢复</el-button>
+        </template>
+        <template v-else-if="item.state === 'unmatched'">
           <el-button
             v-if="item.candidates.length"
             size="small"
@@ -282,7 +300,7 @@ async function skip() {
           <el-button size="small" text @click="emit('edit', item)">
             <AppIcon name="Edit" :size="13" />手动编辑
           </el-button>
-          <el-button size="small" text :loading="working" @click="skip">跳过</el-button>
+          <el-button size="small" text :loading="working" @click="ignore">忽略</el-button>
         </template>
         <template v-else>
           <el-button
@@ -380,7 +398,10 @@ async function skip() {
         <el-button size="small" text @click="emit('link', item)">
           <AppIcon name="Link" :size="13" />链接指定条目
         </el-button>
-        <el-button size="small" text :loading="working" @click="skip">跳过</el-button>
+        <el-button v-if="item.state === 'ignored'" size="small" text :loading="working" @click="restore">
+          恢复
+        </el-button>
+        <el-button v-else size="small" text :loading="working" @click="ignore">忽略</el-button>
         <el-button
           size="small"
           type="primary"

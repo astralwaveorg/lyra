@@ -87,7 +87,10 @@ CORRECTABLE_FIELDS = frozenset({
 STATE_AUTO = "auto"
 STATE_REVIEW = "review"
 STATE_UNMATCHED = "unmatched"
-STATE_SKIPPED = "skipped"
+#: 人工忽略：出队，可恢复，扫描不得覆盖。
+STATE_IGNORED = "ignored"
+#: 人工已定案：不再复议，扫描不得覆盖。
+STATE_DONE = "done"
 
 SOURCE_MBID = "mbid"
 SOURCE_ALBUM = "album"
@@ -1455,6 +1458,7 @@ def _write_auto(
                     row,
                     fields=None,
                     require_auto=not review_safe_only,
+                    manual=False,
                 )
             except Exception as exc:  # noqa: BLE001
                 summary.errors.append(
@@ -1660,7 +1664,14 @@ def scan_tags(
                 summary.satisfied += 1
                 existing = store.tag_proposal_for_location(snap.location_id)
                 if existing is not None:
-                    store.delete_tag_proposal(int(existing["id"]))
+                    # 人工痕迹要留住。删行等于把「人已经表过态」一起抹掉，
+                    # 下一轮扫描只要算出的匹配跟上次不同，这条曲子又会回来。
+                    if str(existing["source"]) == SOURCE_LINK:
+                        store.set_tag_proposal_state(int(existing["id"]), STATE_DONE)
+                    elif str(existing["state"]) in (STATE_IGNORED, STATE_DONE):
+                        pass  # 人工忽略/已定案：原样保留
+                    else:
+                        store.delete_tag_proposal(int(existing["id"]))
                 continue
 
             if match.source == SOURCE_MBID:

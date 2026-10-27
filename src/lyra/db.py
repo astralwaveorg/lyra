@@ -32,7 +32,7 @@ __all__ = [
     "TransactionState",
 ]
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 class DatabaseError(Exception):
@@ -420,7 +420,7 @@ _MIGRATION_11 = """
 CREATE TABLE tag_proposals (
     id             INTEGER PRIMARY KEY,
     location_id    INTEGER NOT NULL UNIQUE REFERENCES locations(id) ON DELETE CASCADE,
-    state          TEXT NOT NULL,              -- auto | review | unmatched | skipped
+    state          TEXT NOT NULL,              -- auto | review | unmatched | ignored | done
     source         TEXT NOT NULL,              -- mbid | album | search | fingerprint | link
     confidence     REAL NOT NULL DEFAULT 0,
     release_id     TEXT,
@@ -551,6 +551,22 @@ ALTER TABLE dedupe_groups ADD COLUMN dismissed_at REAL;
 CREATE INDEX idx_dedupe_groups_dismissed ON dedupe_groups(root_id, dismissed_at);
 """
 
+_MIGRATION_14 = """
+-- 标签提案上的人工痕迹。
+--
+-- 之前「跳过」只有一个 state='skipped'，既看不见也恢复不了；更要命的是
+-- 人工写入完成后提案行被**直接删除**，人工决定随之消失——下一轮扫描
+-- 重新算出不一样的匹配，这条曲子又回到待审查，看起来像「人工确认没用」。
+--
+-- 现在把人工痕迹留在行上：
+--   ignored —— 人工忽略，列表可见、可恢复，扫描不得覆盖；
+--   done    —— 人工已定案（写入完成），不再复议，扫描不得覆盖；
+--   dismissed_at —— 忽略时间，供「已忽略」列表排序与展示。
+ALTER TABLE tag_proposals ADD COLUMN dismissed_at REAL;
+UPDATE tag_proposals SET state='ignored' WHERE state='skipped';
+CREATE INDEX idx_tag_proposals_dismissed ON tag_proposals(state, dismissed_at);
+"""
+
 _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -565,6 +581,7 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (11, _MIGRATION_11),
     (12, _MIGRATION_12),
     (13, _MIGRATION_13),
+    (14, _MIGRATION_14),
 )
 
 
@@ -1713,8 +1730,13 @@ class StateStore:
     ) -> int:
         """写入/覆盖某个位置的当前提案。
 
-        `skipped` 的提案默认**不覆盖**：人工跳过代表「这条不要再提」，
-        下一次自动扫描又把它翻出来会让人以为跳过没生效。
+        **人工痕迹不可被自动扫描覆盖**：
+
+        - `ignored`（人工忽略）与 `done`（人工已定案）代表使用者已经表过态，
+          下一次自动扫描又把它翻出来会让人以为操作没生效；
+        - `source='link'` 是人工断言「就是这一条」，自动扫描不能把它覆盖回
+          搜索结果，否则刚指定的来源会在下一轮悄悄消失。
+
         只有显式重新扫描（`revive_skipped=True`）才恢复。
         """
         now = time.time()
@@ -1724,7 +1746,7 @@ class StateStore:
             (location_id,),
         ).fetchone()
         if row is not None:
-            if row["state"] == "skipped" and not revive_skipped:
+            if str(row["state"]) in ("skipped", "ignored", "done") and not revive_skipped:
                 return int(row["id"])
             # 链接是人工断言「就是这一条」。自动扫描不能把它覆盖回搜索
             # 结果，否则使用者刚指定的来源会在下一轮悄悄消失。
@@ -1733,7 +1755,7 @@ class StateStore:
             self.conn.execute(
                 "UPDATE tag_proposals SET state=?, source=?, confidence=?, release_id=?, "
                 "recording_id=?, album=?, title=?, artists=?, duration_delta=?, "
-                "payload_json=?, updated_at=? WHERE location_id=?",
+                "payload_json=?, dismissed_at=NULL, updated_at=? WHERE location_id=?",
                 (
                     state, source, float(confidence), release_id or None,
                     recording_id or None, album or None, title, artists,
@@ -1806,11 +1828,15 @@ class StateStore:
     def _tag_proposal_filter(
         *, state: str | None, query: str
     ) -> tuple[str, list[Any]]:
-        clauses = ["p.state != 'skipped'"]
+        clauses: list[str] = []
         params: list[Any] = []
         if state:
             clauses.append("p.state = ?")
             params.append(state)
+        else:
+            # 默认只给「还需要人看一眼」的队列。人工忽略（ignored）与
+            # 人工已定案（done）不在其中，各自另有入口。
+            clauses.append("p.state NOT IN ('ignored','done')")
         needle = (query or "").strip()
         if needle:
             pattern = f"%{needle}%"
@@ -1822,10 +1848,11 @@ class StateStore:
         return " AND ".join(clauses), params
 
     def tag_proposal_counts(self) -> dict[str, int]:
+        """各状态的提案数。`done`（人工已定案）不计入——它不再是待办。"""
         rows = self.conn.execute(
             "SELECT p.state, COUNT(*) AS n FROM tag_proposals p "
             "JOIN locations l ON l.id=p.location_id "
-            "WHERE p.state != 'skipped' AND l.missing_since IS NULL "
+            "WHERE p.state != 'done' AND l.missing_since IS NULL "
             "GROUP BY p.state"
         ).fetchall()
         return {str(row["state"]): int(row["n"]) for row in rows}
@@ -1833,6 +1860,40 @@ class StateStore:
     def set_tag_proposal_state(self, proposal_id: int, state: str) -> None:
         self.conn.execute(
             "UPDATE tag_proposals SET state=?, updated_at=? WHERE id=?",
+            (state, time.time(), proposal_id),
+        )
+        self.conn.commit()
+
+    def dismiss_tag_proposal(self, proposal_id: int) -> None:
+        """人工忽略：出队，但留下痕迹，可以恢复。
+
+        扫描不再覆盖它（`upsert_tag_proposal` 认得 ignored/done），
+        所以「忽略」是真的忽略，不是「这一轮先放着」。
+        """
+        now = time.time()
+        self.conn.execute(
+            "UPDATE tag_proposals SET state='ignored', dismissed_at=?, updated_at=? "
+            "WHERE id=?",
+            (now, now, proposal_id),
+        )
+        self.conn.commit()
+
+    def restore_tag_proposal(self, proposal_id: int) -> None:
+        """恢复一条被忽略的提案：回到待审查（或未匹配），重新进入队列。"""
+        row = self.conn.execute(
+            "SELECT payload_json FROM tag_proposals WHERE id=?", (proposal_id,)
+        ).fetchone()
+        state = "unmatched"
+        if row is not None:
+            try:
+                payload = json.loads(str(row["payload_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            match = payload.get("match") if isinstance(payload, dict) else None
+            if isinstance(match, dict) and str(match.get("source") or ""):
+                state = "review"
+        self.conn.execute(
+            "UPDATE tag_proposals SET state=?, dismissed_at=NULL, updated_at=? WHERE id=?",
             (state, time.time(), proposal_id),
         )
         self.conn.commit()

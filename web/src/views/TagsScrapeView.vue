@@ -28,7 +28,7 @@ import TagProposalRow from '@/components/TagProposalRow.vue'
 import TagLinkDialog from '@/components/TagLinkDialog.vue'
 import TrackFixDrawer from '@/components/TrackFixDrawer.vue'
 
-type Tab = 'auto' | 'review' | 'unmatched'
+type Tab = 'auto' | 'review' | 'unmatched' | 'ignored'
 
 const meta = useMeta()
 const narrow = useNarrow()
@@ -37,7 +37,12 @@ const router = useRouter()
 
 const requested = typeof route.query.tab === 'string' ? route.query.tab : ''
 const tab = ref<Tab>(
-  requested === 'review' || requested === 'unmatched' || requested === 'auto' ? requested : 'auto',
+  requested === 'review' ||
+    requested === 'unmatched' ||
+    requested === 'auto' ||
+    requested === 'ignored'
+    ? requested
+    : 'auto',
 )
 
 const summary = ref<TagSummary | null>(null)
@@ -72,7 +77,9 @@ const history = ref<TagHistoryRow[]>([])
 let poll: ReturnType<typeof setInterval> | undefined
 let summaryPoll: ReturnType<typeof setInterval> | undefined
 
-const counts = computed(() => summary.value?.counts ?? { auto: 0, review: 0, unmatched: 0 })
+const counts = computed(
+  () => summary.value?.counts ?? { auto: 0, review: 0, unmatched: 0, ignored: 0 },
+)
 const source = computed(() => summary.value?.source)
 const activeCount = computed(() => counts.value[tab.value] ?? 0)
 
@@ -80,6 +87,7 @@ const tabLabels: Record<Tab, string> = {
   auto: '推荐采纳',
   review: '待审查',
   unmatched: '未匹配',
+  ignored: '已忽略',
 }
 
 const grouped = computed(() => {
@@ -147,9 +155,15 @@ const reviewNotice = computed(() => {
       text: `共 ${fmtNumber(counts.value.review)} 首，存在与本地不同的字段。冲突默认勾选，可一键取消；写入前会预览。`,
     }
   }
+  if (tab.value === 'unmatched') {
+    return {
+      title: '未匹配',
+      text: `共 ${fmtNumber(counts.value.unmatched)} 首，没有找到可信的 MusicBrainz 条目。可以粘贴链接指定，或手动编辑。`,
+    }
+  }
   return {
-    title: '未匹配',
-    text: `共 ${fmtNumber(counts.value.unmatched)} 首，没有找到可信的 MusicBrainz 条目。可以粘贴链接指定，或手动编辑。`,
+    title: '已忽略',
+    text: `共 ${fmtNumber(counts.value.ignored)} 首，是你自己选择不再看的条目。扫描不会把它们翻回来，随时可以恢复。`,
   }
 })
 
@@ -494,6 +508,7 @@ onUnmounted(() => {
     <el-tab-pane :label="`${tabLabels.auto} ${counts.auto}`" name="auto" />
     <el-tab-pane :label="`${tabLabels.review} ${counts.review}`" name="review" />
     <el-tab-pane :label="`${tabLabels.unmatched} ${counts.unmatched}`" name="unmatched" />
+    <el-tab-pane :label="`${tabLabels.ignored} ${counts.ignored}`" name="ignored" />
   </el-tabs>
 
   <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="gap" />
@@ -554,7 +569,8 @@ onUnmounted(() => {
           :key="item.id"
           :item="item"
           @applied="refreshAll"
-          @skipped="refreshAll"
+          @ignored="refreshAll"
+          @restored="refreshAll"
           @link="openLink"
           @candidate="openLink"
           @edit="openEditor"
@@ -579,16 +595,28 @@ onUnmounted(() => {
           ? '没有可自动写入的标签'
           : tab === 'review'
             ? '没有待审查的标签'
-            : '没有未匹配的曲目'
+            : tab === 'unmatched'
+              ? '没有未匹配的曲目'
+              : '还没有忽略任何条目'
       "
       :hint="
         tab === 'auto'
           ? '扫描后，来源与曲目一致且没有冲突的会出现在这里。'
           : tab === 'review'
             ? '冲突字段需要人工确认；没有冲突时会自动写入。'
-            : '全部曲目都找到了可信的 MusicBrainz 条目。'
+            : tab === 'unmatched'
+              ? '全部曲目都找到了可信的 MusicBrainz 条目。'
+              : '在待审查或未匹配里点「忽略」，条目会移到这里，扫描不会再翻它回来。'
       "
-      :icon="tab === 'auto' ? 'PriceTag' : tab === 'review' ? 'CircleCheck' : 'Search'"
+      :icon="
+        tab === 'auto'
+          ? 'PriceTag'
+          : tab === 'review'
+            ? 'CircleCheck'
+            : tab === 'unmatched'
+              ? 'Search'
+              : 'Hide'
+      "
     />
   </section>
 

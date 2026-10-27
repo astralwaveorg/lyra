@@ -462,7 +462,9 @@ export type TagProposal = {
   id: number
   rel_path: string
   root: string
-  state: 'auto' | 'review' | 'unmatched'
+  state: 'auto' | 'review' | 'unmatched' | 'ignored'
+  /** 人工忽略的时间；只有 state='ignored' 时有值。 */
+  dismissed_at?: number | null
   source: string
   source_label: string
   confidence: number
@@ -524,7 +526,7 @@ export type TagScanRoot = {
 }
 
 export type TagSummary = {
-  counts: { auto: number; review: number; unmatched: number }
+  counts: { auto: number; review: number; unmatched: number; ignored: number }
   total: number
   last_scan_at: number | null
   last_scan: { roots?: TagScanRoot[] } | null

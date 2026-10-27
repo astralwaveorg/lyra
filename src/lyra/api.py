@@ -209,11 +209,13 @@ def _tag_proposal_dict(row, cfg: Config) -> dict[str, Any]:
         and cfg.policy.write_enabled
         and (root is None or not root.read_only)
     )
+    columns = row.keys()
     return {
         "id": int(row["id"]),
         "rel_path": str(row["rel_path"]),
         "root": str(row["root_name"]),
         "state": str(row["state"]),
+        "dismissed_at": row["dismissed_at"] if "dismissed_at" in columns else None,
         "source": str(row["source"]),
         "source_label": (payload.get("match") or {}).get("source_label", ""),
         "confidence": float(row["confidence"] or 0),
@@ -3098,13 +3100,18 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 last_scan = None
         mb_cfg = cfg.providers.musicbrainz
         ac_cfg = cfg.providers.acoustid
+        queue = {
+            "auto": counts.get("auto", 0),
+            "review": counts.get("review", 0),
+            "unmatched": counts.get("unmatched", 0),
+        }
         return {
             "counts": {
-                "auto": counts.get("auto", 0),
-                "review": counts.get("review", 0),
-                "unmatched": counts.get("unmatched", 0),
+                **queue,
+                # 已忽略不算待办，单列出来给人看「我忽略过什么」。
+                "ignored": counts.get("ignored", 0),
             },
-            "total": sum(counts.values()),
+            "total": sum(queue.values()),
             "last_scan_at": float(last_at) if last_at else None,
             "last_scan": last_scan,
             "write_enabled": cfg.policy.write_enabled,
@@ -3134,9 +3141,9 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """分页列出提案。按状态分桶：auto / review / unmatched。"""
+        """分页列出提案。按状态分桶：auto / review / unmatched / ignored。"""
         wanted = state_filter.strip()
-        if wanted and wanted not in ("auto", "review", "unmatched"):
+        if wanted and wanted not in ("auto", "review", "unmatched", "ignored"):
             raise HTTPException(status_code=400, detail="未知的标签提案状态")
         size = max(1, min(200, int(limit)))
         start = max(0, int(offset))
@@ -3183,13 +3190,28 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             "remaining": outcome.remaining,
         }
 
-    @app.post("/api/v1/tags/proposals/{proposal_id}/skip", dependencies=[Depends(require_auth)])
-    def skip_tag_proposal(proposal_id: int) -> dict[str, Any]:
-        """跳过一条提案：它不会再出现在扫描结果里，除非重新扫描。"""
+    @app.post("/api/v1/tags/proposals/{proposal_id}/ignore", dependencies=[Depends(require_auth)])
+    def ignore_tag_proposal(proposal_id: int) -> dict[str, Any]:
+        """人工忽略一条提案：出队，并且**不再被扫描翻出来**。
+
+        与「暂时跳过」的区别：忽略会记在提案上，自动扫描认得它，
+        下一轮不会又把这首曲子提回来。可以在「已忽略」里恢复。
+        """
         row = state.tag_proposal(proposal_id)
         if row is None:
             raise HTTPException(status_code=404, detail="这条标签提案不存在")
-        state.set_tag_proposal_state(proposal_id, "skipped")
+        state.dismiss_tag_proposal(proposal_id)
+        return {"ok": True}
+
+    @app.post("/api/v1/tags/proposals/{proposal_id}/restore", dependencies=[Depends(require_auth)])
+    def restore_tag_proposal(proposal_id: int) -> dict[str, Any]:
+        """恢复一条被忽略的提案，重新回到待审查 / 未匹配队列。"""
+        row = state.tag_proposal(proposal_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="这条标签提案不存在")
+        if str(row["state"]) != "ignored":
+            raise HTTPException(status_code=400, detail="这条提案没有被忽略")
+        state.restore_tag_proposal(proposal_id)
         return {"ok": True}
 
     @app.post("/api/v1/tags/proposals/bulk-apply", dependencies=[Depends(require_auth)])

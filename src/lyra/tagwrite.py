@@ -94,20 +94,23 @@ def _refresh_proposal(
     row,
     payload: dict,
     current: Mapping[str, Sequence[str]],
+    *,
+    manual: bool = False,
 ) -> None:
     """写入后按磁盘真实内容重算剩余项。
 
-    已全部满足就删掉提案；只剩冲突就留在复核队列——不能因为「写成功」
-    就把还没处理完的冲突一起藏起来。
+    已全部满足：**人工写入**把它标成「已定案」（done）而不是删掉——
+    人工决定必须留痕，否则下一轮扫描算出的匹配只要跟上次不同，这条曲子
+    又会回到待审查队列，看起来像「人工确认没生效」。自动写入没有这层
+    人工意图，照旧删行，避免表里堆几千条历史。
+
+    只剩冲突就留在复核队列——不能因为「写成功」就把还没处理完的冲突一起藏起来。
     """
     candidate = payload.get("candidate") or {}
     rows = compare_fields(current, candidate)
     remaining = [
         r for r in rows if r["action"] in (ACTION_FILL, ACTION_CORRECT, ACTION_CONFLICT)
     ]
-    if not remaining:
-        store.delete_tag_proposal(int(row["id"]))
-        return
     payload = dict(payload)
     payload["rows"] = [
         {
@@ -128,9 +131,32 @@ def _refresh_proposal(
         "same": sum(1 for r in rows if r["action"] == ACTION_SAME),
         "total": len(rows),
     }
-    state = "review" if any(
-        r["action"] == ACTION_CONFLICT for r in remaining
-    ) else "auto"
+    if not remaining:
+        if manual:
+            # 行留着（人工痕迹），但状态改成「已定案」：队列里不再出现，
+            # 扫描也不会再把它翻出来。对照内容一并刷新，界面看到的
+            # 「剩余 0」才是真的。
+            store.upsert_tag_proposal(
+                location_id=int(row["location_id"]),
+                state="done",
+                source=str(row["source"]),
+                confidence=float(row["confidence"] or 0),
+                title=str(row["title"] or ""),
+                artists=str(row["artists"] or ""),
+                album=str(row["album"] or ""),
+                release_id=str(row["release_id"] or ""),
+                recording_id=str(row["recording_id"] or ""),
+                duration_delta=row["duration_delta"],
+                payload=payload,
+                revive_skipped=True,
+            )
+        else:
+            store.delete_tag_proposal(int(row["id"]))
+        return
+    has_conflict = any(r["action"] == ACTION_CONFLICT for r in remaining)
+    # 链接指定是人工选定的来源：剩下的补空继续留在待审查，由人收尾，
+    # 不自动挪进「推荐采纳」。
+    state = "review" if (has_conflict or str(row["source"]) == "link") else "auto"
     store.upsert_tag_proposal(
         location_id=int(row["location_id"]),
         state=state,
@@ -155,11 +181,16 @@ def apply_proposal(
     *,
     fields: Sequence[str] | None = None,
     require_auto: bool = False,
+    manual: bool = True,
 ) -> TagApplyOutcome:
     """把提案里选中的字段写进文件。
 
     `fields=None` 表示「所有可补字段」——自动流程只走这一种，
     且 `require_auto=True` 时会再次确认没有冲突项混进来。
+
+    `manual=True` 表示这是**人**点的写入。全部写完时提案会被标成「已定案」
+    并留在库里（人工痕迹不丢，扫描不会再把它带回来）；自动写入
+    （`manual=False`）照旧删行，表里不留历史。
     """
     proposal_id = int(row["id"])
     rel_path = str(row["rel_path"])
@@ -260,7 +291,7 @@ def apply_proposal(
         # 没有可写字段（已经满足、或只剩冲突）：刷新提案，让界面不再显示
         # 那些其实已经写完的项；这不是错误。
         try:
-            _refresh_proposal(store, row, payload, current)
+            _refresh_proposal(store, row, payload, current, manual=manual)
             refreshed = store.tag_proposal(proposal_id)
             if refreshed is not None:
                 outcome.remaining = len(
@@ -320,7 +351,7 @@ def apply_proposal(
 
     try:
         refreshed, _error = read_all_tags(target)
-        _refresh_proposal(store, row, payload, refreshed)
+        _refresh_proposal(store, row, payload, refreshed, manual=manual)
         remaining_row = store.tag_proposal(proposal_id)
         if remaining_row is not None:
             remaining_payload = _load_payload(remaining_row)

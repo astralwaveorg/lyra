@@ -103,7 +103,8 @@ curl -b cookies.txt \
 | GET | `/api/v1/tags/proposals` | 提案列表 |
 | POST | `/api/v1/tasks/tags-scan` | 启动标签扫描 |
 | POST | `/api/v1/tags/proposals/{id}/apply` | 写入提案字段 |
-| POST | `/api/v1/tags/proposals/{id}/skip` | 跳过提案 |
+| POST | `/api/v1/tags/proposals/{id}/ignore` | 忽略提案（不再被扫描翻出来） |
+| POST | `/api/v1/tags/proposals/{id}/restore` | 恢复被忽略的提案 |
 | POST | `/api/v1/tags/proposals/{id}/link` | 按 MusicBrainz 链接指定 |
 | POST | `/api/v1/tags/proposals/bulk-apply` | 批量写入安全字段 |
 | GET | `/api/v1/tags/history` | 写入历史 |

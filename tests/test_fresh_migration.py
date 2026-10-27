@@ -32,6 +32,8 @@ _MIGRATED_COLUMNS = [
     ("write_locks", "expires_at"),      # 迁移 7
     ("resolutions", "location_id"),     # 迁移 8
     ("watch_log", "counters_json"),     # 迁移 9
+    ("dedupe_groups", "dismissed_at"),  # 迁移 13
+    ("tag_proposals", "dismissed_at"),  # 迁移 14
 ]
 
 
