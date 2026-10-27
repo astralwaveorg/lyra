@@ -1773,12 +1773,18 @@
 <td>空</td>
 <td>自签或镜像源的 trusted-host</td>
 </tr>
+<tr>
+<td><code>DEBIAN_MIRROR_HOST</code></td>
+<td>空</td>
+<td>Debian 源主机名（如 <code>mirrors.aliyun.com</code>）；只换主机名，路径不变</td>
+</tr>
 </tbody>
 </table>
 <p>网络受限时可以在 <code>.env</code> 中覆盖，例如：</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>NPM_REGISTRY=https://registry.npmmirror.com
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>DEBIAN_MIRROR_HOST=mirrors.aliyun.com
 </code></pre></div>
 <h2 id="_3">反向代理<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
 <h3 id="nginx">Nginx<a class="headerlink" href="#nginx" title="Permanent link">&para;</a></h3>
