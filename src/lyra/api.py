@@ -49,9 +49,11 @@ from .compare import build_comparison
 from .config import (
     AI_PROTOCOLS,
     AI_SETTINGS_FIELDS,
+    NETWORK_SETTINGS_FIELDS,
     Config,
     RootConfig,
     apply_ai_settings_values,
+    apply_network_settings_values,
     apply_tag_policy_values,
 )
 from .cover import (
@@ -73,6 +75,15 @@ from .lrc import (
     parse_lrc_lines,
 )
 from .match import build_context, score_candidates
+from .network import (
+    PROXY_SCHEMES,
+    apply_proxy_environment,
+    environment_proxy,
+    load_network_settings,
+    proxy_bypass_hosts,
+    restore_proxy_environment,
+    write_saved_proxy,
+)
 from .providers.base import Candidate, ProviderError, TrackQuery
 from .rename import apply_general_rename
 from .stats import collect_stats
@@ -412,6 +423,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             新任务会一直被告知「已有任务在进行中」——实际遇到过这个坑。
         """
         try:
+            # 设置页保存的代理优先；否则沿用配置文件/环境变量。
+            load_network_settings(cfg)
             state.mark_interrupted_tasks()
             state.release_all_write_locks()
             # 进程重启后不可能还有人在等；残留的登记会让自动写入一直让出。
@@ -475,6 +488,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         try:
             yield
         finally:
+            restore_proxy_environment()
             if owned_store:
                 state.close()
 
@@ -2562,6 +2576,50 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             "policy": asdict(cfg.policy.tags),
             "revision": revision,
         }
+
+    def _network_settings_view() -> dict[str, Any]:
+        return {
+            "proxy": cfg.network.proxy,
+            "source": cfg.network.proxy_source,
+            "effective_proxy": cfg.network.proxy or environment_proxy(),
+            "environment_proxy": environment_proxy(),
+            "schemes": list(PROXY_SCHEMES),
+        }
+
+    @app.get("/api/v1/settings/network", dependencies=[Depends(require_auth)])
+    def network_settings_view() -> dict[str, Any]:
+        return _network_settings_view()
+
+    @app.put("/api/v1/settings/network", dependencies=[Depends(require_auth)])
+    def update_network_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """保存代理地址，并让后续发起的请求立即使用。"""
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        unknown = set(payload) - set(NETWORK_SETTINGS_FIELDS)
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"未知设置项：{sorted(unknown)[0]}")
+
+        before = replace(cfg.network)
+        try:
+            apply_network_settings_values(cfg, payload)
+            write_saved_proxy(cfg.storage.resolved_data_dir, cfg.network.proxy)
+            apply_proxy_environment(
+                cfg.network.proxy, proxy_bypass_hosts(cfg)
+            )
+            cfg.network.proxy_source = (
+                "settings"
+                if cfg.network.proxy
+                else ("env" if environment_proxy() else "none")
+            )
+        except ValueError as exc:
+            cfg.network = before
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            cfg.network = before
+            raise HTTPException(
+                status_code=500, detail=f"保存代理设置失败：{exc}"
+            ) from exc
+        return {"ok": True, **_network_settings_view()}
 
     def _ai_settings_view() -> dict[str, Any]:
         env_key = os.environ.get("LYRA_AI_API_KEY") or ""

@@ -30,6 +30,15 @@ from .config import (
     load_config,
 )
 from .db import open_store
+from .network import (
+    apply_proxy_environment,
+    environment_proxy,
+    load_network_settings,
+    mask_proxy_url,
+    proxy_bypass_hosts,
+    read_saved_proxy,
+    restore_proxy_environment,
+)
 
 __all__ = ["main", "build_parser"]
 
@@ -280,6 +289,12 @@ def cmd_config_check(args: argparse.Namespace, cfg: Config) -> int:
             print(f"      ignore_dirs = {', '.join(root.ignore_dirs)}")
     print()
     print(f"数据目录: {cfg.storage.data_dir}")
+    if cfg.network.proxy:
+        print(f"网络代理: {mask_proxy_url(cfg.network.proxy)}（{cfg.network.proxy_source}）")
+    elif cfg.network.proxy_source == "env":
+        print("网络代理: 沿用环境变量")
+    else:
+        print("网络代理: 未设置")
     print(f"歌词来源: {', '.join(cfg.providers.enabled)}")
     lr = cfg.providers.lrclib
     print(f"  lrclib 标识: {lr.client_identity()}")
@@ -849,12 +864,39 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
         print("错误: 没有匹配的受管根", file=sys.stderr)
         return 2
 
+    load_network_settings(cfg)
     store = open_store(cfg.storage.resolved_data_dir)
     providers = create_providers(cfg.providers)
     stop = threading.Event()
     lock = threading.Lock()
 
     write_enabled = cfg.policy.write_enabled and not args.fetch_only
+
+    def _apply_saved_network() -> None:
+        """设置页保存代理后，换掉已经建立的来源客户端。
+
+        代理是 ``httpx.Client`` 构造时读取的环境变量，改环境不会影响旧
+        客户端；因此这里重建一份，并在写入锁里替换，避免关闭正在使用的
+        连接。监控进程每 30 秒检查一次，Web 端保存后最多等半分钟。
+        """
+        saved = read_saved_proxy(cfg.storage.resolved_data_dir)
+        if saved is None or saved == cfg.network.proxy:
+            return
+        cfg.network.proxy = saved
+        apply_proxy_environment(saved, proxy_bypass_hosts(cfg))
+        cfg.network.proxy_source = (
+            "settings" if saved else ("env" if environment_proxy() else "none")
+        )
+        fresh = create_providers(cfg.providers)
+        with lock:
+            old = providers[:]
+            providers[:] = fresh
+        for provider in old:
+            provider.close()
+        print(
+            f"[watch] 代理设置已更新：{mask_proxy_url(saved) if saved else '未设置'}",
+            flush=True,
+        )
 
     def _apply_saved_tag_policy() -> None:
         raw = store.get_meta("settings.tags_policy")
@@ -1034,6 +1076,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     last_name_repair = 0.0
     last_state_sync = 0.0
     last_policy_check = 0.0
+    last_network_check = 0.0
 
     # 标签自动刮削：按配置间隔在后台线程跑。
     #
@@ -1185,6 +1228,15 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                         "[watch] 已应用设置页的标签策略："
                         f"{'自动扫描' if cfg.policy.tags.auto_scan else '不自动扫描'}，"
                         f"间隔 {cfg.policy.tags.scan_interval_hours:g} 小时",
+                        flush=True,
+                    )
+            if now - last_network_check >= 30.0:
+                last_network_check = now
+                try:
+                    _apply_saved_network()
+                except Exception as exc:  # noqa: BLE001 — 代理失败不能停掉监控
+                    print(
+                        f"[watch] 代理设置应用失败 {type(exc).__name__}: {exc}",
                         flush=True,
                     )
             if (
@@ -1343,6 +1395,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 + (f"／已降级: {s.degrade_reason}" if s.degraded else "")
             )
         store.close()
+        restore_proxy_environment()
     return 0
 
 
@@ -1656,7 +1709,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    return int(args.func(args, cfg))
+    try:
+        load_network_settings(cfg)
+        return int(args.func(args, cfg))
+    finally:
+        # 命令行进程通常很快就退出；恢复环境变量可避免同进程内连续
+        # 调用 main() 的测试或嵌入式用法继承上一轮的代理。
+        restore_proxy_environment()
 
 
 if __name__ == "__main__":

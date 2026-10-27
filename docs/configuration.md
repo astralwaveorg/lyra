@@ -196,6 +196,28 @@ minimum_request_interval_seconds = 0.34
 
 指纹只用于缺 MBID 或候选有歧义的情况，不会对全库无条件计算。
 
+## 网络代理 `[network]`
+
+```toml
+[network]
+proxy = ""
+direct_hosts = ["qq.com", "163.com", "126.net", "gtimg.cn"]
+```
+
+用于访问 LRCLIB、MusicBrainz、AcoustID、大模型和封面等外部服务。支持 `http://`、`https://`、`socks5://`、`socks5h://`，必须写明端口：
+
+```toml
+[network]
+proxy = "http://10.0.1.8:7890"
+# proxy = "socks5://10.0.1.8:7890"
+```
+
+设置页「网络代理」保存的值优先于配置文件。两者都没有指定时，沿用容器或系统的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。设置页保存到 `data/network.json`（权限 `0600`），`lyra` 与 `lyra-watch` 共用；监控进程约 30 秒内应用新值。
+
+`direct_hosts` 里的主机即使开了代理也直连。默认是国内歌词来源与它们的封面站点：代理是给境外服务找路的，国内来源本来通，绕一圈只会多一跳，还可能因为出口 IP 变了被拒。改成空数组可以让所有请求都走代理。
+
+回环地址、内网 IP、Docker 服务名，以及配置里指向内网的网易云 API / MusicBrainz 镜像会自动绕过代理，不受 `direct_hosts` 影响。
+
 ## 处理策略 `[policy]`
 
 | 键 | 默认 | 说明 |
@@ -323,6 +345,7 @@ Token 的处理：
 | `LYRA_CONFIG` | 配置文件路径 |
 | `LYRA_LIBRARY_ROOT` | 第一个受管根的 `path` |
 | `LYRA_DATA_DIR` | `storage.data_dir` |
+| `LYRA_HTTP_PROXY` | `network.proxy` |
 | `LYRA_WRITE_ENABLED` | `policy.write_enabled` |
 | `LYRA_WEB_BIND` | `web.bind` |
 | `LYRA_WEB_PORT` | `web.port` |

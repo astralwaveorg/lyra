@@ -105,6 +105,7 @@ cat data/initial-password.txt
 | `LYRA_CONFIG` | 配置文件路径，容器内默认 `/config/lyra.toml` |
 | `LYRA_LIBRARY_ROOT` | 容器内曲库路径，默认 `/music` |
 | `LYRA_DATA_DIR` | 数据目录，默认 `/data` |
+| `LYRA_HTTP_PROXY` | 出站代理，例如 `http://10.0.1.8:7890` 或 `socks5://10.0.1.8:7890` |
 | `LYRA_WEB_BIND` | 监听地址，默认 `127.0.0.1` |
 | `LYRA_WEB_PORT` | 监听端口，默认 `8080` |
 | `LYRA_ADMIN_USERNAME` | 管理员用户名，默认 `admin` |

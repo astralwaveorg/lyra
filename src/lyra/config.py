@@ -21,12 +21,14 @@ from typing import Any
 
 from . import __version__
 from .models import RootRole
+from .network import DEFAULT_DIRECT_HOSTS, mask_proxy_url, normalize_proxy_url
 
 __all__ = [
     "ConfigError",
     "RootConfig",
     "StorageConfig",
     "WatchConfig",
+    "NetworkConfig",
     "QQProviderConfig",
     "LrcLibProviderConfig",
     "AcoustIdProviderConfig",
@@ -102,6 +104,26 @@ class WatchConfig:
     reconcile_interval_seconds: int = 900
     full_scan_local_time: str = "03:30"
     timezone: str = "Asia/Shanghai"
+
+
+@dataclass(slots=True)
+class NetworkConfig:
+    """对外 HTTP 请求的代理设置。
+
+    ``proxy`` 为空表示不在配置文件里指定；此时若设置页保存过值，或系统
+    环境变量里已有 ``HTTP_PROXY`` / ``ALL_PROXY``，仍会沿用。``proxy_source``
+    仅用于设置页说明，不接受配置文件写入。
+
+    ``direct_hosts`` 里的主机即使开了代理也直连。默认是国内歌词来源与
+    它们的封面站点：代理是给境外服务用的，国内来源绕一圈只会多一跳，
+    还可能因为出口 IP 变了被拒。
+    """
+
+    proxy: str = ""
+    proxy_source: str = "none"
+    direct_hosts: list[str] = field(
+        default_factory=lambda: list(DEFAULT_DIRECT_HOSTS)
+    )
 
 
 @dataclass(slots=True)
@@ -320,6 +342,10 @@ class LyricsFormatConfig:
     romanization: bool = False
 
 
+NETWORK_SETTINGS_FIELDS = ("proxy",)
+"""设置页可修改的网络字段。"""
+
+
 AI_PROTOCOLS = ("openai_chat", "openai_responses", "anthropic")
 """支持的大模型协议。
 
@@ -410,6 +436,7 @@ class Config:
     roots: list[RootConfig] = field(default_factory=list)
     storage: StorageConfig = field(default_factory=StorageConfig)
     watch: WatchConfig = field(default_factory=WatchConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
@@ -438,6 +465,11 @@ class Config:
         data["roots"] = [
             {**r, "role": str(r["role"])} for r in data.get("roots", [])
         ]
+        network = data.get("network")
+        if isinstance(network, dict):
+            network.pop("proxy_source", None)
+            if mask_secrets and isinstance(network.get("proxy"), str):
+                network["proxy"] = mask_proxy_url(network["proxy"])
         if mask_secrets:
             for dotted in _SECRET_PATHS:
                 _mask_in_place(data, dotted)
@@ -489,6 +521,26 @@ def apply_tag_policy_values(cfg: Config, values: Mapping[str, Any]) -> TagPolicy
         setattr(policy, key, value)
     cfg.policy.tags = policy
     return policy
+
+
+def apply_network_settings_values(
+    cfg: Config, values: Mapping[str, Any]
+) -> NetworkConfig:
+    """校验设置页提交的代理地址。
+
+    只接受白名单字段；空字符串是合法值，表示清除保存的代理。非法值
+    直接抛 `ValueError`，由接口原样返回给设置页。
+    """
+    if not isinstance(values, Mapping):
+        raise ValueError("设置必须是对象")
+    proxy = cfg.network.proxy
+    for key, raw in values.items():
+        if key not in NETWORK_SETTINGS_FIELDS:
+            raise ValueError(f"未知设置项：{key}")
+        if key == "proxy":
+            proxy = normalize_proxy_url(raw)
+    cfg.network = replace(cfg.network, proxy=proxy)
+    return cfg.network
 
 
 def apply_ai_settings_values(cfg: Config, values: Mapping[str, Any]) -> AIConfig:
@@ -630,6 +682,7 @@ _ROOT_KEYS = {
     "ignore_dirs", "ignore_globs",
 }
 _STORAGE_KEYS = {"data_dir"}
+_NETWORK_KEYS = {"proxy", "direct_hosts"}
 _WATCH_KEYS = {
     "backend", "stable_seconds", "stable_samples", "reconcile_interval_seconds",
     "full_scan_local_time", "timezone",
@@ -691,7 +744,7 @@ _AI_KEYS = {
     "timeout_seconds", "max_requests_per_run", "auto_clean_duplicates",
 }
 _TOP_KEYS = {
-    "config_version", "roots", "storage", "watch", "providers",
+    "config_version", "roots", "storage", "watch", "network", "providers",
     "policy", "retry", "lyrics", "web", "write", "ai",
 }
 
@@ -834,6 +887,25 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
             data_dir=_as_str(
                 problems, "storage.data_dir", table.get("data_dir", "./data"), "./data"
             )
+        )
+
+    # ---- network ----
+    if "network" in raw:
+        table = _unwrap(problems, "network", raw["network"])
+        problems.unknown_keys("network", table, _NETWORK_KEYS)
+        try:
+            proxy = normalize_proxy_url(table.get("proxy", ""))
+        except ValueError as exc:
+            problems.add("network.proxy", str(exc))
+            proxy = ""
+        cfg.network = NetworkConfig(
+            proxy=proxy,
+            direct_hosts=_as_str_list(
+                problems,
+                "network.direct_hosts",
+                table.get("direct_hosts", list(DEFAULT_DIRECT_HOSTS)),
+                list(DEFAULT_DIRECT_HOSTS),
+            ),
         )
 
     # ---- watch ----
@@ -1454,6 +1526,12 @@ def _apply_env(problems: _Problems, cfg: Config, env: Mapping[str, str]) -> None
 
     if (v := env.get("LYRA_DATA_DIR")) :
         cfg.storage.data_dir = v
+    if (v := env.get("LYRA_HTTP_PROXY")):
+        try:
+            cfg.network.proxy = normalize_proxy_url(v)
+            cfg.network.proxy_source = "config"
+        except ValueError as exc:
+            problems.add("LYRA_HTTP_PROXY", str(exc))
     if (v := flag("LYRA_WRITE_ENABLED")) is not None:
         cfg.policy.write_enabled = v
     if (v := env.get("LYRA_LIBRARY_ROOT")):

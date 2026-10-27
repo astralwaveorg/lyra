@@ -2,7 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api/client'
-import type { AIProtocol, AISettings, AITestResult, TagPolicy, TokenRow } from '@/api/types'
+import type {
+  AIProtocol,
+  AISettings,
+  AITestResult,
+  NetworkSettings,
+  TagPolicy,
+  TokenRow,
+} from '@/api/types'
 import { useMeta } from '@/stores/meta'
 import { useSession } from '@/stores/session'
 import { useTheme } from '@/stores/ui'
@@ -40,6 +47,11 @@ const aiToken = ref('')
 const clearAIToken = ref(false)
 const aiTest = ref<AITestResult | null>(null)
 const aiError = ref('')
+
+const network = ref<NetworkSettings | null>(null)
+const networkLoading = ref(false)
+const networkSaving = ref(false)
+const networkError = ref('')
 
 const AI_PROTOCOL_LABEL: Record<AIProtocol, string> = {
   openai_chat: 'OpenAI Chat Completions',
@@ -171,6 +183,32 @@ async function testAISettings() {
   }
 }
 
+async function loadNetworkSettings() {
+  networkLoading.value = true
+  networkError.value = ''
+  try {
+    network.value = await api.networkSettings()
+  } catch (err) {
+    networkError.value = err instanceof Error ? err.message : '代理设置加载失败'
+  } finally {
+    networkLoading.value = false
+  }
+}
+
+async function saveNetworkSettings() {
+  if (!network.value) return
+  networkSaving.value = true
+  networkError.value = ''
+  try {
+    network.value = await api.updateNetworkSettings({ proxy: network.value.proxy.trim() })
+    ElMessage.success('代理设置已保存')
+  } catch (err) {
+    networkError.value = err instanceof Error ? err.message : '保存失败'
+  } finally {
+    networkSaving.value = false
+  }
+}
+
 async function loadTokens() {
   tokensLoading.value = true
   try {
@@ -256,7 +294,7 @@ async function copyToken() {
 
 onMounted(async () => {
   if (!meta.summary) await meta.refresh().catch(() => undefined)
-  await Promise.all([loadTokens(), loadTagPolicy(), loadAISettings()])
+  await Promise.all([loadTokens(), loadTagPolicy(), loadAISettings(), loadNetworkSettings()])
 })
 </script>
 
@@ -524,6 +562,66 @@ onMounted(async () => {
       :closable="false"
       show-icon
       title="大模型设置加载失败，请刷新页面重试"
+      class="settings-skeleton"
+    />
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">网络代理</span>
+      <span class="card-hint">访问 LRCLIB、MusicBrainz 等境外服务时使用</span>
+    </div>
+    <div v-if="network" class="card-body col">
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">代理地址</div>
+          <div class="cell-meta">
+            支持 HTTP 与 SOCKS5，例如 http://10.0.1.8:7890 或 socks5://10.0.1.8:7890。
+            留空时沿用系统环境变量，未配置则直连。国内歌词来源始终直连，代理只用于境外服务。
+          </div>
+        </div>
+        <el-input
+          v-model="network.proxy"
+          placeholder="http://10.0.1.8:7890"
+          clearable
+          style="max-width: 420px"
+        />
+      </div>
+      <el-alert
+        v-if="network.source === 'env' && network.environment_proxy"
+        :title="`当前沿用环境变量代理：${network.environment_proxy}`"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        v-if="network.source === 'config'"
+        title="当前使用配置文件里的代理，保存后会覆盖它"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <div class="setting-actions">
+        <el-button type="primary" :loading="networkSaving" @click="saveNetworkSettings">
+          保存代理设置
+        </el-button>
+        <span class="cell-meta">保存后新的请求立即使用，监控进程约 30 秒内应用</span>
+      </div>
+      <el-alert
+        v-if="networkError"
+        :title="networkError"
+        type="error"
+        :closable="false"
+        show-icon
+      />
+    </div>
+    <el-skeleton v-else-if="networkLoading" :loading="true" animated :rows="3" class="settings-skeleton" />
+    <el-alert
+      v-else
+      type="error"
+      :closable="false"
+      show-icon
+      title="代理设置加载失败，请刷新页面重试"
       class="settings-skeleton"
     />
   </section>

@@ -544,6 +544,14 @@ export type TagSettings = {
   revision: string
 }
 
+export type NetworkSettings = {
+  proxy: string
+  source: 'settings' | 'config' | 'env' | 'none'
+  effective_proxy: string
+  environment_proxy: string
+  schemes: string[]
+}
+
 export type AIProtocol = 'openai_chat' | 'openai_responses' | 'anthropic'
 
 export type AISettings = {

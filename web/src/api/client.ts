@@ -17,6 +17,7 @@ import type {
   OrganizePlan,
   OrganizeResult,
   LyricsPreview,
+  NetworkSettings,
   OrphanItem,
   RenameRow,
   ReviewPage,
@@ -344,6 +345,12 @@ export const api = {
   testAISettings: (settings: AISettingsInput) =>
     request<AITestResult>('/api/v1/settings/ai/test', {
       method: 'POST',
+      body: JSON.stringify(settings),
+    }),
+  networkSettings: () => request<NetworkSettings>('/api/v1/settings/network'),
+  updateNetworkSettings: (settings: { proxy: string }) =>
+    request<NetworkSettings & { ok: boolean }>('/api/v1/settings/network', {
+      method: 'PUT',
       body: JSON.stringify(settings),
     }),
   tagProposals: (params: { state?: string; q?: string; limit?: number; offset?: number }) =>
