@@ -303,6 +303,18 @@ def sync_state(
             progress(f"识别到 {moved} 个文件被移动/重命名，已更新记录")
 
     progress(f"状态已登记：{len(targets)} 个目标")
+
+    # 观测刚刷新完 → 顺手清掉「这一首已经有歌词了」的过期复核记录。
+    #
+    # 为什么放在这里而不是只放在写入之后：曲库里的歌词可能是**别处**写进去的
+    # （人工用别的工具编辑、或上一轮的写入），队列里的旧候选照样会变成噪声。
+    # 每次审计都清一遍，队列里留下的就一定是「真的还需要决定」的。
+    try:
+        cleaned = store.supersede_obsolete_reviews()
+    except Exception:  # noqa: BLE001 — 清理失败不影响审计结果
+        cleaned = 0
+    if cleaned:
+        progress(f"清理过期复核记录 {cleaned} 条")
     return targets
 
 
