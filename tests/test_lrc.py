@@ -130,17 +130,21 @@ def test_只有逐字标签也应判为synced():
 # ---------------------------------------------------------------------------
 
 
-def test_占位文案判为suspicious且标记原因():
-    """占位文案绝不能当作可用歌词，更不能写进文件。"""
+def test_占位文案单独一种状态且标记原因():
+    """占位文案绝不能当作可用歌词，更不能写进文件。
+
+    但它也**不是异常**：「此歌曲为没有填词的纯音乐」准确描述了这首歌
+    的状态。混进「时间轴异常」会让几十首纯器乐在健康页上挂红灯。
+    """
     parsed = parse_lrc("纯音乐，请欣赏")
-    assert parsed.state is LyricsState.SYNCED_SUSPICIOUS
+    assert parsed.state is LyricsState.PLACEHOLDER
     assert "placeholder_only" in parsed.problems
 
 
-def test_带时间轴的占位文案同样判为suspicious():
+def test_带时间轴的占位文案同样单独一种状态():
     """「有时间轴」不等于「有歌词」——有些源会给占位文案套上时间戳。"""
     parsed = parse_lrc("[00:00.00]纯音乐，请欣赏")
-    assert parsed.state is LyricsState.SYNCED_SUSPICIOUS
+    assert parsed.state is LyricsState.PLACEHOLDER
     assert "placeholder_only" in parsed.problems
 
 

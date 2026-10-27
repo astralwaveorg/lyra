@@ -4,6 +4,7 @@ export const LYRIC_STATE: Record<string, string> = {
   synced: '合法歌词',
   synced_suspicious: '时间轴异常',
   plain_text: '无时间轴',
+  placeholder: '纯音乐',
   absent: '无歌词',
   unparseable: '无法解析',
 }
@@ -12,6 +13,7 @@ export const LYRIC_STATE_TONE: Record<string, 'ok' | 'warn' | 'danger' | 'info' 
   synced: 'ok',
   synced_suspicious: 'warn',
   plain_text: 'warn',
+  placeholder: 'info',
   absent: 'muted',
   unparseable: 'danger',
 }

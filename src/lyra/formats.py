@@ -733,9 +733,10 @@ def _classify_texts(
     ]
 
     rank = {
-        LyricsState.SYNCED: 4,
-        LyricsState.SYNCED_SUSPICIOUS: 3,
-        LyricsState.PLAIN_TEXT: 2,
+        LyricsState.SYNCED: 5,
+        LyricsState.SYNCED_SUSPICIOUS: 4,
+        LyricsState.PLAIN_TEXT: 3,
+        LyricsState.PLACEHOLDER: 2,
         LyricsState.UNPARSEABLE: 1,
         LyricsState.ABSENT: 0,
     }

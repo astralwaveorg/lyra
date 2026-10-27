@@ -249,8 +249,9 @@ def _parse_lrc_inner(
         text_lines = [t for t in untimed if t.strip()]
         if is_placeholder_only(text_lines):
             problems.append("placeholder_only")
+            # 占位文案是**准确的状态**，不是异常：这首歌本来就没有歌词。
             return ParsedLyrics(
-                state=LyricsState.SYNCED_SUSPICIOUS,
+                state=LyricsState.PLACEHOLDER,
                 line_count=len(text_lines),
                 tags=meta,
                 problems=tuple(problems),
@@ -291,6 +292,21 @@ def _parse_lrc_inner(
         if p.startswith(("all_timestamps_zero", "placeholder_only", "timestamp_beyond_duration",
                          "no_text_on_timeline"))
     ]
+
+    # 整份歌词只有占位文案 → 这是「这首歌没有歌词」的**准确描述**，
+    # 不是时间轴异常。单独给一个状态，别混进「可疑」里。
+    if is_placeholder_only(text_lines):
+        return ParsedLyrics(
+            state=LyricsState.PLACEHOLDER,
+            line_count=len(text_lines),
+            timestamp_count=timestamp_count,
+            offset_ms=offset_ms,
+            has_word_level=has_word_level,
+            first_timestamp_ms=effective_first,
+            last_timestamp_ms=effective_last,
+            tags=meta,
+            problems=tuple(problems),
+        )
 
     return ParsedLyrics(
         state=LyricsState.SYNCED_SUSPICIOUS if hard_problems else LyricsState.SYNCED,

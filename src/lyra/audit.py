@@ -390,19 +390,32 @@ def audit_root(
         if not has_artwork:
             issues.append(IssueCode.NO_COVER_ARTWORK)
 
-        if meta.embedded.state is LyricsState.ABSENT and sidecar.is_effectively_absent:
+        # 歌词状态相关的判定。
+        #
+        # **占位文案单独算一种状态，不算异常。** 供应商写明的
+        # 「此歌曲为没有填词的纯音乐，请您欣赏」准确描述了这首歌的状态：
+        # 它本来就没有歌词。把它算成「时间轴异常」会让几十首纯器乐
+        # 在健康页上挂红灯，而实际上它们不需要任何人处理。
+        embedded_state = meta.embedded.state
+        sidecar_state = sidecar.state
+        placeholder_only = LyricsState.PLACEHOLDER in (embedded_state, sidecar_state)
+
+        if embedded_state is LyricsState.ABSENT and sidecar.is_effectively_absent:
             issues.append(IssueCode.NO_LYRICS)
         else:
-            if meta.embedded.state is LyricsState.ABSENT:
+            # 一侧是占位、另一侧没有 → 不报「缺」：
+            # 占位已经说明了这首歌没有歌词，两边都放占位即可。
+            if embedded_state is LyricsState.ABSENT and not placeholder_only:
                 issues.append(IssueCode.MISSING_EMBEDDED)
-            if sidecar.is_effectively_absent:
+            if sidecar.is_effectively_absent and not placeholder_only:
                 issues.append(IssueCode.MISSING_SIDECAR)
-        if meta.embedded.state is LyricsState.PLAIN_TEXT:
+        if embedded_state is LyricsState.PLAIN_TEXT:
             issues.append(IssueCode.PLAIN_EMBEDDED_LYRICS)
-        if LyricsState.SYNCED_SUSPICIOUS in (meta.embedded.state, sidecar.state):
+        if LyricsState.SYNCED_SUSPICIOUS in (embedded_state, sidecar_state):
             issues.append(IssueCode.SUSPICIOUS_LYRICS)
 
         # 内嵌与 sidecar 内容是否一致（用规范化内容指纹比较）
+        # 占位文案与真歌词对不上时，这里会照实报「歌词不符」。
         if _lyrics_conflict(meta.embedded, sidecar):
             issues.append(IssueCode.LYRICS_MISMATCH)
 

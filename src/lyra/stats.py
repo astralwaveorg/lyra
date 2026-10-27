@@ -94,6 +94,8 @@ class LibraryStats:
     lrc_synced: int = 0
     lrc_plain: int = 0
     lrc_suspicious: int = 0
+    lrc_placeholder: int = 0
+    """纯音乐占位文案：不是异常，是「这首歌本来就没有歌词」。"""
     lrc_unparseable: int = 0
     lrc_bom: int = 0
     lrc_orphan: int = 0
@@ -106,6 +108,7 @@ class LibraryStats:
     embedded_plain: int = 0
     embedded_absent: int = 0
     embedded_suspicious: int = 0
+    embedded_placeholder: int = 0
     without_embedded_cover: int = 0
 
     cover_total: int = 0
@@ -195,6 +198,7 @@ def collect_stats(root: RootConfig) -> LibraryStats:
     stats.lrc_synced = states.get(LyricsState.SYNCED.value, 0)
     stats.lrc_plain = states.get(LyricsState.PLAIN_TEXT.value, 0)
     stats.lrc_suspicious = states.get(LyricsState.SYNCED_SUSPICIOUS.value, 0)
+    stats.lrc_placeholder = states.get(LyricsState.PLACEHOLDER.value, 0)
     stats.lrc_unparseable = states.get(LyricsState.UNPARSEABLE.value, 0)
     stats.lrc_bom = len(result.bom_sidecars)
     stats.lrc_orphan = len(result.orphan_sidecars)
@@ -232,6 +236,8 @@ def collect_stats(root: RootConfig) -> LibraryStats:
             stats.embedded_synced += 1
         elif st is LyricsState.SYNCED_SUSPICIOUS:
             stats.embedded_suspicious += 1
+        elif st is LyricsState.PLACEHOLDER:
+            stats.embedded_placeholder += 1
         elif st is LyricsState.PLAIN_TEXT:
             stats.embedded_plain += 1
         else:
@@ -418,7 +424,8 @@ def render_stats_text(stats: LibraryStats) -> str:
     add("-- LRC 歌词文件（按内容）--")
     add(f"  真正有歌词(带时间轴)  {stats.lrc_synced:6}")
     add(f"  纯文本(无时间轴)      {stats.lrc_plain:6}")
-    add(f"  可疑(占位/越界等)     {stats.lrc_suspicious:6}")
+    add(f"  可疑(越界等)          {stats.lrc_suspicious:6}")
+    add(f"  纯音乐(占位文案)      {stats.lrc_placeholder:6}")
     add(f"  无法解析              {stats.lrc_unparseable:6}")
     add(f"  0 字节空文件          {stats.lrc_empty:6}   ← 占位残留，可安全填充")
     add(f"  带 BOM                {stats.lrc_bom:6}")

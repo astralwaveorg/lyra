@@ -81,6 +81,14 @@ class LyricsState(StrEnum):
     SYNCED_SUSPICIOUS = "synced_suspicious"
     """有时间轴但明显异常（占位文案、全零时间、越界等）。保留并复核，不当纯文本删。"""
 
+    PLACEHOLDER = "placeholder"
+    """纯音乐占位文案（「此歌曲为没有填词的纯音乐，请您欣赏」这类）。
+
+    **这不是异常**：供应商明确写明这首歌本来就没有歌词，状态是准确的。
+    把它算成「时间轴异常」会让几十首纯器乐在健康页上挂红灯——
+    实际那几十首的状态本来就是对的，不需要任何人处理。
+    """
+
     UNPARSEABLE = "unparseable"
     """编码或结构无法解析。不修改。"""
 
@@ -254,6 +262,8 @@ class TrackAudit:
             return LyricsState.SYNCED
         if LyricsState.PLAIN_TEXT in states:
             return LyricsState.PLAIN_TEXT
+        if LyricsState.PLACEHOLDER in states:
+            return LyricsState.PLACEHOLDER
         return LyricsState.ABSENT
 
 

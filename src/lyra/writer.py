@@ -993,9 +993,11 @@ def _verify_result(plan: WritePlan) -> list[str]:
     if not plan.clear_only and plan.embed:
         # 允许的状态：自动流程只接受带时间轴的歌词；人工强制写入时
         # 纯文本也算数——人选的就是它，不能因为「没有时间轴」判定失败。
+        # 纯音乐占位文案同理：人工明确写入的「此歌曲为没有填词的纯音乐」
+        # 也是一个准确的状态，不该被当成写入失败。
         allowed_states = ("synced", "synced_suspicious")
         if plan.force:
-            allowed_states = allowed_states + ("plain_text",)
+            allowed_states = allowed_states + ("plain_text", "placeholder")
         if meta.embedded.state.value not in allowed_states:
             problems.append(
                 f"写入后内嵌歌词状态异常: {meta.embedded.state.value}"

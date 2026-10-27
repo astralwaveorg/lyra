@@ -36,6 +36,7 @@ const STATE_OPTIONS = [
   { value: 'synced', label: '合法歌词' },
   { value: 'plain_text', label: '无时间轴' },
   { value: 'synced_suspicious', label: '时间轴异常' },
+  { value: 'placeholder', label: '纯音乐' },
   { value: 'absent', label: '无歌词' },
   { value: 'unparseable', label: '无法解析' },
 ]
