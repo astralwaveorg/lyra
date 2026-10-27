@@ -218,6 +218,41 @@ def test_恢复一条没有忽略的提案会被拒绝(review_env):
     assert client.post(f"/api/v1/tags/proposals/{item['id']}/restore", json={}).status_code == 400
 
 
+def test_被忽略的链接条目不会被翻成已定案(review_env):
+    """「忽略」比「链接指定」更晚也更明确，不能被扫描悄悄改掉。
+
+    线上有三条既被忽略、又来自链接指定的提案。它们要是被翻成「已定案」，
+    就会从「已忽略」列表里掉出去——用户会以为自己忽略的东西丢了。
+    """
+    client, cfg, provider, _mutable = review_env
+    item = client.get("/api/v1/tags/proposals", params={"state": "review"}).json()["items"][0]
+    # 模拟一条「链接指定过、又被忽略」的提案
+    store = open_store(cfg.storage.resolved_data_dir)
+    try:
+        store.upsert_tag_proposal(
+            location_id=int(
+                store.conn.execute(
+                    "SELECT location_id FROM tag_proposals WHERE id=?", (item["id"],)
+                ).fetchone()["location_id"]
+            ),
+            state="review",
+            source="link",
+            confidence=1.0,
+            title=str(item["title"]),
+            artists=str(item["artists"]),
+            album=str(item["album"] or ""),
+            payload={"match": {"source": "link", "source_label": "链接指定"}},
+            revive_skipped=True,
+        )
+        store.dismiss_tag_proposal(item["id"])
+    finally:
+        store.close()
+
+    _rescan(cfg, provider)
+    assert _state_of(cfg, item["id"]) == "ignored"
+    assert client.get("/api/v1/tags/proposals", params={"state": "ignored"}).json()["total"] == 1
+
+
 def test_自动写入不留已定案记录(env):
     """自动写入没有人工意图：行照旧删掉，别把表撑起来。"""
     client, cfg, provider, _mutable = env

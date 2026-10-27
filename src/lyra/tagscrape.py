@@ -1666,10 +1666,14 @@ def scan_tags(
                 if existing is not None:
                     # 人工痕迹要留住。删行等于把「人已经表过态」一起抹掉，
                     # 下一轮扫描只要算出的匹配跟上次不同，这条曲子又会回来。
-                    if str(existing["source"]) == SOURCE_LINK:
-                        store.set_tag_proposal_state(int(existing["id"]), STATE_DONE)
-                    elif str(existing["state"]) in (STATE_IGNORED, STATE_DONE):
+                    #
+                    # 顺序要紧：先看状态，再看来源。一条既被忽略又是链接指定的
+                    # 提案，「忽略」是更晚、更明确的那个动作，不能被翻成
+                    # 「已定案」——那会让它从「已忽略」列表里掉出去。
+                    if str(existing["state"]) in (STATE_IGNORED, STATE_DONE):
                         pass  # 人工忽略/已定案：原样保留
+                    elif str(existing["source"]) == SOURCE_LINK:
+                        store.set_tag_proposal_state(int(existing["id"]), STATE_DONE)
                     else:
                         store.delete_tag_proposal(int(existing["id"]))
                 continue
