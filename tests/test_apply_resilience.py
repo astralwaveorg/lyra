@@ -74,7 +74,7 @@ def test_单文件锁错误不终止整批(tmp_path, store, flac_factory, monkey
 
     seen: list[str] = []
 
-    def fake_apply_one(_store, _cfg, _base, _backup, row, summary):
+    def fake_apply_one(_store, _cfg, _base, _backup, row, summary, **_kwargs):
         seen.append(row["rel_path"])
         if row["rel_path"] == "b.flac":
             raise sqlite3.OperationalError("database is locked")
@@ -100,7 +100,7 @@ def test_锁错误保留待写入状态而不是标记失败(tmp_path, store, fl
     names = ["a.flac", "b.flac"]
     cfg, _lib = _setup(tmp_path, store, flac_factory, names)
 
-    def fake_apply_one(_store, _cfg, _base, _backup, row, summary):
+    def fake_apply_one(_store, _cfg, _base, _backup, row, summary, **_kwargs):
         if row["rel_path"] == "a.flac":
             raise sqlite3.OperationalError("database is locked")
         _store.set_staged_state(row["id"], "applied")
@@ -118,7 +118,7 @@ def test_非锁错误只标记该文件失败(tmp_path, store, flac_factory, mon
     names = ["a.flac", "b.flac", "c.flac"]
     cfg, _lib = _setup(tmp_path, store, flac_factory, names)
 
-    def fake_apply_one(_store, _cfg, _base, _backup, row, summary):
+    def fake_apply_one(_store, _cfg, _base, _backup, row, summary, **_kwargs):
         if row["rel_path"] == "b.flac":
             raise ValueError("音频结构不支持")
         _store.set_staged_state(row["id"], "applied")
@@ -142,7 +142,7 @@ def test_锁错误会重试而不是一次就放弃(tmp_path, store, flac_factor
 
     attempts = {"n": 0}
 
-    def flaky(_store, _cfg, _base, _backup, row, summary):
+    def flaky(_store, _cfg, _base, _backup, row, summary, **_kwargs):
         attempts["n"] += 1
         if attempts["n"] < 3:
             raise sqlite3.OperationalError("database is locked")

@@ -965,11 +965,16 @@ def _apply_one(
     backup_dir: Path,
     row,
     summary: RunSummary,
+    *,
+    force: bool = False,
 ) -> bool:
     """写入单个文件的歌词，返回 True 表示确实写入了。
 
     抽成独立函数是为了让调用方能做**逐文件失败隔离**：捕获异常后继续下一首，
     而不是让一个瞬时错误终止整批。
+
+    `force` 表示这是**人工明确选定**的写入：放宽「纯文本歌词不算成功」
+    这类自动策略的复核要求（见 `WritePlan.force`）。
     """
     abs_path = base / row["rel_path"]
     if not abs_path.is_file():
@@ -994,6 +999,9 @@ def _apply_one(
         Path(observed["sidecar_path"]) if observed else abs_path.with_suffix(".lrc")
     )
 
+    # 来源标记：auto 是系统自动接受，manual 是人工在界面上选定。
+    origin = row["origin"] if "origin" in row.keys() else "auto"  # noqa: SIM118
+
     plan = WritePlan(
         location_id=row["location_id"],
         audio_path=abs_path,
@@ -1004,18 +1012,19 @@ def _apply_one(
         write_sidecar=cfg.policy.write_sidecar_lrc,
         # 自动接受的不备份（见 WriteConfig.backup_review_only）：
         # 全库整份复制代价十几 GB，而自动接受写错概率低。
-        needs_backup=not (
-            cfg.write.backup_review_only
-            and (row["origin"] if "origin" in row.keys() else "auto")  # noqa: SIM118 == "auto"
-        ),
+        needs_backup=not (cfg.write.backup_review_only and origin == "auto"),
         original_full_hash=file_sha256(abs_path),
         original_audio_hash="",
         original_tags=dict(meta.tags),
         reason=f"provider={row['provider']} id={row['provider_id']}",
+        force=force,
     )
     if already_satisfied(plan):
         store.set_staged_state(row["id"], "already_satisfied")
         summary.skipped_satisfied += 1
+        # 人工选定的那一条**本来就在文件里**：目标状态已经达成，
+        # 这是成功而不是「什么都没做」。批量流程里保持原样（跳过即可），
+        # 人工流程由调用方按 `skipped_satisfied` 判定成功。
         return False
 
     outcome = apply_plan(store, plan, cfg, backup_dir=backup_dir)
@@ -1031,7 +1040,15 @@ def _apply_one(
     store.conn.execute(
         "INSERT INTO approvals(location_id, lyrics_hash, approved_by, "
         "policy_version, approved_at) VALUES(?,?,?,?,?)",
-        (row["location_id"], row["content_hash"], "auto", POLICY_VERSION, time.time()),
+        (
+            row["location_id"],
+            row["content_hash"],
+            # 人工在界面上选定的那一条要记成 user：审计时能分清
+            # 「系统自动接受」与「人看过之后决定」。
+            "user" if origin == "manual" else "auto",
+            POLICY_VERSION,
+            time.time(),
+        ),
     )
     return True
 
@@ -1652,6 +1669,8 @@ def run_apply(
     *,
     limit: int | None = None,
     only_rel_paths: set[str] | None = None,
+    only_staged_ids: set[int] | None = None,
+    force: bool = False,
     progress: ProgressFn = _noop,
     should_yield: Callable[[], bool] | None = None,
 ) -> RunSummary:
@@ -1660,6 +1679,11 @@ def run_apply(
     `should_yield` 同 `run_fetch`：写好当前这一首就停下，把租约让给人工。
 
     `only_rel_paths` 用于单曲/选定范围写入：只处理这些相对路径对应的暂存行。
+
+    `only_staged_ids` 用于「人工只写选中的那一条」：同一位置可能有多份
+    待写入歌词（历史遗留），全写一遍不但白写，最终内容还取决于迭代顺序。
+
+    `force` 表示人工明确选定：放宽纯文本歌词的复核要求（见 `WritePlan.force`）。
     """
     started = time.monotonic()
     summary = RunSummary()
@@ -1695,11 +1719,13 @@ def run_apply(
             break
         if only_rel_paths is not None and row["rel_path"] not in only_rel_paths:
             continue
+        if only_staged_ids is not None and int(row["id"]) not in only_staged_ids:
+            continue
 
         wrote = False
         for attempt in range(4):
             try:
-                wrote = _apply_one(store, cfg, base, backup_dir, row, summary)
+                wrote = _apply_one(store, cfg, base, backup_dir, row, summary, force=force)
                 break
             except sqlite3.OperationalError as exc:
                 message = str(exc).lower()

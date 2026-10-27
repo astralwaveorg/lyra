@@ -190,9 +190,11 @@ export const api = {
       applied: {
         ok: boolean
         written: number
+        satisfied?: number
         failed: number
         errors: string[]
         error?: string
+        message?: string
       } | null
     }>('/api/v1/tracks/apply-lyrics', json(payload)),
 

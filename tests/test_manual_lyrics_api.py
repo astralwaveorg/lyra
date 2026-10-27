@@ -134,6 +134,7 @@ def env(tmp_path: Path, flac_factory, monkeypatch):
         c.lib = lib            # type: ignore[attr-defined]
         c.calls = calls        # type: ignore[attr-defined]
         c.resync = resync      # type: ignore[attr-defined]
+        c.lyrics_by_id = good._lyrics  # type: ignore[attr-defined]
         yield c
 
 
@@ -267,6 +268,133 @@ def test_仅暂存时不写文件(env):
     assert r.status_code == 200, r.text
     assert r.json()["applied"] is None
     assert not (env.lib / "专辑" / "歌.lrc").exists()
+
+
+# ---------------------------------------------------------------------------
+# 人工选定的歌词必须真的写进去
+# ---------------------------------------------------------------------------
+
+
+def test_纯文本歌词也能写入(env):
+    """人工选的那条**没有时间轴**时也必须写进去。
+
+    实际故障：网易云与 LRCLIB 的很多曲目只有纯文本歌词。自动流程拒绝它们
+    是对的（纯文本会被当成垃圾清掉，写了也白写），但人工在界面上逐条看过
+    之后选定了一条，那就是决定。旧实现里复核只认 synced，人工选的纯文本
+    歌词被判定「写入后内嵌歌词状态异常: plain_text」，**回滚并报错**——
+    实际生产里两次人工写入都这样失败。
+    """
+    env.calls.setdefault("lyrics", [])
+    env.lyrics_by_id["plain"] = RawLyrics(
+        provider="qq", provider_id="plain",
+        text="第一行纯文本\n第二行纯文本\n", synced=False,
+    )
+
+    r = env.post("/api/v1/tracks/apply-lyrics", json={
+        "root": "lib", "path": "专辑/歌.flac",
+        "provider": "qq", "provider_id": "plain",
+        "apply": True, "by_id": True})
+    assert r.status_code == 200, r.text
+    applied = r.json()["applied"]
+    assert applied["ok"] is True, applied
+    assert applied["written"] == 1, applied
+
+    sidecar = env.lib / "专辑" / "歌.lrc"
+    assert sidecar.is_file()
+    assert "第一行纯文本" in sidecar.read_text(encoding="utf-8")
+
+
+def test_只写入人工选中的那一条(env):
+    """同一位置可能留着历史抓取的其它待写入行，人工只认他刚选中的这条。
+
+    旧实现把该位置**全部**待写入行都写一遍：白写一次（还多一次备份），
+    最终内容取决于迭代顺序——那是不可接受的随机性。
+    """
+    store = open_store(env.cfg.storage.resolved_data_dir)
+    try:
+        location = store.conn.execute(
+            "SELECT id FROM locations WHERE rel_path=?", ("专辑/歌.flac",)
+        ).fetchone()
+        assert location is not None
+        store.stage_lyrics(
+            location_id=int(location["id"]),
+            content_hash="deadbeef",
+            content="[00:03.00]旧的那一条\n",
+            provider="qq", provider_id="old", state="staged", origin="auto",
+        )
+    finally:
+        store.close()
+
+    r = env.post("/api/v1/tracks/apply-lyrics", json={
+        "root": "lib", "path": "专辑/歌.flac",
+        "provider": "qq", "provider_id": "1",
+        "apply": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"]["written"] == 1, r.json()
+
+    written = (env.lib / "专辑" / "歌.lrc").read_text(encoding="utf-8")
+    assert "来自来源的正文" in written
+    assert "旧的那一条" not in written
+
+    # 旧的那一条必须被作废，否则下一轮批量写入会把它写回去
+    store = open_store(env.cfg.storage.resolved_data_dir)
+    try:
+        states = {
+            row["id"]: row["state"]
+            for row in store.conn.execute(
+                "SELECT id, state FROM staged_lyrics WHERE location_id=?",
+                (int(location["id"]),),
+            )
+        }
+    finally:
+        store.close()
+    assert "superseded" in states.values(), states
+
+
+def test_重复采用同一份歌词算成功(env):
+    """文件里已经是这份歌词时，再点一次「采用并写入」不该报失败。
+
+    旧实现里 `summary.applied == 0` 被当成失败，使用者看到红色报错，
+    实际目标状态早已达成。
+    """
+    payload = {
+        "root": "lib", "path": "专辑/歌.flac",
+        "provider": "qq", "provider_id": "1", "apply": True,
+    }
+    first = env.post("/api/v1/tracks/apply-lyrics", json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["applied"]["ok"] is True
+
+    second = env.post("/api/v1/tracks/apply-lyrics", json={**payload, "replace_existing": True})
+    assert second.status_code == 200, second.text
+    applied = second.json()["applied"]
+    assert applied["ok"] is True, applied
+    assert applied["written"] == 0
+    assert applied["satisfied"] == 1
+    assert "已经是" in applied["message"]
+
+
+def test_写入失败时给出可读的原因(env, monkeypatch):
+    """没有真正写进去时必须说清为什么，不能只丢一个「写入失败」。"""
+    import lyra.pipeline as pipeline_module
+    from lyra.writer import WriteOutcome
+
+    def boom(*_args, **_kwargs):
+        return WriteOutcome(
+            ok=False, txn_id="", state="failed",
+            error="UnsupportedStructure: 写入后复核未通过: 内部错误",
+        )
+
+    monkeypatch.setattr(pipeline_module, "apply_plan", boom)
+
+    r = env.post("/api/v1/tracks/apply-lyrics", json={
+        "root": "lib", "path": "专辑/歌.flac",
+        "provider": "qq", "provider_id": "1", "apply": True})
+    assert r.status_code == 200, r.text
+    applied = r.json()["applied"]
+    assert applied["ok"] is False
+    assert "复核未通过" in applied["error"], applied
+    assert applied["errors"], applied
 
 
 # ---------------------------------------------------------------------------

@@ -114,10 +114,10 @@ async function adopt() {
       replace_existing: replaceExisting.value,
     })
     if (result.applied && !result.applied.ok) {
-      ElMessage.error(result.applied.error ?? result.applied.errors[0] ?? '写入失败')
+      ElMessage.error(result.applied.error || result.applied.errors[0] || '写入失败')
       return
     }
-    ElMessage.success('已写入歌词')
+    ElMessage.success(result.applied?.message || '已写入歌词')
     emit('done')
     visible.value = false
   } catch (err) {
@@ -162,10 +162,10 @@ async function adoptLink() {
       by_id: true,
     })
     if (result.applied && !result.applied.ok) {
-      ElMessage.error(result.applied.error ?? result.applied.errors[0] ?? '写入失败')
+      ElMessage.error(result.applied.error || result.applied.errors[0] || '写入失败')
       return
     }
-    ElMessage.success('已写入歌词')
+    ElMessage.success(result.applied?.message || '已写入歌词')
     emit('done')
     visible.value = false
   } catch (err) {

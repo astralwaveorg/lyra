@@ -2070,6 +2070,10 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             state="staged",
             origin="manual",
         )
+        # 同一位置的其它待写入行（历史抓取留下的）就此作废：
+        # 人工只认他刚选中的这一条。留着它们，批量写入会把旧的那条也写一遍，
+        # 最终内容取决于迭代顺序——那是不可接受的随机性。
+        state.supersede_staged_except(location_id, staged_id)
 
         out: dict[str, Any] = {
             "ok": True,
@@ -2093,16 +2097,37 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 return out
             summary = run_apply(
                 state, cfg, root_cfg,
-                only_rel_paths={rel}, progress=lambda _line: None,
+                only_rel_paths={rel},
+                # 只写**刚选中的这一条**，不是这个位置的全部待写入行。
+                only_staged_ids={staged_id},
+                # 人工选定就是决定：即便这条歌词没有时间轴，也要写进去。
+                force=True,
+                progress=lambda _line: None,
             )
 
+        # 达成目标就算成功：写入成功，或文件里本来就已经是这一份歌词。
+        written = summary.applied
+        already = summary.skipped_satisfied
+        failed = summary.apply_failed
+        errors = summary.errors[:5]
+        if failed:
+            message = errors[0] if errors else "写入失败"
+        elif written:
+            message = ""
+        elif already:
+            message = "这份文件里已经是选中的这份歌词，无需重复写入"
+        else:
+            message = "没有写入任何歌词，请查看该文件的状态后重试"
         out["applied"] = {
-            "ok": summary.applied > 0 and not summary.apply_failed,
-            "written": summary.applied,
+            "ok": bool((written or already) and not failed),
+            "written": written,
+            "satisfied": already,
             "skipped_satisfied": summary.skipped_satisfied,
-            "failed": summary.apply_failed,
+            "failed": failed,
             "deferred_locked": summary.deferred_locked,
-            "errors": summary.errors[:5],
+            "errors": errors,
+            "error": message,
+            "message": message,
         }
         _invalidate_caches()
         return out

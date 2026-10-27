@@ -254,6 +254,16 @@ class WritePlan:
     人工确认过的一类才做。理由见 `WriteConfig.backup_review_only`。
     """
 
+    force: bool = False
+    """人工强制写入：放宽自动策略的复核要求。
+
+    自动流程只写「带时间轴的同步歌词」——纯文本歌词会被
+    `clear_plain_embedded` 策略当成垃圾清掉，写进去也只是白写。
+    但人工在界面上**逐条看过、明确选了**某一条歌词时，那是决定而不是
+    猜测：写进去就应该算成功，不能因为「这条没有时间轴」就回滚并报错。
+    音频哈希、非歌词标签这些**安全性**校验不受影响，照旧执行。
+    """
+
     original_full_hash: str = ""
     original_audio_hash: str = ""
     original_tags: dict[str, list[str]] = field(default_factory=dict)
@@ -981,7 +991,12 @@ def _verify_result(plan: WritePlan) -> list[str]:
             problems.append("写入后压缩音频哈希与原始不符")
 
     if not plan.clear_only and plan.embed:
-        if meta.embedded.state.value not in ("synced", "synced_suspicious"):
+        # 允许的状态：自动流程只接受带时间轴的歌词；人工强制写入时
+        # 纯文本也算数——人选的就是它，不能因为「没有时间轴」判定失败。
+        allowed_states = ("synced", "synced_suspicious")
+        if plan.force:
+            allowed_states = allowed_states + ("plain_text",)
+        if meta.embedded.state.value not in allowed_states:
             problems.append(
                 f"写入后内嵌歌词状态异常: {meta.embedded.state.value}"
             )

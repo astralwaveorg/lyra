@@ -1631,6 +1631,22 @@ class StateStore:
                 removed += cur.rowcount or 0
             return removed
 
+    def supersede_staged_except(self, location_id: int, keep_id: int) -> int:
+        """把同一位置**其它**待写入行标记为 superseded，返回作废行数。
+
+        人工在界面上选定了一条候选时，同位置可能还留着历史抓取留下的
+        其它待写入行。不作废它们的后果有两个：批量写入会把旧的那条
+        也写一遍（多一次备份），最终内容取决于迭代顺序——那是不可接受的
+        随机性。
+        """
+        with self.transaction() as tx:
+            cur = tx.execute(
+                "UPDATE staged_lyrics SET state='superseded' "
+                "WHERE location_id=? AND state='staged' AND id<>?",
+                (int(location_id), int(keep_id)),
+            )
+            return cur.rowcount or 0
+
     def staged_for_location(self, location_id: int) -> sqlite3.Row | None:
         """取该位置最新一份仍处于 staged 的歌词。"""
         return self.conn.execute(
