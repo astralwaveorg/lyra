@@ -24,6 +24,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from . import scan
 from .audit import AuditResult, audit_root
 from .config import Config, RootConfig
 from .db import ResolutionOutcome, StateStore
@@ -1054,6 +1055,35 @@ def _record_negative(
 # ---------------------------------------------------------------------------
 
 
+def _sidecar_target(audio_path: Path, observed: Path | None) -> Path:
+    """决定这次写入该落到哪个 .lrc。
+
+    观测到的配对**不能无条件照用**：观测是上一次审计的结果，可能已经过期，
+    也可能本来就配错了。实际踩到的坑：`The Beatles/As Nature Intended` 里
+    三首同名的 `I've Got a Feeling`（04 / 07 / 14），14 号一度把
+    04 号的 lrc 当成自己的——写歌词时把内容写进了**别人**的文件，
+    自己那一份始终「缺 .lrc」，而界面不报错（因为「内容已相同」被判成功）。
+
+    规则：
+      - 观测到的就是本文件自己的同名 lrc → 用它；
+      - 观测到的名字**正好是同目录另一个音频的同名 lrc** → 那是别人的，
+        不用；改用本文件自己的 `<同名>.lrc`；
+      - 其余情况（异名配对，如 `09 艺人 - 让你知道.flac` ↔ `让你知道.lrc`）
+        → 仍然照用观测结果，否则同一首歌会多出一份歌词文件。
+    """
+    own = audio_path.with_suffix(".lrc")
+    if observed is None:
+        return own
+    if observed.stem == audio_path.stem:
+        return observed
+    # 观测到的 lrc 是不是同目录另一个音频的「自己的那份」？
+    for ext in scan.AUDIO_EXTENSIONS:
+        sibling = observed.with_name(observed.stem + ext)
+        if sibling.is_file() and sibling != audio_path:
+            return own
+    return observed
+
+
 def _apply_one(
     store: StateStore,
     cfg: Config,
@@ -1091,8 +1121,9 @@ def _apply_one(
         "ORDER BY observed_at DESC LIMIT 1",
         (row["location_id"],),
     ).fetchone()
-    sidecar_target = (
-        Path(observed["sidecar_path"]) if observed else abs_path.with_suffix(".lrc")
+    sidecar_target = _sidecar_target(
+        abs_path,
+        Path(observed["sidecar_path"]) if observed else None,
     )
 
     # 来源标记：auto 是系统自动接受，manual 是人工在界面上选定。

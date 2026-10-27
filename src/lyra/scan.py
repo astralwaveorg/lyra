@@ -174,3 +174,42 @@ def normalize_stem(stem: str) -> str:
     s = normalize_text(s)
     # 最后去掉所有分隔符：包含关系只看「字」
     return _SEPARATORS.sub("", s)
+
+
+def track_number_hint(stem: str) -> int | None:
+    """文件名开头的**音轨号**（取最后一段数字），没有则返回 None。
+
+    为什么需要它：`normalize_stem` 会把 `04 X` 和 `14 X` 都归一成 `x`，
+    于是「同一首歌的不同编号写法」与「两首不同的歌」就分不开了。
+    实际后果：`The Beatles/As Nature Intended` 里三首同名的
+    `I've Got a Feeling`（04 / 07 / 14）互相抢 sidecar，
+    14 号因此把 04 号的 lrc 当成自己的——写入时把歌词写进了别人的文件，
+    自己那一份却始终「缺 .lrc」。
+
+    取**最后一段**数字：`1-05` 的音轨号是 5（第一段是碟号）。
+    """
+    s = stem.strip()
+    match = _LEADING_TRACK_NO.match(s)
+    if not match:
+        return None
+    prefix = match.group(0)
+    numbers = re.findall(r"\d+", prefix)
+    if not numbers:
+        return None
+    try:
+        return int(numbers[-1])
+    except ValueError:
+        return None
+
+
+def track_numbers_compatible(left: str, right: str) -> bool:
+    """两个文件名的音轨号是否**不冲突**。
+
+    只有两边都带编号、且编号不同才算冲突；有一边没编号就放行
+    （`让你知道.lrc` 这种没有编号的 sidecar 无法据此判断）。
+    """
+    a = track_number_hint(left)
+    b = track_number_hint(right)
+    if a is None or b is None:
+        return True
+    return a == b

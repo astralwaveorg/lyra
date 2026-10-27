@@ -88,14 +88,29 @@ def pair_sidecars(
         return [p for p in by_dir.get(audio.parent, []) if p not in used]
 
     # 二级：规范化主体唯一匹配
+    #
+    # **音轨号必须不冲突**：`normalize_stem` 会把 `04 X` 和 `14 X` 都归一成 `x`，
+    # 光看主体分不出「同一首歌的不同编号写法」与「两首不同的歌」。
+    # 实际后果：`The Beatles/As Nature Intended` 里三首同名的
+    # `I've Got a Feeling`（04 / 07 / 14）互相抢 sidecar——
+    # 14 号因此把 04 号的 lrc 当成自己的，写入时把歌词写进了别人的文件，
+    # 自己那一份却一直「缺 .lrc」，而且界面不报错。
+    #
+    # 注意：候选**多于一个**时仍然不配对（交给下面「歧义」那一段报出来）。
+    # 「宁可报歧义交人工」是这里的原则：音轨号只能用来**排除**明显冲突的
+    # 候选，不能用来在多个候选里替使用者做选择。
     for audio in audio_paths:
         if audio in result:
             continue
         target = norm(audio)
         candidates = [p for p in unmatched_pool(audio) if norm(p) == target]
-        if len(candidates) == 1:
-            result[audio] = (candidates[0], "normalized")
-            used.add(candidates[0])
+        if len(candidates) != 1:
+            continue
+        candidate = candidates[0]
+        if not scan.track_numbers_compatible(audio.stem, candidate.stem):
+            continue
+        result[audio] = (candidate, "normalized")
+        used.add(candidate)
 
     # 三级：唯一包含匹配（双向唯一，**两个方向都算**）
     #
@@ -117,6 +132,9 @@ def pair_sidecars(
         for candidate in unmatched_pool(audio):
             needle = norm(candidate)
             if len(needle) < 2:
+                continue
+            # 音轨号冲突的候选直接排除：`04 X.lrc` 不该配给 `14 X.flac`。
+            if not scan.track_numbers_compatible(audio.stem, candidate.stem):
                 continue
             if needle in target:
                 hits.append((candidate, "a"))
