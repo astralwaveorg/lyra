@@ -2,6 +2,13 @@
 
 完整记录见仓库根目录的 [CHANGELOG.md](https://github.com/astralwaveorg/lyra/blob/main/CHANGELOG.md)。
 
+## 1.1.1
+
+- 重复检测每一份都能勾选：「建议保留」的可以手动改选删除，「建议删除」的默认勾上
+- 勾上建议保留项时同组其余自动取消勾选，每组始终至少保留一份
+- 新增「批量删除所选」，一次处理所有勾选项
+- 「忽略这组」改为持久生效，扫描后不再自己冒出来，并可随时恢复
+
 ## 1.1.0
 
 - 设置页新增大模型配置：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages
