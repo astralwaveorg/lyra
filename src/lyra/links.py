@@ -107,7 +107,17 @@ def _with_scheme(raw: str) -> str:
 
 
 def _qq_id_from(raw: str) -> str | None:
-    """从 QQ 音乐链接里挖出 songmid。"""
+    """从 QQ 音乐链接里挖出歌曲标识。
+
+    两种形态都要认：
+      - **songmid**（14 位字母数字）：`.../songDetail/002APLOP0C614e`
+      - **数字歌曲 id**：`https://y.qq.com/n/ryqq_v2/songDetail/1839014`
+        （新版详情页给的是数字 id；歌词接口只认 songmid，
+        换算在 `QQProvider._resolve_mid` 里做）
+
+    数字 id 只在 14 位 mid 的规则**不匹配**时才作为候选，避免把
+    「恰好是 14 位数字的 mid」误当成数字 id。
+    """
     # `.../songDetail/<mid>` 与 `.../song/<mid>.html`
     for pattern in (
         r"/songDetail/([0-9A-Za-z]{14})(?:[/?#]|$)",
@@ -116,8 +126,20 @@ def _qq_id_from(raw: str) -> str | None:
         found = re.search(pattern, raw)
         if found:
             return found.group(1)
+    # 数字歌曲 id（新版详情页）
+    for pattern in (
+        r"/songDetail/(\d{1,20})(?:[/?#]|$)",
+        r"/song/(\d{1,20})(?:\.html)?(?:[/?#]|$)",
+    ):
+        found = re.search(pattern, raw)
+        if found:
+            return found.group(1)
     # `?songmid=<mid>` / `&songmid=<mid>`
     found = re.search(r"[?&#]songmid=([0-9A-Za-z]{14})\b", raw)
+    if found:
+        return found.group(1)
+    # `?songid=<id>` / `?id=<id>`
+    found = re.search(r"[?&#](?:songid|id)=(\d{1,20})\b", raw)
     if found:
         return found.group(1)
     return None
@@ -205,9 +227,11 @@ def parse_song_link(text: str, *, resolver=None) -> SongLink:
         name = explicit.group(1).lower()
         value = explicit.group(2)
         if name in ("qq", "qq音乐"):
-            if not _QQ_MID.match(value):
+            # 14 位字母数字是 songmid；纯数字是新版详情页给的歌曲 id，
+            # 两者都能用（换算成 mid 由 QQ 音乐那边负责）。
+            if not (_QQ_MID.match(value) or _NUMERIC_ID.match(value)):
                 raise UnsupportedLink(
-                    f"QQ 音乐的歌曲 id 应当是 14 位字母数字，收到 {value!r}。"
+                    f"QQ 音乐的歌曲 id 应当是 14 位字母数字或一串数字，收到 {value!r}。"
                 )
             return SongLink("qq", value, raw)
         if not _NUMERIC_ID.match(value):

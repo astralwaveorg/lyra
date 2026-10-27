@@ -37,6 +37,28 @@ def test_QQ各种链接形状都能解析(url):
 @pytest.mark.parametrize(
     "url",
     [
+        # 新版详情页给的是**数字歌曲 id**，不是 songmid
+        "https://y.qq.com/n/ryqq_v2/songDetail/1839014",
+        "https://y.qq.com/n/ryqq/songDetail/1839014",
+        "https://y.qq.com/n/yqq/song/1839014.html",
+        "https://i.y.qq.com/v8/playsong.html?songid=1839014",
+    ],
+)
+def test_QQ数字歌曲id的链接也能解析(url):
+    """实际：使用者贴 `https://y.qq.com/n/ryqq_v2/songDetail/1839014`
+    时报「没有找到歌曲 id」——数字 id 不是 14 位 songmid，被规则挡掉了。"""
+    link = parse_song_link(url)
+    assert link == SongLink("qq", "1839014", url)
+
+
+def test_显式写法也接受数字歌曲id():
+    link = parse_song_link("qq:1839014")
+    assert link == SongLink("qq", "1839014", "qq:1839014")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
         "https://music.163.com/#/song?id=28341146",
         "https://music.163.com/song?id=28341146",
         "https://music.163.com/#/m/song?id=28341146",
@@ -75,7 +97,9 @@ def test_显式写法():
         "https://music.163.com/playlist?id=28341146",  # 歌单不是歌曲
         "https://y.qq.com/n/ryqq/albumDetail/002APLOP0C614e",
         "https://y.qq.com/n/ryqq/songDetail/notamid",
-        "qq:123",                 # QQ mid 不是纯数字
+        # 数字歌曲 id 现在是合法的（见 test_显式写法也接受数字歌曲id），
+        # 所以这里换成既不是 14 位 mid、也不是纯数字的写法
+        "qq:abc",
         "netease:abc",
     ],
 )
@@ -159,6 +183,27 @@ def test_短链接靠跟随跳转拿到歌曲_id():
         "应当只把短链交给跳转器，而不是整段分享文本"
     )
     assert link.song_id == "003BBDlj3apipE"
+
+
+def test_桌面版分享短链跳到数字id也能解析():
+    """覆盖点：QQ 桌面版分享按钮给的是 `c6.y.qq.com/base/fcgi-bin/u?__=xxx`，
+    跳转之后的地址是**新版详情页**（数字歌曲 id），不是老的 songmid 链接。"""
+    seen: list[str] = []
+
+    def resolver(url: str) -> str:
+        seen.append(url)
+        return (
+            "https://y.qq.com/n/ryqq_v2/songDetail/1839014"
+            "?ADTAG=h5_play_song&songtype=0&redirecttag=mn.redirect.custom&mnst=1.09"
+        )
+
+    link = parse_song_link(
+        "https://c6.y.qq.com/base/fcgi-bin/u?__=U7J1hncp0Uwi", resolver=resolver
+    )
+
+    assert seen == ["https://c6.y.qq.com/base/fcgi-bin/u?__=U7J1hncp0Uwi"]
+    assert link.provider == "qq"
+    assert link.song_id == "1839014"
 
 
 def test_没有跳转器时给出可照做的提示():

@@ -230,6 +230,8 @@ class QQProvider(HttpProviderBase):
         # 本轮剩余的「详情 + 歌词」请求预算（QQ 搜索响应已含全部匹配所需字段，
         # 因此实际只有歌词请求会消耗它）
         self._lyric_budget = max(0, config.detail_and_lyric_limit_per_round)
+        # 数字歌曲 id → songmid 的缓存（同一次操作里可能要用好几次）
+        self._mid_cache: dict[str, str] = {}
 
     def request_headers(self) -> dict[str, str]:
         return dict(_SEARCH_HEADERS)
@@ -454,10 +456,13 @@ class QQProvider(HttpProviderBase):
             )
         self._consume_lyric_budget()
 
+        # 歌词接口只认 songmid；新版的详情页链接给的是**数字歌曲 id**，
+        # 得先换成 mid 才能取词。
+        songmid = self._resolve_mid(c.provider_id) or c.provider_id
         response = self.get(
             QQ_LYRIC_URL,
             params={
-                "songmid": c.provider_id,
+                "songmid": songmid,
                 "format": "json",
                 "nobase64": "1",
                 "g_tk": "5381",
@@ -467,8 +472,42 @@ class QQProvider(HttpProviderBase):
         payload = self.decode_json(response, provider=self.name)
         return self._parse_lyric(payload, provider_id=c.provider_id)
 
+    def _resolve_mid(self, song_id: str) -> str | None:
+        """把**数字歌曲 id**换成 songmid；本来就是 mid 就原样返回。
+
+        新版的歌曲详情页是 `https://y.qq.com/n/ryqq_v2/songDetail/1839014`，
+        里面给的是数字 id，而歌词接口只认 songmid。
+        详情接口两种 id 都收（`songid=` / `songmid=`），所以换一次就够。
+        """
+        if not song_id.isdigit():
+            return song_id
+        cached = self._mid_cache.get(song_id)
+        if cached:
+            return cached
+        try:
+            response = self.get(
+                QQ_SONG_DETAIL_URL,
+                params={
+                    "songid": song_id,
+                    "format": "json",
+                    "platform": "yqq",
+                    "needNewCode": "0",
+                },
+            )
+            payload = self.decode_json(response, provider=self.name)
+        except ProviderError:
+            return None
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        mid = ""
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            mid = str(rows[0].get("mid") or "")
+        if not mid:
+            return None
+        self._mid_cache[song_id] = mid
+        return mid
+
     def song_detail(self, song_id: str) -> dict[str, object] | None:
-        """按 mid 取歌曲详情（曲名/艺人/专辑/时长）。
+        """按 mid（或数字歌曲 id）取歌曲详情（曲名/艺人/专辑/时长）。
 
         只服务于「人工粘贴链接」这一条路径：使用者需要看到
         「你给的这一首到底是什么」，才能确认自己没贴错。
@@ -478,15 +517,26 @@ class QQProvider(HttpProviderBase):
         等于用小事的成功概率去赌大事。限流与结构变化在这里被有意吞掉。
         """
         try:
-            response = self.get(
-                QQ_SONG_DETAIL_URL,
-                params={
-                    "songmid": song_id,
-                    "format": "json",
-                    "platform": "yqq",
-                    "needNewCode": "0",
-                },
-            )
+            if song_id.isdigit():
+                response = self.get(
+                    QQ_SONG_DETAIL_URL,
+                    params={
+                        "songid": song_id,
+                        "format": "json",
+                        "platform": "yqq",
+                        "needNewCode": "0",
+                    },
+                )
+            else:
+                response = self.get(
+                    QQ_SONG_DETAIL_URL,
+                    params={
+                        "songmid": song_id,
+                        "format": "json",
+                        "platform": "yqq",
+                        "needNewCode": "0",
+                    },
+                )
             payload = self.decode_json(response, provider=self.name)
         except ProviderError:
             return None

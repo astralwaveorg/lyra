@@ -353,6 +353,60 @@ def test_歌词返回带时间轴LRC(qq):
     assert parse_lrc(lyrics.text).timestamp_count > 0
 
 
+def test_数字歌曲id会换成songmid再取词(qq):
+    """覆盖点：新版详情页给的是数字 id，而歌词接口只认 songmid。
+
+    实际：使用者贴 `https://y.qq.com/n/ryqq_v2/songDetail/1839014`
+    时报「没有找到歌曲 id」；换成能解析之后，取词又必须用换出来的 mid。
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if "fcg_play_single_song" in path:
+            assert request.url.params.get("songid") == "1839014"
+            return httpx.Response(200, json={
+                "code": 0,
+                "data": [{"mid": MID_PAOMO, "title": "泡沫", "interval": 240,
+                          "singer": [{"name": "A"}], "album": {"name": "B"}}],
+            })
+        if "fcg_query_lyric_new" in path:
+            songmid = request.url.params.get("songmid")
+            seen.append(songmid or "")
+            return httpx.Response(200, json=lyrics_payload)
+        raise AssertionError(f"未录制的请求: {request.url}")
+
+    lyrics_payload = load("qq_lyric_paomo")
+    provider = qq(handler=handler)
+
+    result = provider.lyrics(Candidate(provider="qq", provider_id="1839014", title="泡沫"))
+
+    assert result is not None
+    assert result.synced is True
+    # 取词用的是换出来的 songmid，不是数字 id
+    assert seen == [MID_PAOMO]
+    # 再取一次不再重复请求详情（缓存）
+    provider.lyrics(Candidate(provider="qq", provider_id="1839014", title="泡沫"))
+    assert seen == [MID_PAOMO, MID_PAOMO]
+
+
+def test_数字歌曲id取详情也认(qq):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "fcg_play_single_song" in request.url.path
+        assert request.url.params.get("songid") == "1839014"
+        return httpx.Response(200, json={
+            "code": 0,
+            "data": [{"mid": MID_PAOMO, "title": "泡沫", "interval": 240,
+                      "singer": [{"name": "A"}], "album": {"name": "B"}}],
+        })
+
+    provider = qq(handler=handler)
+
+    detail = provider.song_detail("1839014")
+    assert detail is not None
+    assert detail["title"] == "泡沫"
+
+
 def test_歌词为空时返回None且不抛未找到语义(qq):
     """覆盖点：上游空歌词是正常结果，不是错误，更不是「未找到」。"""
     provider = qq(handler=make_router(lyrics={"empty": load("qq_lyric_empty")}))
