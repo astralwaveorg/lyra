@@ -2125,14 +2125,20 @@
 <p>未列在 <code>enabled</code> 中的来源不会被使用。优先级按语种分开配置，避免用一套顺序处理所有曲目。</p>
 <h3 id="qq">QQ 音乐<a class="headerlink" href="#qq" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[providers.qq]</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">minimum_request_interval_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">query_limit_per_round</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">candidates_per_query</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">20</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">detail_and_lyric_limit_per_round</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">max_inline_retries</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">max_inline_retry_wait_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">""</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">minimum_request_interval_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">query_limit_per_round</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">candidates_per_query</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">20</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">detail_and_lyric_limit_per_round</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">max_inline_retries</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">max_inline_retry_wait_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span>
 </code></pre></div>
 <p>QQ 接口在部分网络环境下不可用，表现为 HTTP 500 或空结果。Lyra 会按失败类型区分，不会把网络故障当成「没有歌词」。</p>
+<p><code>base_url</code> 是可选的<strong>透明反代网关</strong>根（替换 <code>https://c.y.qq.com</code>，路径与响应完全一致）：
+直连被风控时（来源健康面板的「被风控」计数持续增长）可指向自建 nginx / Workers 反代；
+配置后单一出口，不再直连。<code>[providers]</code> 根下另有 <code>user_agent</code> 可整体替换直连伪装 UA。
+返回 HTML 验证页 / HTTP 412 会被识别为风控拦截：不写负缓存、更快熔断，
+并计入「自动化 → 来源健康」面板。</p>
 <h3 id="_4">网易云音乐<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">[providers.netease]</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">minimum_request_interval_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.5</span>

@@ -1115,6 +1115,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#20" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        待办与流水线（2.0 新增）
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1545,6 +1556,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#20" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        待办与流水线（2.0 新增）
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1966,6 +1988,45 @@
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>http://127.0.0.1:8080/api/v1/dedupe/delete
 </code></pre></div>
 <p>服务端会校验分类、组成员、建议删除标记和参照项。任意一组不合法时整批拒绝。</p>
+<h3 id="20">待办与流水线（2.0 新增）<a class="headerlink" href="#20" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>接口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/v1/todo</code></td>
+<td>六类待办收件箱：<code>counts</code> 全量 + 按 <code>kind</code> 分页的 <code>items</code>（lyrics / tags / covers / organize / orphans / failed）</td>
+</tr>
+<tr>
+<td><code>GET /api/v1/runs/{task_id}</code></td>
+<td>批量任务明细：任务状态（含内存实时值）+ 每文件 × 每环节的步骤矩阵</td>
+</tr>
+<tr>
+<td><code>GET /api/v1/providers/health</code></td>
+<td>歌词来源 30 天健康计数（正常 / 查无结果 / 被风控 / 结构变更）</td>
+</tr>
+<tr>
+<td><code>POST /api/v1/tasks/ingest</code></td>
+<td>手动重跑入库流水线（审计 → 身份 → 歌词 → 封面 → 归位），范围同抓取任务</td>
+</tr>
+<tr>
+<td><code>POST /api/v1/tasks/cover-fetch</code></td>
+<td>按目录批量补封面（同目录图 + Cover Art Archive，按专辑聚合）</td>
+</tr>
+<tr>
+<td><code>GET/PUT /api/v1/settings/cover</code> <code>/organize</code> <code>/lyrics</code> <code>/acoustid</code></td>
+<td>新增设置项，行为与 <code>settings/tags</code> 一致（写入数据库并热加载）</td>
+</tr>
+<tr>
+<td><code>POST /api/v1/tracks/apply-lyrics</code></td>
+<td>扩展：只给 <code>text</code>（不给来源）时为歌词编辑器直写模式</td>
+</tr>
+</tbody>
+</table>
 <h2 id="_11">错误格式<a class="headerlink" href="#_11" title="Permanent link">&para;</a></h2>
 <p>错误返回 JSON：</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span><span class="nt">"detail"</span><span class="p">:</span><span class="s2">"具体原因"</span><span class="p">}</span>
