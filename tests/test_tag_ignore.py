@@ -19,18 +19,18 @@ from __future__ import annotations
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from test_tag_scrape import (
+    RELEASE,
+    _config,
+    _handler,
+    _release_json,
+)
 
 import lyra.api as api_module
 from lyra.api import create_app
 from lyra.db import open_store
 from lyra.tagscrape import scan_tags
 from lyra.tagsources import MusicBrainzConfig, MusicBrainzProvider
-from tests.test_tag_scrape import (
-    RELEASE,
-    _config,
-    _handler,
-    _release_json,
-)
 
 
 def _provider(handler) -> MusicBrainzProvider:
