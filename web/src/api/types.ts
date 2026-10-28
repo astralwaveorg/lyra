@@ -121,6 +121,13 @@ export type StagedCandidate = {
   duration_delta: number | null
   reason: string | null
   has_evidence: boolean
+  /** AI 预审结论（未开启或未判定时为 null）。 */
+  ai?: {
+    best: string | null
+    confidence: number
+    relation: string
+    reason: string
+  } | null
   failed_checks: { key: string; label: string; detail: string }[]
   safe: boolean
 }
@@ -606,6 +613,10 @@ export type AISettings = {
   timeout_seconds: number
   max_requests_per_run: number
   auto_clean_duplicates: boolean
+  pre_review: boolean
+  pre_review_confidence: number
+  auto_accept: boolean
+  verify_tags: boolean
   use_proxy: boolean
   has_api_key: boolean
   api_key_source: 'env' | 'settings' | 'config' | 'none'
@@ -801,4 +812,107 @@ export type CleanupResult = {
 export type LibraryArtist = {
   name: string
   count: number
+}
+
+
+/* ------------------------------------------------------------ 重构新增 */
+
+export type TodoKind = 'lyrics' | 'tags' | 'covers' | 'organize' | 'orphans' | 'failed'
+
+export interface TodoCounts {
+  lyrics: number
+  tags: number
+  covers: number
+  organize: number
+  orphans: number
+  failed: number
+}
+
+export interface TodoItem {
+  kind: TodoKind
+  ref: string
+  root: string
+  rel_path: string
+  /** 各类别附带的字段不同，宽松索引签名。 */
+  [key: string]: unknown
+}
+
+export interface TodoPage {
+  counts: TodoCounts
+  total: number
+  page: number
+  size: number
+  items: TodoItem[]
+}
+
+export interface RunStep {
+  seq: number
+  kind: string
+  rel_path: string | null
+  state: string
+  detail: Record<string, unknown>
+}
+
+export interface RunDetail {
+  task: {
+    id: string
+    kind: string
+    state: string
+    progress: string
+    error: string | null
+    result: unknown
+    started_at: number
+    finished_at: number | null
+  }
+  total_steps: number
+  steps: RunStep[]
+}
+
+export interface ProviderHealthDay {
+  day: string
+  ok: number
+  not_found: number
+  blocked: number
+  schema_error: number
+}
+
+export interface ProviderHealth {
+  provider: string
+  ok: number
+  not_found: number
+  blocked: number
+  schema_error: number
+  last_error: string | null
+  days: ProviderHealthDay[]
+}
+
+export interface CoverPolicySettings {
+  auto_embed_sibling: boolean
+  fetch_sources: string[]
+  min_min_pixels: number
+  auto_write: boolean
+}
+
+export interface OrganizePolicySettings {
+  mode: string
+  template: string
+}
+
+export interface LyricsSettings {
+  translation: string
+  keep_word_level: boolean
+  romanization: boolean
+  encoding: string
+  bom: boolean
+  line_ending: string
+  format: string
+}
+
+export interface AIPolicySettings {
+  pre_review: boolean
+  pre_review_confidence: number
+  auto_accept: boolean
+  verify_tags: boolean
+  max_requests_per_run: number
+  timeout_seconds: number
 }

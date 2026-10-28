@@ -19,6 +19,7 @@ __all__ = [
     "parse_lrc",
     "parse_lrc_lines",
     "normalize_lrc",
+    "merge_bilingual",
     "format_ms",
     "is_placeholder_only",
     "content_hash",
@@ -427,6 +428,74 @@ def parse_lrc_lines(text: str) -> list[LrcLine]:
         for ts in stamps:
             out.append(LrcLine(ts, payload))
     return out
+
+
+def merge_bilingual(text: str, translation: str, *, tolerance_ms: int = 800) -> str:
+    """把独立通道的翻译合并成双语文体：每条原文时间轴行下面紧跟一条翻译行。
+
+    背景：QQ（trans 字段）与网易云（tlyric）返回的翻译是**独立整段**文本，
+    自带与原文平行的时间轴。合并规则：
+    - 以原文行为主轴；每条原文行在翻译里找时间轴最近的行，差 ≤ tolerance_ms 才配对；
+    - 翻译行输出时**沿用原文行的时间轴**（播放器按时间滚动时双语紧邻显示）；
+    - 一条翻译行只消费一次（原文里两条时间轴相同/相近的行不共享同一条翻译）；
+    - 配不上翻译的原文行原样保留；配不上原文的翻译行**丢弃**；
+    - 无时间轴的原文行与元信息行（[ti:…] 等）原样保留在原位置；
+    - 输出按原文行序排列；空输入/无时间轴输入直接返回原文。
+    """
+    # 翻译侧没有带时间轴的行（空文本 / 纯文本 / 只有元信息）时无从配对。
+    # 这里只做行级配对，不经过 parse_lrc 的状态判定——占位词/可疑与否与本函数无关。
+    trans_timed = [ln for ln in parse_lrc_lines(translation) if ln.ms >= 0]
+    if not trans_timed:
+        return text
+
+    used = [False] * len(trans_timed)
+
+    def _take_nearest(ms: int) -> LrcLine | None:
+        """取未消费翻译行里时间轴最近且差 ≤ tolerance_ms 的一行，命中即标记消费。
+
+        按原文行序贪心消费：时间轴相同/相近的多条原文行，只有靠前的那条拿到翻译。
+        """
+        best = -1
+        best_diff = 0
+        for i, ln in enumerate(trans_timed):
+            if used[i]:
+                continue
+            diff = abs(ln.ms - ms)
+            if diff > tolerance_ms:
+                continue
+            if best < 0 or diff < best_diff:
+                best, best_diff = i, diff
+        if best < 0:
+            return None
+        used[best] = True
+        return trans_timed[best]
+
+    out_lines: list[str] = []
+    paired = 0
+    for raw_line in text.splitlines():
+        # 与 parse_lrc_lines 相同的时间轴识别：行级标签优先，没有时回退逐字标签首戳。
+        stamps = list(_iter_timestamps(raw_line))
+        if not stamps:
+            stamps = list(_iter_word_timestamps(raw_line))[:1]
+        if not stamps:
+            # 元信息行（[ti:…] 等）、无时间轴行与空行：原样保留在原位置。
+            out_lines.append(raw_line)
+            continue
+        out_lines.append(raw_line)
+        matched = _take_nearest(stamps[0])
+        if matched is not None:
+            # 翻译行沿用原文行的时间轴而不是翻译自己的；多时间戳行按首戳配对。
+            out_lines.append(f"[{format_ms(stamps[0])}]{matched.text}")
+            paired += 1
+
+    if not paired:
+        # 一条都没配上（含原文没有时间轴的情形）：完全不改写，避免
+        # splitlines/join 悄悄抹掉 CRLF 行尾或原有空白。
+        return text
+    merged = "\n".join(out_lines)
+    if text.endswith("\n"):
+        merged += "\n"
+    return merged
 
 
 def content_hash(text: str) -> str:

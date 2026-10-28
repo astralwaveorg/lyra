@@ -31,7 +31,7 @@ const groups = computed(() => {
       title: metaInfo.title,
       icon: metaInfo.icon ?? 'Document',
       soon: metaInfo.soon,
-      badge: item.name === 'review' ? meta.needsReview : undefined,
+      badge: item.name === 'todo' && meta.todoTotal ? meta.todoTotal : undefined,
     })
   }
   return order

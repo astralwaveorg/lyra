@@ -26,6 +26,7 @@ from .base import (
     HttpProviderBase,
     MinIntervalLimiter,
     Provider,
+    ProviderBlockedError,
     ProviderError,
     RateLimitedError,
     RawLyrics,
@@ -55,6 +56,7 @@ __all__ = [
     "Provider",
     # 异常
     "ProviderError",
+    "ProviderBlockedError",
     "TransientNetworkError",
     "RateLimitedError",
     "SchemaChangedError",
@@ -101,11 +103,15 @@ def create_provider(
     用于测试注入 MockTransport 与假时钟。
     """
     if name == "qq":
-        return QQProvider(config.qq, **kwargs)  # type: ignore[arg-type]
+        return QQProvider(
+            config.qq, user_agent=config.user_agent or None, **kwargs
+        )  # type: ignore[arg-type]
     if name == "lrclib":
         return LrcLibProvider(config.lrclib, **kwargs)  # type: ignore[arg-type]
     if name == "netease":
-        return NetEaseProvider(config.netease, **kwargs)  # type: ignore[arg-type]
+        return NetEaseProvider(
+            config.netease, user_agent=config.user_agent or None, **kwargs
+        )  # type: ignore[arg-type]
     raise ValueError(
         f"未知来源 {name!r}；已实现: {', '.join(sorted(SUPPORTED_PROVIDERS))}。"
         "不允许使用未在配置中声明的来源。"

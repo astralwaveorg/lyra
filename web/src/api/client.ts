@@ -1,5 +1,12 @@
 import type {
+  AIPolicySettings,
   Alternatives,
+  CoverPolicySettings,
+  LyricsSettings,
+  OrganizePolicySettings,
+  ProviderHealth,
+  RunDetail,
+  TodoPage,
   AISettings,
   AISettingsInput,
   AITestResult,
@@ -536,6 +543,52 @@ export const api = {
     ),
   replaceOrphan: (payload: { root: string; path: string; target?: string; confirm: true }) =>
     request<{ ok: boolean; new_sidecar: string }>('/api/v1/orphans/replace', json(payload)),
+
+  /* ------------------------------------------------------ 待办与自动化 */
+
+  todo: (kind: string, page = 1, size = 50) =>
+    request<TodoPage>(`/api/v1/todo${query({ kind, page, size })}`),
+  run: (taskId: string) =>
+    request<RunDetail>(`/api/v1/runs/${encodeURIComponent(taskId)}`),
+  providerHealth: () =>
+    request<{ days: number; providers: ProviderHealth[] }>('/api/v1/providers/health'),
+  startIngest: (payload: { root?: string; dir?: string; paths?: string[] }) =>
+    request<Record<string, unknown>>('/api/v1/tasks/ingest', json(payload)),
+  startCoverFetch: (payload: { root?: string; dir?: string; apply?: boolean }) =>
+    request<Record<string, unknown>>('/api/v1/tasks/cover-fetch', json(payload)),
+  coverSettings: () =>
+    request<{ policy: CoverPolicySettings; revision: string }>('/api/v1/settings/cover'),
+  updateCoverSettings: (policy: Partial<CoverPolicySettings>) =>
+    request<{ ok: boolean; policy: CoverPolicySettings }>(
+      '/api/v1/settings/cover', json(policy),
+    ),
+  organizeSettings: () =>
+    request<{ policy: OrganizePolicySettings; revision: string }>('/api/v1/settings/organize'),
+  updateOrganizeSettings: (policy: Partial<OrganizePolicySettings>) =>
+    request<{ ok: boolean; policy: OrganizePolicySettings }>(
+      '/api/v1/settings/organize', json(policy),
+    ),
+  lyricsSettings: () =>
+    request<{ settings: LyricsSettings; revision: string }>('/api/v1/settings/lyrics'),
+  updateLyricsSettings: (settings: Partial<LyricsSettings>) =>
+    request<{ ok: boolean; settings: LyricsSettings }>(
+      '/api/v1/settings/lyrics', json(settings),
+    ),
+  acoustidSettings: () =>
+    request<{ enabled: boolean; has_key: boolean; masked: string; source: string }>(
+      '/api/v1/settings/acoustid',
+    ),
+  updateAcoustidSettings: (payload: { api_key?: string; enabled?: boolean }) =>
+    request<{ ok: boolean; has_key: boolean }>('/api/v1/settings/acoustid', json(payload)),
+  /** 歌词编辑器直写：只给 text，不给来源（来源+text 同给时服务端以来源为准）。 */
+  saveLyricsText: (payload: {
+    root?: string
+    path: string
+    text: string
+    translation?: string
+    apply?: boolean
+    replace_existing?: boolean
+  }) => request<Record<string, unknown>>('/api/v1/tracks/apply-lyrics', json(payload)),
 }
 
 /** 上传类请求共用：把响应解析成同一套错误语义。 */

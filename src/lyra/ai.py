@@ -32,7 +32,8 @@ import httpx
 from .network import active_network, client_for, proxy_reachable
 
 __all__ = [
-    "AIError", "Judgement", "review_duplicate", "test_connection",
+    "AIError", "CandidateJudgement", "Judgement", "review_candidates",
+    "review_duplicate", "test_connection",
     "resolve_endpoint", "extract_json", "text_overlap", "lyric_lines",
     "orphan_coverage",
 ]
@@ -484,4 +485,171 @@ def review_duplicate(
         model=model,
         overlap=overlap,
         orphan_covered=covered,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 候选匹配判定（歌词 / 标签 / 身份共用的智能准确度判断）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CandidateJudgement:
+    """对「这份文件的候选列表」的一次模型判定。
+
+    best=None 表示模型认为没有可靠候选——**宁可让人看，不可猜**。
+    rejected 里的候选是模型明确判定为不同录音/版本的，复核界面据此降权。
+    relation 是自动采纳的核心依据：
+
+    - ``same_recording`` 同一录音（同一版本）→ 高置信可直接采纳；
+    - ``same_song_diff_version`` 同一首歌的不同版本（现场版拿到录音室词）
+      → 允许近似匹配配置下采纳（歌词内容对，版本标注可能有差）；
+    - ``different`` 不是同一首 → 绝不自动采纳。
+    """
+
+    best: str | None
+    confidence: float
+    relation: str
+    reason: str
+    rejected: tuple[str, ...] = ()
+    model: str = ""
+
+    @property
+    def same_recording(self) -> bool:
+        return self.relation == "same_recording"
+
+    @property
+    def approximable(self) -> bool:
+        """同曲异版：歌词内容对、只是版本标注不同。"""
+        return self.relation == "same_song_diff_version"
+
+    def to_dict(self) -> dict:
+        return {
+            "best": self.best,
+            "confidence": round(self.confidence, 3),
+            "relation": self.relation,
+            "reason": self.reason,
+            "rejected": list(self.rejected),
+            "model": self.model,
+        }
+
+
+_MATCH_PROMPT = """你是音乐库整理助手。一个音频文件在多个歌词/元数据来源里找到了若干候选，
+请判断哪个候选与这个音频文件是**同一录音**（同一首歌的同一个版本）。
+
+音频文件信息：
+- 文件名：{filename}
+- 所在目录：{dir_name}
+- 标签：标题={title}；艺人={artists}；专辑={album}；时长={duration}
+- 标签可信度备注：{notes}
+
+候选列表（id 供你引用）：
+{candidates}
+
+判断规则（宁缺毋滥）：
+1. relation 三选一：same_recording=同一录音（同一版本）；same_song_diff_version=同一首歌的不同版本
+   （现场版/录音室版/重混等——歌词内容基本一致，只是演唱场景或编曲不同）；different=不是同一首。
+2. 标题相似但时长差超过 {max_delta} 秒的候选要格外怀疑。
+3. 文件名里的曲名/艺人常常比标签更可信（标签经常是错的）。
+4. 没有足够把握时 best 必须为 null 且 relation 为 different，confidence ≤ 0.5——错写比不写更糟。
+5. confidence 含义：≥0.9 几乎确定；0.8~0.9 很可能；<0.8 不要作为唯一依据。
+
+只输出 JSON，不要解释：
+{{"best": "候选id或null", "confidence": 0.0到1.0,
+  "relation": "same_recording或same_song_diff_version或different",
+  "reason": "一句话理由",
+  "rejected": ["明确不是同一录音的候选id"]}}"""
+
+
+def review_candidates(
+    *,
+    protocol: str = "openai_chat",
+    base_url: str,
+    model: str,
+    api_key: str,
+    timeout: float,
+    track: dict,
+    candidates: list[dict],
+    client: httpx.Client | None = None,
+    use_proxy: bool = True,
+    max_delta_seconds: float = 5.0,
+) -> CandidateJudgement:
+    """让模型判断「哪个候选与本地文件是同一录音」。
+
+    `track`：{filename, dir_name, title, artists, album, duration, notes}；
+    `candidates`：[{id, provider, title, artists, album, duration, synced, excerpt}]，
+    excerpt 是歌词前若干行（元数据候选给字段 diff 摘要）。
+
+    任何异常抛 `AIError`；调用方必须当作「没有判断」，走原有降级路径。
+    决策权在程序：这里只产出结构化判定，采纳与否由调用方的阈值与闸门决定。
+    """
+    if not api_key.strip():
+        raise AIError("未配置 AI 密钥")
+    if not candidates:
+        raise AIError("没有可判定的候选")
+
+    lines: list[str] = []
+    for index, cand in enumerate(candidates, start=1):
+        duration = cand.get("duration")
+        delta = ""
+        if duration and track.get("duration"):
+            delta = f"（与音频差 {abs(float(duration) - float(track['duration'])):.1f}s）"
+        lines.append(
+            f"{index}. id={cand.get('id')} 来源={cand.get('provider')} "
+            f"标题={cand.get('title')} 艺人={', '.join(cand.get('artists') or [])} "
+            f"专辑={cand.get('album') or '（无）'} 时长={duration}{delta} "
+            f"有同步歌词={bool(cand.get('synced'))}\n"
+            f"   内容摘要：{str(cand.get('excerpt') or '')[:300]}"
+        )
+
+    prompt = _MATCH_PROMPT.format(
+        filename=track.get("filename") or "（未知）",
+        dir_name=track.get("dir_name") or "（未知）",
+        title=track.get("title") or "（未知）",
+        artists=", ".join(track.get("artists") or []) or "（未知）",
+        album=track.get("album") or "（未知）",
+        duration=f"{track['duration']:.1f}s" if track.get("duration") else "（未知）",
+        notes=track.get("notes") or "无",
+        candidates="\n".join(lines) or "（无）",
+        max_delta=max_delta_seconds,
+    )
+    content, _endpoint = _call(
+        protocol=protocol,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        timeout=timeout,
+        prompt=prompt,
+        max_tokens=400,
+        client=client,
+        use_proxy=use_proxy,
+    )
+    data = extract_json(content)
+
+    try:
+        confidence = float(data.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+    best_raw = data.get("best")
+    best = str(best_raw).strip() if best_raw not in (None, "", "null") else None
+    known_ids = {str(c.get("id")) for c in candidates}
+    rejected = tuple(
+        str(item) for item in (data.get("rejected") or [])
+        if str(item) in known_ids
+    )
+    relation = str(data.get("relation") or "").strip()
+    if relation not in ("same_recording", "same_song_diff_version", "different"):
+        relation = "different"
+    if best is not None and best not in known_ids:
+        best = None
+        confidence = min(confidence, 0.5)
+        relation = "different"
+    return CandidateJudgement(
+        best=best,
+        confidence=confidence,
+        relation=relation,
+        reason=str(data.get("reason") or "")[:160],
+        rejected=rejected,
+        model=model,
     )

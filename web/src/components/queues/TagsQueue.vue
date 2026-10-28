@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
- * 标签刮削：扫描 → 逐字段对照 → 自动补空 / 人工复核。
+ * 「待办 · 标签」面板：按 MusicBrainz 补齐缺失标签的提案队列。
  *
- * 页面的信息层级按「先看什么」排：
+ * 扫描 → 逐字段对照 → 自动补空 / 人工复核；可嵌入待办页作为队列组件，
+ * 独立页面形态已并入待办页。信息层级按「先看什么」排：
  *   扫描卡 —— 现在跑不跑、上次跑出了什么；
  *   指标   —— 有多少可以自动写、多少要人看、多少没找到；
  *   三个标签 —— 推荐采纳 / 待审查 / 未匹配。
@@ -21,7 +22,6 @@ import { useMeta } from '@/stores/meta'
 import { useNarrow } from '@/composables/useMedia'
 import { fmtAgo, fmtInterval, fmtNumber } from '@/utils/format'
 import { tagFieldLabel } from '@/utils/labels'
-import PageHead from '@/components/PageHead.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import TagProposalRow from '@/components/TagProposalRow.vue'
@@ -81,7 +81,6 @@ const counts = computed(
   () => summary.value?.counts ?? { auto: 0, review: 0, unmatched: 0, ignored: 0 },
 )
 const source = computed(() => summary.value?.source)
-const activeCount = computed(() => counts.value[tab.value] ?? 0)
 
 const tabLabels: Record<Tab, string> = {
   auto: '推荐采纳',
@@ -532,14 +531,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <PageHead :count="counts.auto + counts.review + counts.unmatched">
+  <div class="queue-bar">
+    <span class="queue-hint">自动扫描提出的标签建议在这里确认，写入时冲突不覆盖。</span>
     <el-button size="small" class="head-btn" @click="openHistory">
       <AppIcon name="Clock" :size="13" /><span class="head-label">写入记录</span>
     </el-button>
     <el-button size="small" class="head-btn" :loading="loading" @click="refreshAll">
       <AppIcon name="Refresh" :size="13" /><span class="head-label">刷新</span>
     </el-button>
-  </PageHead>
+  </div>
 
   <section class="card scan-card">
     <div class="card-head">
@@ -786,6 +786,20 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.queue-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.queue-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
 .scan-card {
   margin-bottom: 12px;
 }
@@ -950,6 +964,14 @@ onUnmounted(() => {
   font-size: 11.5px;
 }
 @media (max-width: 760px) {
+  .queue-bar {
+    flex-wrap: wrap;
+  }
+
+  .queue-hint {
+    flex-basis: 100%;
+  }
+
   .head-label {
     display: none;
   }

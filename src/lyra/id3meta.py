@@ -60,8 +60,10 @@ __all__ = [
     "id3_audio_hash",
     "id3_parse_bytes",
     "id3_parse_file",
+    "id3_rewrite_cover",
     "id3_rewrite_tags",
     "id3_rewrite_with_lyrics",
+    "parse_apic",
     "parse_txxx",
     "TXXX_DESCRIPTIONS",
     "TXXX_KEYS_BY_DESC",
@@ -880,3 +882,128 @@ def compare_non_lyrics(
         problems.append("尾部标签（ID3v1 / APEv2）被改动")
 
     return problems
+
+
+# ---------------------------------------------------------------------------
+# 封面（APIC）
+# ---------------------------------------------------------------------------
+
+#: 前面封面。与 FLAC 的 replace_type=3 语义对齐：只动同一类型的旧帧。
+APIC_FRONT_COVER = 3
+
+
+def parse_apic(body: bytes) -> tuple[str, int, str, bytes] | None:
+    """解析 APIC 帧体 → (mime, picture_type, description, picture)。
+
+    帧体：文本编码(1) + MIME(latin-1, NUL 结尾) + 图片类型(1)
+          + 描述(按编码, NUL 结尾) + 图片数据。
+    结构不完整返回 None（逐帧宽松：坏帧不该让整个标签不可读）。
+    """
+    if len(body) < 4:
+        return None
+    encoding = body[0]
+    mime_end = body.find(b"\x00", 1)
+    if mime_end < 0:
+        return None
+    mime = body[1:mime_end].decode("latin-1", "replace")
+    if mime_end + 1 >= len(body):
+        return None
+    picture_type = body[mime_end + 1]
+    description, position = _decode_terminated(body, mime_end + 2, encoding)
+    return mime, picture_type, description, body[position:]
+
+
+def _build_apic_frame(
+    picture: bytes,
+    *,
+    mime: str,
+    picture_type: int = APIC_FRONT_COVER,
+    version: int,
+) -> Id3Frame:
+    """构造一个 APIC 帧。
+
+    文本编码固定 latin-1、描述置空：MIME 本身就是 ASCII，空描述无损，
+    这是各写入器的通行做法，互操作性最好。
+    """
+    mime_bytes = mime.encode("latin-1")
+    body = (
+        bytes((_ENC_LATIN1,))
+        + mime_bytes
+        + b"\x00"
+        + bytes((picture_type,))
+        + b"\x00"
+        + picture
+    )
+    return Id3Frame("APIC", _build_frame("APIC", body, version))
+
+
+def id3_rewrite_cover(
+    source: Path,
+    target: Path,
+    *,
+    picture: bytes | None,
+    mime: str = "image/jpeg",
+    picture_type: int = APIC_FRONT_COVER,
+) -> None:
+    """替换或移除 MP3 封面（APIC 帧），其余部分逐字节保留。
+
+    与 FLAC 的封面语义一致：只替换同一 picture_type 的旧帧，其它类型
+    （图标、艺人照等）原样保留；`picture=None` 表示移除该类型。
+    保持原有 ID3v2 主版本；没有 ID3v2 时新建 v2.4（与标签写入一致）。
+    target 必须与 source 在同一文件系统上，以便之后原子替换。
+    """
+    try:
+        layout = id3_parse_file(source)
+    except Id3FormatError as exc:
+        if "没有 ID3v2 标签" not in str(exc):
+            raise
+        layout = _layout_without_tag(source)
+
+    try:
+        mime.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"MIME 必须是 latin-1 可编码: {mime!r}") from exc
+
+    kept: list[bytes] = []
+    for frame in layout.frames:
+        if frame.frame_id == "APIC":
+            parsed = parse_apic(frame.body)
+            if parsed is not None and parsed[1] == picture_type:
+                continue  # 同类型旧封面被替换/移除
+        kept.append(frame.raw)
+    if picture is not None:
+        kept.append(
+            _build_apic_frame(
+                picture, mime=mime, picture_type=picture_type, version=layout.version
+            ).raw
+        )
+
+    frames_bytes = b"".join(kept)
+    original_body_size = layout.tag_size - 10 if layout.tag_size else 0
+    if original_body_size and len(frames_bytes) <= original_body_size:
+        padding = original_body_size - len(frames_bytes)
+    else:
+        padding = NEW_TAG_PADDING
+
+    body = frames_bytes + b"\x00" * padding
+    header = (
+        ID3_MAGIC
+        + bytes((layout.version, layout.revision, layout.flags))
+        + _to_synchsafe(len(body))
+    )
+
+    audio_length = layout.audio_end - layout.audio_offset
+    with open(source, "rb") as src, open(target, "wb") as dst:
+        dst.write(header)
+        dst.write(body)
+        src.seek(layout.audio_offset)
+        remaining = audio_length
+        while remaining > 0:
+            chunk = src.read(min(_COPY_CHUNK, remaining))
+            if not chunk:
+                raise Id3FormatError("复制音频数据时源文件提前结束")
+            dst.write(chunk)
+            remaining -= len(chunk)
+        dst.write(layout.trailer)
+        dst.flush()
+        os.fsync(dst.fileno())

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
@@ -41,6 +42,8 @@ __all__ = [
     "ProvidersConfig",
     "MatchingPolicy",
     "TagPolicy",
+    "CoverPolicy",
+    "OrganizePolicy",
     "PolicyConfig",
     "RetryConfig",
     "LyricsFormatConfig",
@@ -87,6 +90,10 @@ class RootConfig:
     ignore_dirs: list[str] = field(default_factory=list)
     # 忽略的文件名 glob
     ignore_globs: list[str] = field(default_factory=list)
+    # 归置模式覆盖（"" = 继承 policy.organize.mode）；仅对入康新文件生效
+    organize_mode: str = ""
+    # INBOX 根入库后的目标 library 根名；未配置的 INBOX 根只出建议不移动
+    target_root: str = ""
 
     @property
     def resolved_path(self) -> Path:
@@ -150,6 +157,9 @@ class QQProviderConfig:
     max_inline_retries: int = 2
     #: 超过这个秒数的 Retry-After 不再内联等待，直接交给外层退避与熔断
     max_inline_retry_wait_seconds: float = 5.0
+    #: 透明反代网关根（替换 https://c.y.qq.com）。空 = 直连。
+    #: 配置后单一出口：所有 QQ 请求都走网关，不再直连。
+    base_url: str = ""
 
 
 @dataclass(slots=True)
@@ -246,6 +256,8 @@ class AcoustIdProviderConfig:
 
 @dataclass(slots=True)
 class ProvidersConfig:
+    user_agent: str = ""
+    """直连上游时的 User-Agent。空 = 用内置默认（Chrome 伪装值）。"""
     enabled: list[str] = field(default_factory=lambda: ["qq", "netease", "lrclib"])
     priority_zh: list[str] = field(default_factory=lambda: ["qq", "netease", "lrclib"])
     """华语圈曲目的来源顺序：QQ → 网易云 → LRCLIB（AI 兜底另行接入）。"""
@@ -289,6 +301,10 @@ class MatchingPolicy:
     #: 这两个下限把「时长凑巧相同但根本不是同一首歌」挡在门外。
     auto_accept_min_title_score: float = 0.85
     auto_accept_min_artist_score: float = 0.50
+    allow_approximate: bool = True
+    """近似匹配：版本不一致（现场版拿到录音室词）但标题核心与艺人一致、
+    时长在硬闸门内的候选，经 AI 高置信判定后自动采用；无 AI 时进待办的
+    「近似可接受」组。标题核心不匹配的候选绝不因此放行。"""
     """时长差在此范围内时，即使「最优与次优接近」也直接接受，不送复核。
 
     为什么这条是安全的：LRCLIB 上同一首歌常有**多条元数据完全相同**的记录，
@@ -319,6 +335,36 @@ class TagPolicy:
     max_auto_write_per_run: int = 300
     max_duration_delta_seconds: float = 5.0
     """曲目时长与来源相差超过此值时，不自动写入（交人工看一眼）。"""
+    low_risk_auto_correct: bool = True
+    """低风险纠正自动写：强证据来源把英文/罗马字标题纠正为中文（或反向）
+    这类文字体系切换，视为低风险直接自动写入，不进人工队列。"""
+
+
+@dataclass(slots=True)
+class CoverPolicy:
+    """封面自动化策略。同目录图零网络成本、风险最低，默认自动；
+    网络抓取（CAA/来源站）默认只暂存预览，L2 起自动。"""
+
+    auto_embed_sibling: bool = True
+    """检测到同目录规范命名图片时，自动嵌入同专辑缺封面的文件。"""
+    fetch_sources: list[str] = field(default_factory=lambda: ["caa"])
+    """网络封面来源链（按序降级）：caa=Cover Art Archive，provider=歌词源专辑图。"""
+    min_min_pixels: int = 90000
+    """自动链的质量门：宽×高不小于此值（300×300）。不足则换下一来源。"""
+    auto_write: bool = False
+    """网络抓取的封面是否自动嵌入。false 时只暂存进待办封面队列。"""
+
+
+@dataclass(slots=True)
+class OrganizePolicy:
+    """归置自动化策略。红线：默认不动文件；只对「本进程观察到的新增文件」
+    或 INBOX 根的入库流转生效；存量曲库永远走整理页的人工预览+执行。
+    所有移动记录 organize_ops 可逐条撤销。"""
+
+    mode: str = "off"
+    """off=只出归置建议；new_files=自动归位新增文件；inbox=INBOX 根流转。"""
+    template: str = "{artist}/{album}/{track_no} - {title}"
+    """目标路径模板。字段白名单见 organize._TEMPLATE_FIELDS。"""
 
 
 @dataclass(slots=True)
@@ -333,6 +379,8 @@ class PolicyConfig:
     allow_other_providers: bool = False
     matching: MatchingPolicy = field(default_factory=MatchingPolicy)
     tags: TagPolicy = field(default_factory=TagPolicy)
+    cover: CoverPolicy = field(default_factory=CoverPolicy)
+    organize: OrganizePolicy = field(default_factory=OrganizePolicy)
 
 
 @dataclass(slots=True)
@@ -350,8 +398,14 @@ class LyricsFormatConfig:
     bom: bool = False
     line_ending: str = "lf"
     format: str = "line_lrc"
-    translation: bool = False
+    translation: str = "off"
+    """翻译歌词的落盘形态：off=丢弃（旧行为）；bilingual=双语文体（翻译行
+    紧跟原文行，本地播放器兼容最好）；field=仅 FLAC 存独立字段。
+    兼容旧配置的布尔写法：true→bilingual，false→off。"""
     romanization: bool = False
+    keep_word_level: bool = False
+    """保留逐字歌词原文（QQ QRC）为 <同名>.qrc sidecar。默认关：
+    播放器支持少，但上游逐字数据丢弃不可逆，保留成本极低。"""
 
 
 NETWORK_SETTINGS_FIELDS = ("proxy", "use_proxy")
@@ -374,6 +428,10 @@ AI_SETTINGS_FIELDS = (
     "timeout_seconds",
     "max_requests_per_run",
     "auto_clean_duplicates",
+    "pre_review",
+    "pre_review_confidence",
+    "auto_accept",
+    "verify_tags",
     "use_proxy",
 )
 
@@ -402,6 +460,15 @@ class AIConfig:
     """一轮最多问几次：既防超支，也防一次点击把上游打爆。"""
     auto_clean_duplicates: bool = False
     """高置信度的重复歌词是否自动移入回收站（可还原）。"""
+    pre_review: bool = False
+    """对自动匹配落入「待审查」的候选调用模型判定。判定结果写入暂存行，
+    复核界面展示；这是减少人工干预的主通道。"""
+    pre_review_confidence: float = 0.85
+    """模型判定的采纳阈值：达到且程序闸门（时长/版本）也通过时才自动采纳。"""
+    auto_accept: bool = True
+    """模型高置信判定是否直接自动采纳（写入留痕可撤销）。false 时只展示建议。"""
+    verify_tags: bool = False
+    """标签搜索候选的模型核验：通过后按「已核验」处理（可参与自动补全）。"""
     use_proxy: bool = True
     """大模型请求是否走网络代理。
 
@@ -586,10 +653,18 @@ def apply_ai_settings_values(cfg: Config, values: Mapping[str, Any]) -> AIConfig
     for key, raw in values.items():
         if key not in AI_SETTINGS_FIELDS:
             raise ValueError(f"未知设置项：{key}")
-        if key in ("enabled", "auto_clean_duplicates", "use_proxy"):
+        if key in ("enabled", "auto_clean_duplicates", "use_proxy",
+                   "pre_review", "auto_accept", "verify_tags"):
             if not isinstance(raw, bool):
                 raise ValueError(f"{key} 必须是布尔值")
             setattr(ai, key, raw)
+            continue
+        if key == "pre_review_confidence":
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise ValueError(f"{key} 必须是数字")
+            if not 0.5 <= float(raw) <= 1.0:
+                raise ValueError(f"{key} 必须在 0.5 到 1.0 之间")
+            ai.pre_review_confidence = float(raw)
             continue
         if key == "protocol":
             if raw not in AI_PROTOCOLS:
@@ -699,6 +774,34 @@ def _as_str_list(problems: _Problems, where: str, value: Any, default: list[str]
     return list(value)
 
 
+def _organize_mode(problems: _Problems, where: str, value: Any, *, allow_inherit: bool = False) -> str:
+    """归置模式。根级允许空串表示「继承 policy.organize.mode」。"""
+    default = "" if allow_inherit else "off"
+    allowed = _ORGANIZE_MODES | ({""} if allow_inherit else set())
+    text = _as_str(problems, where, value, default)
+    if text not in allowed:
+        problems.add(
+            where, f"未知模式 {text!r}（可选: {', '.join(sorted(allowed)) or '无'}）"
+        )
+        return default
+    return text
+
+
+def _translation_mode(problems: _Problems, where: str, value: Any) -> str:
+    """lyrics.translation 兼容三种写法：旧布尔（true→bilingual）与字符串枚举。"""
+    if isinstance(value, bool):
+        return "bilingual" if value else "off"
+    text = _as_str(problems, where, value, "off")
+    if text not in _TRANSLATION_MODES:
+        problems.add(
+            where,
+            f"未知取值 {text!r}（可选: {', '.join(sorted(_TRANSLATION_MODES))}；"
+            "也接受布尔值 true/false）",
+        )
+        return "off"
+    return text
+
+
 def _as_int_list(problems: _Problems, where: str, value: Any, default: list[int]) -> list[int]:
     if not isinstance(value, list) or any(
         isinstance(v, bool) or not isinstance(v, int) for v in value
@@ -711,7 +814,7 @@ def _as_int_list(problems: _Problems, where: str, value: Any, default: list[int]
 # 允许的表结构
 _ROOT_KEYS = {
     "name", "role", "path", "host_path", "read_only", "enabled",
-    "ignore_dirs", "ignore_globs",
+    "ignore_dirs", "ignore_globs", "organize_mode", "target_root",
 }
 _STORAGE_KEYS = {"data_dir"}
 _NETWORK_KEYS = {"proxy", "direct_hosts", "use_proxy"}
@@ -721,9 +824,10 @@ _WATCH_KEYS = {
 }
 _PROVIDERS_KEYS = {
     "enabled", "qq", "lrclib", "netease", "musicbrainz", "acoustid",
-    "priority_zh", "priority_foreign", "cjk_uses_zh_priority",
+    "priority_zh", "priority_foreign", "cjk_uses_zh_priority", "user_agent",
 }
 _QQ_KEYS = {
+    "base_url",
     "minimum_request_interval_seconds", "query_limit_per_round", "candidates_per_query",
     "detail_and_lyric_limit_per_round", "request_timeout_seconds", "search_timeout_seconds",
     "max_inline_retries", "max_inline_retry_wait_seconds",
@@ -751,11 +855,16 @@ _ACOUSTID_KEYS = {
 _POLICY_KEYS = {
     "write_enabled", "write_mode", "write_sidecar_lrc", "embed_lyrics", "fill_empty_lrc",
     "skip_if_valid_synced", "clear_plain_embedded", "allow_other_providers", "matching",
-    "tags",
+    "tags", "cover", "organize",
 }
+_COVER_KEYS = {
+    "auto_embed_sibling", "fetch_sources", "min_min_pixels", "auto_write",
+}
+_ORGANIZE_KEYS = {"mode", "template"}
 _TAG_KEYS = {
     "auto_scan", "scan_interval_hours", "auto_write", "fingerprint",
     "max_auto_write_per_run", "max_duration_delta_seconds",
+    "low_risk_auto_correct",
 }
 _MATCHING_KEYS = {
     "max_duration_delta_seconds", "min_score_margin", "min_confidence",
@@ -763,9 +872,13 @@ _MATCHING_KEYS = {
     "auto_accept_relaxed_seconds", "auto_accept_relaxed_confidence",
     "auto_accept_wide_confidence",
     "auto_accept_min_title_score", "auto_accept_min_artist_score",
+    "allow_approximate",
 }
 _RETRY_KEYS = {"not_found_intervals_days", "no_synced_intervals_days", "transient_backoff_seconds"}
-_LYRICS_KEYS = {"encoding", "bom", "line_ending", "format", "translation", "romanization"}
+_LYRICS_KEYS = {
+    "encoding", "bom", "line_ending", "format", "translation", "romanization",
+    "keep_word_level",
+}
 _WEB_KEYS = {"bind", "port", "auth_required", "admin_username", "admin_password"}
 _WRITE_KEYS = {
     "backup_before_write", "backup_auto_prune", "backup_max_bytes",
@@ -774,6 +887,7 @@ _WRITE_KEYS = {
 _AI_KEYS = {
     "enabled", "protocol", "base_url", "model", "api_key",
     "timeout_seconds", "max_requests_per_run", "auto_clean_duplicates",
+    "pre_review", "pre_review_confidence", "auto_accept", "verify_tags",
     "use_proxy",
 }
 _TOP_KEYS = {
@@ -784,6 +898,12 @@ _TOP_KEYS = {
 _WRITE_MODES = {"auto", "verified_only", "off"}
 _WATCH_BACKENDS = {"auto", "inotify", "fsevents", "poll"}
 _LYRIC_FORMATS = {"line_lrc"}
+_ORGANIZE_MODES = {"off", "new_files", "inbox"}
+_TEMPLATE_FIELD_WHITELIST = frozenset(
+    {"artist", "albumartist", "album", "title", "track_no", "disc_no", "year", "ext"}
+)
+_TRANSLATION_MODES = {"off", "bilingual", "field"}
+_COVER_SOURCES = {"caa", "provider"}
 
 
 # ---------------------------------------------------------------------------
@@ -905,6 +1025,14 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                         ),
                         ignore_globs=_as_str_list(
                             problems, f"{where}.ignore_globs", item.get("ignore_globs", []), []
+                        ),
+                        organize_mode=_organize_mode(
+                            problems, f"{where}.organize_mode",
+                            item.get("organize_mode", ""), allow_inherit=True,
+                        ),
+                        target_root=_as_str(
+                            problems, f"{where}.target_root",
+                            item.get("target_root", ""), "",
                         ),
                     )
                 )
@@ -1033,6 +1161,11 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                 table["cjk_uses_zh_priority"], providers.cjk_uses_zh_priority,
             )
 
+        if "user_agent" in table:
+            providers.user_agent = _as_str(
+                problems, "providers.user_agent", table["user_agent"], providers.user_agent
+            )
+
         if "musicbrainz" in table:
             mb_t = _unwrap(problems, "providers.musicbrainz", table["musicbrainz"])
             problems.unknown_keys("providers.musicbrainz", mb_t, _MUSICBRAINZ_KEYS)
@@ -1113,6 +1246,10 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
             problems.unknown_keys("providers.qq", qq_t, _QQ_KEYS)
             d = QQProviderConfig()
             providers.qq = QQProviderConfig(
+                base_url=_as_str(
+                    problems, "providers.qq.base_url", qq_t.get("base_url", d.base_url),
+                    d.base_url,
+                ),
                 minimum_request_interval_seconds=_as_float(
                     problems,
                     "providers.qq.minimum_request_interval_seconds",
@@ -1341,6 +1478,11 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                     ),
                     dt.max_duration_delta_seconds,
                 ),
+                low_risk_auto_correct=_as_bool(
+                    problems, "policy.tags.low_risk_auto_correct",
+                    t_t.get("low_risk_auto_correct", dt.low_risk_auto_correct),
+                    dt.low_risk_auto_correct,
+                ),
             )
         if "matching" in table:
             m_t = _unwrap(problems, "policy.matching", table["matching"])
@@ -1403,6 +1545,57 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                             dm.auto_accept_min_artist_score),
                     dm.auto_accept_min_artist_score,
                 ),
+                allow_approximate=_as_bool(
+                    problems, "policy.matching.allow_approximate",
+                    m_t.get("allow_approximate", dm.allow_approximate),
+                    dm.allow_approximate,
+                ),
+            )
+        if "cover" in table:
+            c_t = _unwrap(problems, "policy.cover", table["cover"])
+            problems.unknown_keys("policy.cover", c_t, _COVER_KEYS)
+            dc = CoverPolicy()
+            sources = _as_str_list(
+                problems, "policy.cover.fetch_sources",
+                c_t.get("fetch_sources", dc.fetch_sources), dc.fetch_sources,
+            )
+            for name in sources:
+                if name not in _COVER_SOURCES:
+                    problems.add(
+                        "policy.cover.fetch_sources",
+                        f"未知来源 {name!r}（可选: {', '.join(sorted(_COVER_SOURCES))}）",
+                    )
+            pixels = _as_int(
+                problems, "policy.cover.min_min_pixels",
+                c_t.get("min_min_pixels", dc.min_min_pixels), dc.min_min_pixels,
+            )
+            if pixels < 0:
+                problems.add("policy.cover.min_min_pixels", "不能为负数")
+            policy.cover = CoverPolicy(
+                auto_embed_sibling=_as_bool(
+                    problems, "policy.cover.auto_embed_sibling",
+                    c_t.get("auto_embed_sibling", dc.auto_embed_sibling),
+                    dc.auto_embed_sibling,
+                ),
+                fetch_sources=sources,
+                min_min_pixels=pixels,
+                auto_write=_as_bool(
+                    problems, "policy.cover.auto_write",
+                    c_t.get("auto_write", dc.auto_write), dc.auto_write,
+                ),
+            )
+        if "organize" in table:
+            o_t = _unwrap(problems, "policy.organize", table["organize"])
+            problems.unknown_keys("policy.organize", o_t, _ORGANIZE_KEYS)
+            do = OrganizePolicy()
+            policy.organize = OrganizePolicy(
+                mode=_organize_mode(
+                    problems, "policy.organize.mode", o_t.get("mode", do.mode),
+                ),
+                template=_as_str(
+                    problems, "policy.organize.template",
+                    o_t.get("template", do.template), do.template,
+                ),
             )
         cfg.policy = policy
 
@@ -1446,10 +1639,15 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
             line_ending=_as_str(problems, "lyrics.line_ending",
                                 table.get("line_ending", dl.line_ending), dl.line_ending),
             format=fmt,
-            translation=_as_bool(problems, "lyrics.translation",
-                                 table.get("translation", dl.translation), dl.translation),
+            translation=_translation_mode(
+                problems, "lyrics.translation", table.get("translation", dl.translation)
+            ),
             romanization=_as_bool(problems, "lyrics.romanization",
                                   table.get("romanization", dl.romanization), dl.romanization),
+            keep_word_level=_as_bool(
+                problems, "lyrics.keep_word_level",
+                table.get("keep_word_level", dl.keep_word_level), dl.keep_word_level,
+            ),
         )
 
     # ---- web ----
@@ -1534,6 +1732,19 @@ def _parse_ai(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None:
             problems, "ai.auto_clean_duplicates",
             table.get("auto_clean_duplicates", base.auto_clean_duplicates),
             base.auto_clean_duplicates),
+        pre_review=_as_bool(
+            problems, "ai.pre_review",
+            table.get("pre_review", base.pre_review), base.pre_review),
+        pre_review_confidence=_as_float(
+            problems, "ai.pre_review_confidence",
+            table.get("pre_review_confidence", base.pre_review_confidence),
+            base.pre_review_confidence),
+        auto_accept=_as_bool(
+            problems, "ai.auto_accept",
+            table.get("auto_accept", base.auto_accept), base.auto_accept),
+        verify_tags=_as_bool(
+            problems, "ai.verify_tags",
+            table.get("verify_tags", base.verify_tags), base.verify_tags),
         use_proxy=_as_bool(
             problems, "ai.use_proxy",
             table.get("use_proxy", base.use_proxy),
@@ -1545,6 +1756,8 @@ def _parse_ai(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None:
         problems.add("ai.base_url", "API 地址必须以 http:// 或 https:// 开头")
     if not cfg.ai.model.strip():
         problems.add("ai.model", "模型 ID 不能为空")
+    if not 0.5 <= cfg.ai.pre_review_confidence <= 1.0:
+        problems.add("ai.pre_review_confidence", "应在 0.5 ~ 1.0 之间")
 
 
 def _unwrap(problems: _Problems, where: str, value: Any) -> Mapping[str, Any]:
@@ -1697,3 +1910,121 @@ def _is_within(child: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# 设置页策略写入（与 apply_tag_policy_values 同一模式）
+# ---------------------------------------------------------------------------
+
+COVER_POLICY_FIELDS = ("auto_embed_sibling", "auto_write", "min_min_pixels", "fetch_sources")
+"""设置页可修改的封面策略字段。"""
+
+ORGANIZE_POLICY_FIELDS = ("mode", "template")
+"""设置页可修改的归置策略字段。"""
+
+LYRICS_SETTINGS_FIELDS = (
+    "translation", "keep_word_level", "romanization",
+    "encoding", "bom", "line_ending", "format",
+)
+"""设置页可修改的歌词输出设置。"""
+
+AI_POLICY_FIELDS = (
+    "pre_review", "pre_review_confidence", "auto_accept", "verify_tags",
+    "max_requests_per_run", "timeout_seconds",
+)
+"""设置页可修改的 AI 预审策略（不含密钥与协议——那些在专用的设置里）。"""
+
+
+def apply_cover_policy_values(cfg: Config, values: Mapping[str, Any]) -> CoverPolicy:
+    """校验并把封面策略写进配置对象。非法值抛 ValueError，不静默截断。"""
+    if not isinstance(values, Mapping):
+        raise ValueError("设置必须是对象")
+    policy = replace(cfg.policy.cover)
+    for key, raw in values.items():
+        if key not in COVER_POLICY_FIELDS:
+            raise ValueError(f"未知设置项：{key}")
+        if key in ("auto_embed_sibling", "auto_write"):
+            if not isinstance(raw, bool):
+                raise ValueError(f"{key} 必须是布尔值")
+            setattr(policy, key, raw)
+        elif key == "min_min_pixels":
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise ValueError(f"{key} 必须是数字")
+            if not (0 <= raw <= 10_000_000):
+                raise ValueError(f"{key} 必须在 0 到 10000000 之间")
+            policy.min_min_pixels = int(raw)
+        elif key == "fetch_sources":
+            if not isinstance(raw, list) or any(not isinstance(v, str) for v in raw):
+                raise ValueError("fetch_sources 必须是字符串数组")
+            unknown = set(raw) - _COVER_SOURCES
+            if unknown:
+                raise ValueError(f"未知封面来源：{sorted(unknown)[0]}")
+            policy.fetch_sources = list(raw)
+    cfg.policy.cover = policy
+    return policy
+
+
+def apply_organize_policy_values(cfg: Config, values: Mapping[str, Any]) -> OrganizePolicy:
+    """校验并把归置策略写进配置对象。红线护栏：mode 只认白名单。"""
+    if not isinstance(values, Mapping):
+        raise ValueError("设置必须是对象")
+    policy = replace(cfg.policy.organize)
+    for key, raw in values.items():
+        if key not in ORGANIZE_POLICY_FIELDS:
+            raise ValueError(f"未知设置项：{key}")
+        if key == "mode":
+            if not isinstance(raw, str) or raw not in _ORGANIZE_MODES:
+                raise ValueError(
+                    f"mode 必须是 {', '.join(sorted(_ORGANIZE_MODES))} 之一"
+                )
+            policy.mode = raw
+        elif key == "template":
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError("template 不能为空")
+            unknown = set(re.findall(r"\{(\w+)\}", raw)) - _TEMPLATE_FIELD_WHITELIST
+            if unknown:
+                raise ValueError(
+                    f"模板字段 {sorted(unknown)[0]} 不在白名单内"
+                    f"（可用：{', '.join(sorted(_TEMPLATE_FIELD_WHITELIST))}）"
+                )
+            policy.template = raw
+    cfg.policy.organize = policy
+    return policy
+
+
+def apply_lyrics_settings_values(cfg: Config, values: Mapping[str, Any]) -> LyricsFormatConfig:
+    """校验并把歌词输出设置写进配置对象。translation 兼容布尔旧写法。"""
+    if not isinstance(values, Mapping):
+        raise ValueError("设置必须是对象")
+    settings = replace(cfg.lyrics)
+    for key, raw in values.items():
+        if key not in LYRICS_SETTINGS_FIELDS:
+            raise ValueError(f"未知设置项：{key}")
+        if key == "translation":
+            if isinstance(raw, bool):
+                settings.translation = "bilingual" if raw else "off"
+                continue
+            if not isinstance(raw, str) or raw not in _TRANSLATION_MODES:
+                raise ValueError(
+                    f"translation 必须是 {', '.join(sorted(_TRANSLATION_MODES))} 之一"
+                )
+            settings.translation = raw
+        elif key in ("keep_word_level", "romanization", "bom"):
+            if not isinstance(raw, bool):
+                raise ValueError(f"{key} 必须是布尔值")
+            setattr(settings, key, raw)
+        else:
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError(f"{key} 必须是非空字符串")
+            setattr(settings, key, raw)
+    if settings.format not in _LYRIC_FORMATS:
+        raise ValueError(f"未知歌词格式：{settings.format}")
+    cfg.lyrics = settings
+    return cfg.lyrics
+
+
+def apply_acoustid_key(cfg: Config, api_key: str) -> None:
+    """保存 AcoustID key 到运行配置（掩码显示由接口层负责）。"""
+    if not isinstance(api_key, str):
+        raise ValueError("api_key 必须是字符串")
+    cfg.providers.acoustid.api_key = api_key.strip()

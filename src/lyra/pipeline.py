@@ -15,13 +15,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import scan
@@ -30,7 +31,13 @@ from .config import Config, RootConfig
 from .db import ResolutionOutcome, StateStore
 from .formats import read_audio_meta, read_embedded_lyrics_texts
 from .lang import ordered_providers, priority_group
-from .lrc import content_hash, decode_lyrics_bytes, normalize_lrc, parse_lrc
+from .lrc import (
+    content_hash,
+    decode_lyrics_bytes,
+    merge_bilingual,
+    normalize_lrc,
+    parse_lrc,
+)
 from .match import (
     CandidateScore,
     Decision,
@@ -45,6 +52,7 @@ from .providers import (
     BudgetExhaustedError,
     Candidate,
     Provider,
+    ProviderBlockedError,
     ProviderError,
     RateLimitedError,
     RawLyrics,
@@ -138,6 +146,10 @@ class RunSummary:
     与 apply_failed 分开统计很重要：failed 需要人介入，而 deferred_locked
     下一轮批量写入会自动续跑，属于「稍后重试」而不是「出了问题」。
     """
+    ai_accepted: int = 0
+    """AI 预审判定同曲且高置信后自动采纳的条数（留痕可撤销）。"""
+    ai_suggested: int = 0
+    """AI 预审给出了判定但未达自动采纳标准、进入待办展示的条数。"""
     yielded: bool = False
     """是否因为「人工在等写入」而提前收手。
 
@@ -614,6 +626,11 @@ def run_fetch(
     by_name = {p.name: p for p in providers}
     disabled: dict[str, str] = {}
 
+    # AI 预审预算：整轮共享（ai.max_requests_per_run），用完为止。
+    ai_budget: dict[str, int] | None = None
+    if cfg.ai.enabled and cfg.ai.pre_review:
+        ai_budget = {"left": max(0, int(cfg.ai.max_requests_per_run))}
+
     # 进度按**时间**节流，不按条数。
     # 实际教训：原来写 `considered % 10 == 0`，而每首要约 20 秒（三个来源
     # 各带限流间隔），于是界面十分钟里一直显示「已处理 30 首」——
@@ -661,7 +678,8 @@ def run_fetch(
         summary.considered_paths.append(target.rel_path)
         _report(target, summary.considered)
 
-        _fetch_one(store, cfg, target, by_name, disabled, summary)
+        _fetch_one(store, cfg, target, by_name, disabled, summary,
+                   ai_budget=ai_budget)
 
     summary.provider_disabled = disabled
     # 记录表滚动清理：只保留最近 100 条，避免几个月后变成几万行。
@@ -708,6 +726,73 @@ def _artist_matches(wanted: str, artists: Sequence[str]) -> bool:
     return False
 
 
+def _ai_judge_candidates(
+    cfg: Config,
+    target: TrackTarget,
+    decision: object,
+    scored: list[CandidateScore],
+    candidates: list[Candidate],
+    lyrics: RawLyrics | None,
+) -> object | None:
+    """调用模型判定候选与本地文件的关系；失败一律当「没有判断」。
+
+    判定只用元数据 + 最优候选的歌词摘要（不为判定额外取词——那会翻倍
+    请求数）。候选最多 6 条，控制 prompt 长度与成本。
+    """
+    from .ai import AIError, review_candidates
+
+    client_map = {
+        (c.provider, c.provider_id): c for c in candidates
+    }
+    best_key = (
+        (decision.best.provider, decision.best.provider_id)
+        if decision.best is not None else None
+    )
+    items: list[dict[str, object]] = []
+    for entry in scored[:6]:
+        cand = client_map.get((entry.provider, entry.provider_id))
+        excerpt = ""
+        if (entry.provider, entry.provider_id) == best_key and lyrics is not None:
+            excerpt = "\n".join(lyrics.text.splitlines()[:8])
+        items.append({
+            "id": entry.provider_id,
+            "provider": entry.provider,
+            "title": getattr(cand, "title", "") if cand else "",
+            "artists": list(getattr(cand, "artists", ()) or ()) if cand else [],
+            "album": getattr(cand, "album", "") if cand else "",
+            "duration": getattr(cand, "duration", None) if cand else None,
+            "synced": True,
+            "excerpt": excerpt or "（未取词，仅元数据判定）",
+        })
+    if not items:
+        return None
+    stem = PurePosixPath(target.rel_path).name
+    parent = PurePosixPath(target.rel_path).parent.name
+    try:
+        return review_candidates(
+            protocol=cfg.ai.protocol,
+            base_url=cfg.ai.base_url,
+            model=cfg.ai.model,
+            api_key=cfg.ai.api_key,
+            timeout=cfg.ai.timeout_seconds,
+            use_proxy=cfg.ai.use_proxy,
+            track={
+                "filename": stem,
+                "dir_name": parent,
+                "title": target.context.title,
+                "artists": list(target.context.artists),
+                "album": target.context.album,
+                "duration": target.context.duration,
+                "notes": "候选来自歌词来源的搜索结果",
+            },
+            candidates=items,
+            max_delta_seconds=cfg.policy.matching.max_duration_delta_seconds,
+        )
+    except AIError:
+        # 模型不可用/超时/输出不合法：预审只是加速器，绝不能阻塞主流程
+        return None
+
+
 def _fetch_one(
     store: StateStore,
     cfg: Config,
@@ -715,6 +800,8 @@ def _fetch_one(
     providers: dict[str, Provider],
     disabled: dict[str, str],
     summary: RunSummary,
+    *,
+    ai_budget: dict[str, int] | None = None,
 ) -> None:
     now = time.time()
     query = TrackQuery(
@@ -756,6 +843,13 @@ def _fetch_one(
             continue
         try:
             found = provider.search(query)
+        except ProviderBlockedError as exc:
+            # 风控拦截：与普通失败区别对待——不写负缓存（不是「没有结果」），
+            # 健康表记 blocked，自动化页据此提示切自建网关
+            disabled[name] = f"来源被风控拦截: {exc}"
+            store.bump_provider_health(name, blocked=True, error=str(exc)[:200])
+            summary.errors.append(f"{target.rel_path} [{name}] 被风控拦截: {exc}")
+            continue
         except (RateLimitedError, TransientNetworkError) as exc:
             # 来源级失败：本轮停用它，避免对全库逐个重试形成请求风暴
             disabled[name] = f"{type(exc).__name__}: {exc}"
@@ -772,6 +866,7 @@ def _fetch_one(
             continue
         except SchemaChangedError as exc:
             disabled[name] = f"响应结构变化: {exc}"
+            store.bump_provider_health(name, schema_error=True, error=str(exc)[:200])
             store.record_resolution(
                 resolution_key=resolution_key(target, name),
                 provider=name,
@@ -801,6 +896,10 @@ def _fetch_one(
         entry: dict[str, object] = {"provider": name, "candidates": len(found)}
         query_log.append(entry)
         all_candidates.extend(found)
+        if found:
+            store.bump_provider_health(name, ok=True)
+        else:
+            store.bump_provider_health(name, not_found=True)
 
         # ---- 早退：一个来源已给出足够好的结果，就不再查其余来源 ----
         # 默认：不必每个平台都查。实际三个来源全查一遍要 10~15 秒；
@@ -890,6 +989,59 @@ def _fetch_one(
     text = normalize_lrc(lyrics.text)
     digest = content_hash(text)
 
+    # ---- AI 预审：减少人工干预的主通道 --------------------------------
+    #
+    # 对落入「待审查」的候选（含近似匹配），调用模型判断「哪个候选与本地
+    # 文件是同一录音 / 同曲异版」。决策权在程序：
+    #   - relation=same_recording 且置信 ≥ 阈值 → 自动采纳（origin='ai'，
+    #     判定全文留档 ai_json，写入留痕可撤销）；
+    #   - relation=same_song_diff_version 且决策为近似匹配 → 同上（现场版
+    #     拿到录音室词，歌词内容对）；
+    #   - 其余情况只展示建议，绝不自动写。
+    # 模型永远不绕过程序闸门：只采纳评分最优的那条候选，模型选了别的
+    # 候选时保留分歧给人判断。
+    ai_json: str | None = None
+    origin = "auto"
+    if (
+        decision.decision is Decision.NEEDS_REVIEW
+        and ai_budget is not None
+        and ai_budget.get("left", 0) > 0
+        and decision.best is not None
+    ):
+        judgement = _ai_judge_candidates(cfg, target, decision, boosted, all_candidates, lyrics)
+        ai_budget["left"] -= 1
+        if judgement is not None:
+            ai_json = json.dumps(judgement.to_dict(), ensure_ascii=False)
+            adoptable = (
+                cfg.ai.auto_accept
+                and judgement.best is not None
+                and judgement.best == decision.best.provider_id
+                and judgement.confidence >= cfg.ai.pre_review_confidence
+                and (
+                    judgement.same_recording
+                    or (
+                        judgement.approximable
+                        and decision.approximate
+                        and cfg.policy.matching.allow_approximate
+                    )
+                )
+            )
+            if adoptable:
+                assert judgement.best is not None
+                origin = "ai"
+                decision = replace(
+                    decision,
+                    decision=Decision.ACCEPT,
+                    reason=(
+                        f"{decision.reason}；AI 判定为同一"
+                        f"{'录音' if judgement.same_recording else '歌曲的不同版本'}"
+                        f"（置信 {judgement.confidence:.2f}，{judgement.reason}）"
+                    ),
+                )
+                summary.ai_accepted += 1
+            else:
+                summary.ai_suggested += 1
+
     # 决策为复核时也暂存，让复核者能离线看歌词
     store.stage_lyrics(
         location_id=target.location_id,
@@ -900,6 +1052,10 @@ def _fetch_one(
         score=best.score,
         duration_delta=best.duration_delta,
         state="staged" if decision.decision is Decision.ACCEPT else "needs_review",
+        origin=origin,
+        translation=lyrics.translation or None,
+        raw_qrc=lyrics.raw_text if cfg.lyrics.keep_word_level else None,
+        ai_json=ai_json,
     )
 
     outcome = (
@@ -1150,12 +1306,20 @@ def _apply_one(
     # 来源标记：auto 是系统自动接受，manual 是人工在界面上选定。
     origin = row["origin"] if "origin" in row.keys() else "auto"  # noqa: SIM118
 
+    # 翻译落盘：bilingual = 双语文体（翻译行紧跟原文行）；field 暂只保留数据、
+    # off = 不合并（旧行为）。翻译行来自上游独立通道（QQ trans / 网易 tlyric）。
+    lyrics_text = row["content"]
+    if cfg.lyrics.translation == "bilingual":
+        translation = row["translation"] if "translation" in row.keys() else None  # noqa: SIM118
+        if translation:
+            lyrics_text = merge_bilingual(row["content"], translation)
+
     plan = WritePlan(
         location_id=row["location_id"],
         audio_path=abs_path,
         sidecar_path=sidecar_target,
         media_format=meta.info.media_format,
-        lyrics_text=row["content"],
+        lyrics_text=lyrics_text,
         embed=cfg.policy.embed_lyrics,
         write_sidecar=cfg.policy.write_sidecar_lrc,
         # 自动接受的不备份（见 WriteConfig.backup_review_only）：

@@ -80,8 +80,13 @@ timezone = "Asia/Shanghai"
 # ===========================================================================
 [providers]
 enabled = ["qq", "netease", "lrclib"]
+# 直连上游的 User-Agent；留空用内置默认
+user_agent = ""
 
 [providers.qq]
+# 透明反代网关根（替换 https://c.y.qq.com，路径与响应完全一致）。
+# 直连被风控时可指向自建反代；留空 = 直连
+base_url = ""
 minimum_request_interval_seconds = 2
 # 每轮最多几个有意义的查询
 query_limit_per_round = 3
@@ -187,6 +192,8 @@ min_confidence = 0.75
 #   A.I.N.Y. 的重生版差 0.20s，而正确的原版差 0.80s）。
 # 设为 0 即关闭这条规则，恢复「同分即复核」。
 auto_accept_within_seconds = 1.0
+# 近似匹配：现场版可拿录音室词（AI 高置信判定同曲异版时自动采用）
+allow_approximate = true
 
 [policy.tags]
 # 标签刮削：监控进程按间隔自动扫描全库。
@@ -200,6 +207,27 @@ fingerprint = true
 max_auto_write_per_run = 300
 # 时长差超过此值不自动写入，交人工看一眼。
 max_duration_delta_seconds = 5.0
+# 低风险纠正自动写：强证据来源把英文标题纠正为中文（文字体系切换）
+low_risk_auto_correct = true
+
+[policy.cover]
+# 封面自动化。同目录规范命名图片（cover.jpg 等）零网络成本、风险最低，默认自动嵌入
+auto_embed_sibling = true
+# 网络封面来源链（按序降级）：caa = Cover Art Archive（需标签里有 MusicBrainz 发行 ID）
+fetch_sources = ["caa"]
+# 自动链的质量门：宽×高不小于此值才采用，不足则换下一来源
+min_min_pixels = 90000
+# 网络抓取的封面是否自动嵌入；false 时只暂存进待办确认
+auto_write = false
+
+[policy.organize]
+# 目录归置。红线：默认不动任何文件；存量曲库永远走整理页的人工预览+执行。
+#   off       = 只生成归置建议（源路径 → 建议路径），出现在待办里
+#   new_files = 对本进程观察到的新入库文件自动归位（可撤销，冲突转待办）
+#   inbox     = 额外允许 INBOX 根把处理完的文件流转进 library 根（需配 root.target_root）
+mode = "off"
+# 目标路径模板；字段白名单：artist albumartist album title track_no disc_no year ext
+template = "{artist}/{album}/{track_no} - {title}"
 
 # ===========================================================================
 # 缓存与重试
@@ -221,9 +249,15 @@ bom = false
 line_ending = "lf"
 # line_lrc = 逐行 LRC（逐字源降级为行级）
 format = "line_lrc"
-# 翻译与罗马音默认关闭，不能用翻译替代原文
-translation = false
+# 翻译歌词的落盘形态（罗马音独立开关，不能用翻译替代原文）：
+#   off        = 丢弃翻译（旧行为）
+#   bilingual  = 双语文体：翻译行紧跟原文行写入 .lrc 与内嵌
+#   field      = 仅 FLAC 存独立字段
+# 兼容旧写法：true 等价 bilingual，false 等价 off
+translation = "bilingual"
 romanization = false
+# 保留逐字歌词原文（QQ QRC）为同名 .qrc 文件；播放器支持少，默认关
+keep_word_level = false
 
 # ===========================================================================
 # Web 界面
@@ -252,6 +286,15 @@ api_key = ""
 timeout_seconds = 30
 max_requests_per_run = 12
 auto_clean_duplicates = false
+# 智能预审：对落入「待审查」的候选调用模型判定，减少逐首人工确认。
+# 判定结论会显示在待办里；enabled=false 时本节其余开关无效
+pre_review = false
+# 模型判定的采纳阈值（0.5~1.0）：达到且程序闸门（时长/版本）也通过时才自动采纳
+pre_review_confidence = 0.85
+# 高置信判定是否直接自动采纳（写入留痕、可撤销）；false 时只展示建议
+auto_accept = true
+# 标签搜索候选的模型核验：通过后按「已核验」处理
+verify_tags = false
 
 # ===========================================================================
 # 写入事务

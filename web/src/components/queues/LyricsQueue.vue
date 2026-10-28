@@ -1,4 +1,10 @@
 <script setup lang="ts">
+/**
+ * 「待办 · 歌词」面板：自动抓取产生的歌词候选队列。
+ *
+ * 可嵌入待办页作为队列组件；独立页面形态已并入待办页。
+ * 深链兼容：?tab= 与父组件传入的 initialTab 都能定位初始标签。
+ */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -14,7 +20,6 @@ import type {
 import { useMeta } from '@/stores/meta'
 import { useNarrow } from '@/composables/useMedia'
 import { fmtAgo, fmtScore, splitPath } from '@/utils/format'
-import PageHead from '@/components/PageHead.vue'
 import ProviderBadge from '@/components/ProviderBadge.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import AlternativesDrawer from '@/components/AlternativesDrawer.vue'
@@ -25,6 +30,9 @@ import PreviewPlayButton from '@/components/PreviewPlayButton.vue'
 import AppIcon from '@/components/AppIcon.vue'
 
 type Tab = 'safe' | 'pending' | 'ignored' | 'orphans'
+
+/** 父组件可指定初始标签；仅作初始值，之后仍以 ?tab= 深链为最高优先。 */
+const props = defineProps<{ initialTab?: Tab }>()
 
 const meta = useMeta()
 const narrow = useNarrow()
@@ -38,12 +46,15 @@ const router = useRouter()
  *   已忽略   —— 被人工忽略的曲目（path 级 skip_fetch 规则），可恢复；
  *   无音源   —— 没有对应音频的歌词（原「独立LRC」）。
  */
-const requested = typeof route.query.tab === 'string' ? route.query.tab : ''
-const tab = ref<Tab>(
-  requested === 'pending' || requested === 'orphans' || requested === 'safe' || requested === 'ignored'
-    ? requested
-    : 'safe',
-)
+function asTab(value: string | undefined): Tab | null {
+  return value === 'pending' || value === 'orphans' || value === 'safe' || value === 'ignored'
+    ? value
+    : null
+}
+
+/** 初始标签：深链 > 父组件 prop > 默认「推荐采纳」。 */
+const requested = asTab(typeof route.query.tab === 'string' ? route.query.tab : '') ?? asTab(props.initialTab)
+const tab = ref<Tab>(requested ?? 'safe')
 
 const data = ref<ReviewPage | null>(null)
 const safeItems = ref<SafeItem[]>([])
@@ -117,13 +128,6 @@ const safeTrackCount = computed(() => safeGroups.value.length)
 const ignoredRules = computed(() =>
   ruleItems.value.filter((rule) => rule.action === 'skip_fetch' && rule.scope === 'path'),
 )
-
-const activeCount = computed(() => {
-  if (tab.value === 'safe') return safeTrackCount.value
-  if (tab.value === 'ignored') return ignoredRules.value.length
-  if (tab.value === 'orphans') return orphanCount.value
-  return total.value
-})
 
 /* ------------------------------------------------------------------ 查看歌词 */
 
@@ -585,11 +589,12 @@ onMounted(async () => {
 </script>
 
 <template>
-  <PageHead :count="activeCount">
+  <div class="queue-bar">
+    <span class="queue-hint">自动抓取的歌词候选在这里确认，采用后写入文件。</span>
     <el-button :loading="loading || safeLoading" @click="refreshActive">
       <AppIcon name="Refresh" :size="14" style="margin-right: 5px" />刷新
     </el-button>
-  </PageHead>
+  </div>
 
   <el-tabs v-model="tab" class="review-tabs">
     <el-tab-pane :label="safeTrackCount ? `推荐采纳 ${safeTrackCount}` : '推荐采纳'" name="safe">
@@ -782,6 +787,16 @@ onMounted(async () => {
                     来源已下架
                   </el-tag>
                   <el-tag v-else-if="candidate.safe" size="small" type="success">来源一致</el-tag>
+                  <el-tag
+                    v-if="candidate.ai && candidate.ai.best === candidate.provider_id"
+                    size="small"
+                    :type="candidate.ai.relation === 'same_recording' ? 'success' : 'warning'"
+                    effect="plain"
+                    :title="candidate.ai.reason"
+                  >
+                    AI 判定：{{ candidate.ai.relation === 'same_recording' ? '同一录音' : '同曲异版' }}
+                    · {{ Math.round(candidate.ai.confidence * 100) }}%
+                  </el-tag>
                   <span v-else-if="!candidate.has_evidence" class="cell-meta">无判定记录</span>
                 </div>
                 <div v-if="candidate.reason" class="reason">{{ candidate.reason }}</div>
@@ -968,6 +983,20 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.queue-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.queue-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
 .review-tabs :deep(.el-tabs__header) {
   margin-bottom: 14px;
 }
@@ -1218,6 +1247,10 @@ onMounted(async () => {
 }
 
 @media (max-width: 720px) {
+  .queue-bar {
+    flex-wrap: wrap;
+  }
+
   .notice {
     flex-direction: column;
     align-items: stretch;

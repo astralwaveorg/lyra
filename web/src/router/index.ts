@@ -3,10 +3,13 @@ import { createRouter, createWebHistory } from 'vue-router'
 /**
  * 路由即页面，也是侧栏的唯一来源。
  *
- * 分组按「你在这里做什么」划分：
- *   曲库 —— 看内容（概览、音乐、文件）
- *   维护 —— 修内容（审查、刮削、整理、回收与日志）
+ * 分组按「你在这里做什么」划分（重构后的信息架构）：
+ *   曲库 —— 看内容与操作（概览、音乐、文件）
+ *   维护 —— 修内容（待办、自动化、整理、回收站、活动）
  *   系统 —— 关于这个工具本身（设置）
+ *
+ * 操作与审查的关系：音乐页是对象驱动的编辑面，待办页是队列驱动的
+ * 审查面；两边点开任何一首歌都落到同一个详情抽屉。
  */
 export const routes = [
   { path: '/', redirect: '/overview' },
@@ -17,8 +20,8 @@ export const routes = [
     meta: { title: '概览', group: '曲库', icon: 'DataAnalysis' },
   },
   {
-    path: '/library',
-    name: 'library',
+    path: '/music',
+    name: 'music',
     component: () => import('@/views/LibraryView.vue'),
     meta: { title: '音乐', group: '曲库', icon: 'Headset' },
   },
@@ -29,22 +32,16 @@ export const routes = [
     meta: { title: '文件', group: '曲库', icon: 'FolderOpened' },
   },
   {
-    path: '/review',
-    name: 'review',
-    component: () => import('@/views/ReviewView.vue'),
-    meta: { title: '歌词审查', group: '维护', icon: 'CircleCheck' },
+    path: '/todo',
+    name: 'todo',
+    component: () => import('@/views/TodoView.vue'),
+    meta: { title: '待办', group: '维护', icon: 'Bell' },
   },
   {
-    path: '/scrape',
-    name: 'scrape',
-    component: () => import('@/views/ScrapeView.vue'),
-    meta: { title: '歌词刮削', group: '维护', icon: 'MagicStick' },
-  },
-  {
-    path: '/tags',
-    name: 'tags',
-    component: () => import('@/views/TagsScrapeView.vue'),
-    meta: { title: '标签刮削', group: '维护', icon: 'PriceTag' },
+    path: '/automation',
+    name: 'automation',
+    component: () => import('@/views/AutomationView.vue'),
+    meta: { title: '自动化', group: '维护', icon: 'MagicStick' },
   },
   {
     path: '/organize',
@@ -59,10 +56,10 @@ export const routes = [
     meta: { title: '回收站', group: '维护', icon: 'Delete' },
   },
   {
-    path: '/logs',
-    name: 'logs',
+    path: '/activity',
+    name: 'activity',
     component: () => import('@/views/LogsView.vue'),
-    meta: { title: '日志', group: '维护', icon: 'Document' },
+    meta: { title: '活动', group: '维护', icon: 'Document' },
   },
   {
     path: '/settings',
@@ -76,8 +73,14 @@ export const routes = [
     component: () => import('@/views/AboutView.vue'),
     meta: { title: '关于', group: '系统', icon: 'InfoFilled' },
   },
-  // 旧地址：歌词整理已并入「歌词审查 · 独立LRC」
-  { path: '/orphans', redirect: '/review?tab=orphans' },
+  // ---- 旧地址重定向（客户端路由，保留外部书签可用） ----
+  { path: '/library', redirect: '/music' },
+  { path: '/review', redirect: '/todo?kind=lyrics' },
+  { path: '/scrape', redirect: '/automation' },
+  { path: '/tags', redirect: '/todo?kind=tags' },
+  { path: '/logs', redirect: '/activity' },
+  // 旧地址：歌词整理已并入「待办 · 歌词 · 独立LRC」
+  { path: '/orphans', redirect: '/todo?kind=lyrics&tab=orphans' },
   { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ]
 

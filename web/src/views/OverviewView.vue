@@ -131,16 +131,27 @@ const history = computed(() => meta.summary?.coverage_history ?? [])
 const reviewCount = computed(() => meta.summary?.counts.needs_review ?? 0)
 const pendingCount = computed(() => meta.summary?.counts.staged_pending ?? 0)
 
-const todos = computed(() => [
-  {
-    label: '歌词审查',
-    value: reviewCount.value,
-    hint: '推荐采纳可直接确认，其余逐首判断',
-    to: '/review',
-  },
-  { label: '待写入', value: pendingCount.value, hint: '已确认，等待写入文件', to: '/scrape' },
-  { label: '标签与封面问题', value: meta.issueTotal, hint: '在音乐库里筛选后可逐项处理', to: '/library' },
-])
+const todos = computed(() => {
+  const c = meta.todoCounts
+  return [
+    {
+      label: '歌词',
+      value: c.lyrics,
+      hint: 'AI 已预审的候选可直接批量采纳',
+      to: '/todo?kind=lyrics',
+    },
+    { label: '标签', value: c.tags, hint: '可补全与待确认的提案', to: '/todo?kind=tags' },
+    { label: '封面', value: c.covers, hint: '缺封面的曲目，可批量补齐', to: '/todo?kind=covers' },
+    { label: '失败', value: c.failed, hint: '写入或任务失败，可一键重试', to: '/todo?kind=failed' },
+    { label: '待写入', value: pendingCount.value, hint: '已确认，等待写入文件', to: '/automation' },
+    {
+      label: '库健康问题',
+      value: meta.issueTotal,
+      hint: '在音乐库里筛选后可逐项处理',
+      to: '/music',
+    },
+  ].filter((item) => item.value > 0 || item.label === '歌词' || item.label === '失败')
+})
 
 async function load(refresh = false) {
   if (refresh) refreshing.value = true

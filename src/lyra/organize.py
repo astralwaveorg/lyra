@@ -50,6 +50,8 @@ __all__ = [
 
 UNKNOWN_ARTIST = "Unknown Artist"
 UNKNOWN_ALBUM = "Unknown Album"
+#: 与 config.OrganizePolicy.template 的默认值一致；改默认值时两处同步。
+DEFAULT_TEMPLATE = "{artist}/{album}/{track_no} - {title}"
 MAX_COMPONENT_CHARS = 180  # bytes
 MULTI_ARTIST_SEPARATOR = "; "
 
@@ -157,8 +159,14 @@ def target_rel_path(
     tags: dict[str, list[str]],
     source: Path,
     suffix: str | None = None,
+    template: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """根据标签生成根内相对路径，并返回用到的字段说明。"""
+    """根据标签生成根内相对路径，并返回用到的字段说明。
+
+    `template` 提供时按模板渲染（字段白名单见 config._TEMPLATE_FIELD_WHITELIST），
+    未提供或等于默认模板时走内置规则——多碟加碟号、合辑降级等既有语义
+    只在默认规则里实现，模板渲染是它的薄包装。
+    """
     artists = _artist_list(tags)
     artist = MULTI_ARTIST_SEPARATOR.join(artists) if artists else UNKNOWN_ARTIST
     album = _first(tags, "ALBUM") or UNKNOWN_ALBUM
@@ -180,14 +188,7 @@ def target_rel_path(
         name = f"{disc}-{track:0{width}d} - {title}"
 
     ext = suffix if suffix is not None else source.suffix.lower()
-    rel = "/".join(
-        (
-            safe_component(artist),
-            safe_component(album),
-            f"{safe_component(name, fallback='track')}{ext}",
-        )
-    )
-    return rel, {
+    fields = {
         "artist": artist,
         "artists": artists,
         "album": album,
@@ -196,6 +197,39 @@ def target_rel_path(
         "disc": disc,
         "multi_disc": multi_disc,
     }
+
+    if template and template.strip() != DEFAULT_TEMPLATE:
+        values = {
+            "artist": artist,
+            "albumartist": _first(tags, "ALBUMARTIST") or _first(tags, "ALBUM ARTIST") or artist,
+            "album": album,
+            "title": title,
+            "track_no": f"{track:0{width}d}" if track else "",
+            "disc_no": str(disc) if disc else "",
+            "year": _first(tags, "DATE") or _first(tags, "ORIGINALDATE") or "",
+            "ext": ext,
+        }
+        rendered = template.format(**values)
+        parts = [
+            safe_component(part, fallback="track")
+            for part in rendered.split("/")
+            if part.strip()
+        ]
+        if not parts:
+            parts = [safe_component(name, fallback="track") + ext]
+        rel = "/".join(parts)
+        if not rel.lower().endswith(ext):
+            rel = f"{rel}{ext}"
+        return rel, fields
+
+    rel = "/".join(
+        (
+            safe_component(artist),
+            safe_component(album),
+            f"{safe_component(name, fallback='track')}{ext}",
+        )
+    )
+    return rel, fields
 
 
 # ---------------------------------------------------------------------------

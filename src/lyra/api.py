@@ -52,8 +52,12 @@ from .config import (
     NETWORK_SETTINGS_FIELDS,
     Config,
     RootConfig,
+    apply_acoustid_key,
     apply_ai_settings_values,
+    apply_cover_policy_values,
+    apply_lyrics_settings_values,
     apply_network_settings_values,
+    apply_organize_policy_values,
     apply_tag_policy_values,
 )
 from .cover import (
@@ -336,26 +340,38 @@ class Runner:
         if not force and now - self._last_persist.get(record.id, 0.0) < 2.0:
             return
         self._last_persist[record.id] = now
-        try:
-            self._store.upsert_task(
-                task_id=record.id, kind=record.kind, state=record.state,
-                progress=record.progress, result=record.result, error=record.error,
-                started_at=record.started_at, finished_at=record.finished_at,
-            )
-        except Exception:  # noqa: BLE001 — 落库失败绝不能影响任务本身
-            logger.debug("任务状态落库失败", exc_info=True)
+        attempts = 3 if force else 1
+        for attempt in range(attempts):
+            try:
+                self._store.upsert_task(
+                    task_id=record.id, kind=record.kind, state=record.state,
+                    progress=record.progress, result=record.result, error=record.error,
+                    started_at=record.started_at, finished_at=record.finished_at,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 — 落库失败绝不能影响任务本身
+                if attempt == attempts - 1:
+                    logger.warning(
+                        "任务 %s 状态落库失败（%s: %s）",
+                        record.id, type(exc).__name__, exc,
+                    )
+                else:
+                    time.sleep(0.2 * (attempt + 1))
 
     def start(
         self, kind: str, fn: Callable[[Callable[[str], None]], dict[str, Any]]
     ) -> TaskRecord:
         record = TaskRecord(id=uuid.uuid4().hex[:12], kind=kind)
+        # 先落库再起线程。曾把「收尾落库」放在 spawn 之后：作业线程先跑完时，
+        # 这条迟到的落库会把库里的 done 覆盖回 running、result 丢失——
+        # 界面上任务永远转圈，重启后被标成 interrupted（实际发生过，约 1/4 概率）。
+        self._persist(record, force=True)
         with self._lock:
             self._tasks[record.id] = record
             self._queue.append((record.id, fn))
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._run, daemon=True)
                 self._thread.start()
-        self._persist(record, force=True)
         return record
 
     def _run(self) -> None:
@@ -1436,10 +1452,13 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if track is None:
             raise HTTPException(status_code=404, detail="文件不存在或不在受管根内")
         sidecar = track.sidecar
-        base = root_cfg.resolved_path
+        # 审计走的是 resolve 过的绝对路径（macOS 上 /tmp 是 /private/tmp 的
+        # 软链），这里必须用同样 resolve 过的根做相对化，否则会报
+        # 「not in the subpath」——真实环境里用户配置带软链路径同样会踩到
+        base = root_cfg.resolved_path.resolve()
         return {
             "path": (
-                str(sidecar.path.relative_to(base))
+                str(sidecar.path.resolve().relative_to(base))
                 if sidecar.exists and sidecar.path is not None else None
             ),
             "exists": bool(sidecar.exists),
@@ -2187,8 +2206,30 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         root_cfg, _abs, rel = _locate_audio(cfg, payload.get("root"), payload.get("path"))
         provider_name = str(payload.get("provider") or "").strip()
         provider_id = str(payload.get("provider_id") or "").strip()
-        if not provider_name or not provider_id:
-            raise HTTPException(status_code=400, detail="必须提供 provider 与 provider_id")
+        # 手动编辑直写模式（歌词编辑器）：text 与 provider/provider_id 二选一。
+        # 编辑器的价值在于「人只改一两行」——没有 provider 可言，直接落盘。
+        # 手动编辑直写模式（歌词编辑器）：只给 text、不给来源时，直接采用
+        # 编辑器内容落盘。给了 provider/provider_id 时 text 一律忽略、以
+        # 来源取回的正文为准——那是「防伪造」契约（见 test_manual_lyrics_api）：
+        # 服务器绝不能把客户端声称的正文当成某来源的歌词写进文件。
+        editor_text = payload.get("text")
+        editor_text = (
+            editor_text
+            if isinstance(editor_text, str) and editor_text.strip()
+            and not provider_name and not provider_id
+            else ""
+        )
+        editor_translation = payload.get("translation")
+        editor_translation = (
+            editor_translation
+            if isinstance(editor_translation, str) and editor_translation.strip()
+            else None
+        )
+        if not editor_text and (not provider_name or not provider_id):
+            raise HTTPException(
+                status_code=400,
+                detail="必须提供编辑文本（text），或 provider 与 provider_id",
+            )
         apply_now = bool(payload.get("apply", True))
         replace_existing = bool(payload.get("replace_existing"))
         # 人工在界面上逐条选了候选并点了写入——那就是「要写进去」的意思。
@@ -2215,12 +2256,16 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             )
         location_id = int(location["id"])
 
-        raw = _fetch_candidate_lyrics(
-            cfg, root_cfg, rel, provider_name, provider_id,
-            allow_direct=bool(payload.get("by_id")),
-        )
-        text = normalize_lrc(raw.text)
-        digest = content_hash(text)
+        if editor_text:
+            text = normalize_lrc(editor_text)
+            digest = content_hash(text)
+        else:
+            raw = _fetch_candidate_lyrics(
+                cfg, root_cfg, rel, provider_name, provider_id,
+                allow_direct=bool(payload.get("by_id")),
+            )
+            text = normalize_lrc(raw.text)
+            digest = content_hash(text)
 
         # 「文件里已经有歌词」必须由服务端拦，不能只靠界面上的勾选框：
         # 覆盖别人的歌词是不可逆的（虽然后台有备份），而界面可以被绕过。
@@ -2239,10 +2284,11 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             location_id=location_id,
             content_hash=digest,
             content=text,
-            provider=provider_name,
-            provider_id=provider_id,
+            provider=provider_name or "manual",
+            provider_id=provider_id or "editor",
             state="staged",
             origin="manual",
+            translation=editor_translation,
         )
         # 文件里已经是这一份了吗？写完要如实告诉使用者，不能拿
         # 「无需重复写入」当成功回执——那看着就像写入失败。
@@ -3136,6 +3182,461 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             return {"roots": out}
 
         return runner.start("fetch", job).to_dict()
+
+    # ------------------------------------------------------------------
+    # 重构：待办收件箱 / 任务明细 / 来源健康 / 入库流水线
+    # ------------------------------------------------------------------
+
+    _TODO_KINDS = ("lyrics", "tags", "covers", "organize", "orphans", "failed")
+
+    def _todo_counts() -> dict[str, int]:
+        """六类待办的计数。全部走现有表，惰性聚合，不做全库大查询。"""
+        lyrics = int(state.conn.execute(
+            "SELECT COUNT(*) FROM staged_lyrics WHERE state='needs_review'"
+        ).fetchone()[0])
+        tags = int(state.conn.execute(
+            "SELECT COUNT(*) FROM tag_proposals "
+            "WHERE state IN ('auto','review','unmatched') AND dismissed_at IS NULL"
+        ).fetchone()[0])
+        covers = int(state.conn.execute(
+            """SELECT COUNT(*) FROM lyric_observations obs
+               JOIN locations loc ON loc.id = obs.location_id
+               WHERE obs.id IN (SELECT MAX(id) FROM lyric_observations GROUP BY location_id)
+                 AND loc.missing_since IS NULL
+                 AND (obs.issues LIKE '%no_embedded_cover%' OR obs.issues LIKE '%no_cover_artwork%')"""
+        ).fetchone()[0])
+        orphans = 0
+        try:
+            orphans = int(_orphans_count())
+        except Exception:  # noqa: BLE001 — 计数失败不阻塞其它队列
+            orphans = 0
+        failed_staged = int(state.conn.execute(
+            "SELECT COUNT(*) FROM staged_lyrics WHERE state='failed'"
+        ).fetchone()[0])
+        failed_steps = int(state.conn.execute(
+            "SELECT COUNT(*) FROM task_steps WHERE state='failed'"
+        ).fetchone()[0])
+        return {
+            "lyrics": lyrics,
+            "tags": tags,
+            "covers": covers,
+            # 归置建议的权威视图是整理页预览（organize/preview）；
+            # 这里只计任务明细里的归位冲突，避免对全库逐文件算路径
+            "organize": int(state.conn.execute(
+                "SELECT COUNT(*) FROM task_steps WHERE kind='organize' AND state='review'"
+            ).fetchone()[0]),
+            "orphans": orphans,
+            "failed": failed_staged + failed_steps,
+        }
+
+    def _orphans_count() -> int:
+        from .audit import find_orphan_sidecars
+
+        total = 0
+        for root_cfg in cfg.enabled_roots:
+            try:
+                total += len(find_orphan_sidecars(root_cfg))
+            except Exception:  # noqa: BLE001
+                continue
+        return total
+
+    @app.get("/api/v1/todo", dependencies=[Depends(require_auth)])
+    def todo_view(
+        kind: str = "",
+        page: int = 1,
+        size: int = Query(default=50, le=200),
+    ) -> dict[str, Any]:
+        """统一待办收件箱。counts 全量返回；items 按类别分页。
+
+        六类队列的数据源：歌词=staged（needs_review）、标签=tag_proposals、
+        封面=审计问题码+任务明细、归置=任务明细的归位冲突、孤儿=find_orphan_sidecars、
+        失败=写入失败+任务明细失败。点开任何一项，前端用同一个详情抽屉展示。
+        """
+        counts = _todo_counts()
+        page = max(1, page)
+        size = max(1, size)
+        items: list[dict[str, Any]] = []
+        total = 0
+        if kind in ("lyrics", "failed"):
+            rows = state.conn.execute(
+                "SELECT s.id, s.state, s.provider, s.provider_id, s.score, s.ai_json, "
+                "l.rel_path, r.name AS root_name "
+                "FROM staged_lyrics s JOIN locations l ON l.id = s.location_id "
+                "JOIN roots r ON r.id = l.root_id "
+                "WHERE s.state IN ('needs_review','failed') "
+                "ORDER BY s.created_at DESC LIMIT ? OFFSET ?",
+                (size, (page - 1) * size),
+            ).fetchall()
+            total = counts["lyrics"] if kind == "lyrics" else counts["failed"]
+            for row in rows:
+                if kind == "failed" and row["state"] != "failed":
+                    continue
+                if kind == "lyrics" and row["state"] != "needs_review":
+                    continue
+                ai = None
+                if row["ai_json"]:
+                    try:
+                        ai = json.loads(row["ai_json"])
+                    except ValueError:
+                        ai = None
+                items.append({
+                    "kind": kind,
+                    "ref": f"staged:{row['id']}",
+                    "root": row["root_name"],
+                    "rel_path": row["rel_path"],
+                    "provider": row["provider"],
+                    "score": row["score"],
+                    "state": row["state"],
+                    "ai": ai,
+                })
+        elif kind == "tags":
+            rows = state.conn.execute(
+                "SELECT p.id, p.state, p.source, p.confidence, p.title, p.artists, "
+                "p.album, l.rel_path, r.name AS root_name "
+                "FROM tag_proposals p JOIN locations l ON l.id = p.location_id "
+                "JOIN roots r ON r.id = l.root_id "
+                "WHERE p.state IN ('auto','review','unmatched') "
+                "AND p.dismissed_at IS NULL "
+                "ORDER BY p.updated_at DESC LIMIT ? OFFSET ?",
+                (size, (page - 1) * size),
+            ).fetchall()
+            total = counts["tags"]
+            for row in rows:
+                items.append({
+                    "kind": "tags",
+                    "ref": f"proposal:{row['id']}",
+                    "root": row["root_name"],
+                    "rel_path": row["rel_path"],
+                    "title": row["title"],
+                    "artists": row["artists"],
+                    "album": row["album"],
+                    "state": row["state"],
+                    "source": row["source"],
+                    "confidence": row["confidence"],
+                })
+        elif kind == "covers":
+            rows = state.conn.execute(
+                """SELECT loc.rel_path, ro.name AS root_name, obs.issues
+                   FROM lyric_observations obs
+                   JOIN locations loc ON loc.id = obs.location_id
+                   JOIN roots ro ON ro.id = loc.root_id
+                   WHERE obs.id IN (SELECT MAX(id) FROM lyric_observations GROUP BY location_id)
+                     AND loc.missing_since IS NULL
+                     AND (obs.issues LIKE '%no_embedded_cover%' OR obs.issues LIKE '%no_cover_artwork%')
+                   ORDER BY loc.rel_path LIMIT ? OFFSET ?""",
+                (size, (page - 1) * size),
+            ).fetchall()
+            total = counts["covers"]
+            for row in rows:
+                items.append({
+                    "kind": "covers",
+                    "ref": f"cover:{row['root_name']}:{row['rel_path']}",
+                    "root": row["root_name"],
+                    "rel_path": row["rel_path"],
+                    "issues": json.loads(row["issues"] or "[]"),
+                })
+        elif kind == "organize":
+            rows = state.conn.execute(
+                "SELECT s.rel_path, s.detail_json, t.started_at, r.name AS root_name "
+                "FROM task_steps s JOIN tasks t ON t.id = s.task_id "
+                "JOIN locations l ON l.rel_path = s.rel_path "
+                "JOIN roots r ON r.id = l.root_id "
+                "WHERE s.kind='organize' AND s.state='review' "
+                "ORDER BY t.started_at DESC LIMIT ? OFFSET ?",
+                (size, (page - 1) * size),
+            ).fetchall()
+            total = counts["organize"]
+            for row in rows:
+                items.append({
+                    "kind": "organize",
+                    "ref": f"organize:{row['rel_path']}",
+                    "root": row["root_name"],
+                    "rel_path": row["rel_path"],
+                    "detail": json.loads(row["detail_json"] or "{}"),
+                })
+        elif kind == "orphans":
+            from .audit import find_orphan_sidecars
+
+            for root_cfg in cfg.enabled_roots:
+                for entry in find_orphan_sidecars(root_cfg):
+                    entry["root"] = root_cfg.name
+                    entry["kind"] = "orphans"
+                    items.append(entry)
+            total = len(items)
+            items = items[(page - 1) * size : (page - 1) * size + size]
+        elif kind:
+            raise HTTPException(
+                status_code=400,
+                detail=f"未知待办类别：{kind}（可用：{', '.join(_TODO_KINDS)}）",
+            )
+        return {"counts": counts, "total": total, "page": page, "size": size, "items": items}
+
+    @app.get("/api/v1/runs/{task_id}", dependencies=[Depends(require_auth)])
+    def run_detail(task_id: str, step_page: int = 1, step_size: int = Query(default=100, le=500)) -> dict[str, Any]:
+        """一次批量任务的明细：任务状态 + 每文件 × 每环节的结果矩阵。"""
+        # 先读内存再读库：终态落库是异步的，只查库会把「刚完成」的任务
+        # 显示成「还在跑」，轮询界面会一直转圈
+        record = runner.get(task_id)
+        if record is not None:
+            task_view: dict[str, Any] = {
+                "id": record.id, "kind": record.kind, "state": record.state,
+                "progress": record.progress, "error": record.error,
+                "result": record.result,
+                "started_at": record.started_at, "finished_at": record.finished_at,
+            }
+        else:
+            task = state.conn.execute(
+                "SELECT * FROM tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise HTTPException(status_code=404, detail="任务不存在")
+            task_view = {
+                "id": task["id"], "kind": task["kind"], "state": task["state"],
+                "progress": task["progress"], "error": task["error"],
+                "result": json.loads(task["result_json"]) if task["result_json"] else None,
+                "started_at": task["started_at"], "finished_at": task["finished_at"],
+            }
+        steps = list(state.iter_task_steps(task_id))
+        start = (max(1, step_page) - 1) * step_size
+        return {
+            "task": task_view,
+            "total_steps": len(steps),
+            "steps": [
+                {
+                    "seq": s["seq"], "kind": s["kind"], "rel_path": s["rel_path"],
+                    "state": s["state"], "detail": json.loads(s["detail_json"] or "{}"),
+                }
+                for s in steps[start : start + step_size]
+            ],
+        }
+
+    @app.get("/api/v1/providers/health", dependencies=[Depends(require_auth)])
+    def providers_health() -> dict[str, Any]:
+        """非官方来源的健康面板：30 天成功率、风控/结构变更计数。"""
+        return {"days": 30, "providers": state.provider_health_summary(days=30)}
+
+    @app.post("/api/v1/tasks/ingest", dependencies=[Depends(require_auth)])
+    def start_ingest(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """手动重跑入库流水线（审计→身份→歌词→封面→归位）。
+
+        范围与刮削任务一致：root + dir/paths。范围缺省 = 全库。
+        """
+        payload = payload or {}
+        root_name = payload.get("root")
+        raw_paths = payload.get("paths") or []
+        paths = {str(p) for p in raw_paths if str(p).strip()} or None
+        dir_prefix = str(payload.get("dir") or "").strip().strip("/")
+        if ".." in dir_prefix.split("/"):
+            raise HTTPException(status_code=400, detail="目录参数不能包含 ..")
+        roots = [r for r in cfg.enabled_roots if not root_name or r.name == root_name]
+        if not roots:
+            raise HTTPException(status_code=400, detail="没有匹配的受管根")
+
+        from .ingest import run_ingest
+        from .providers import create_providers
+
+        def _scope_paths(root_cfg: RootConfig) -> set[str] | None:
+            from . import scan
+
+            if paths:
+                return paths
+            base = root_cfg.resolved_path
+            target = (base / dir_prefix).resolve() if dir_prefix else base
+            if target != base and base not in target.parents:
+                raise HTTPException(status_code=400, detail="目录不在受管根内")
+            if not target.is_dir():
+                raise HTTPException(status_code=404, detail=f"目录不存在：{dir_prefix}")
+            return {
+                str(path.relative_to(base))
+                for path in scan.iter_audio_files(target, root_cfg)
+            }
+
+        def job(progress: Callable[[str], None]) -> dict[str, Any]:
+            with _manual_lease(state, wait_seconds=120, label="manual-ingest") as lease:
+                if not lease["acquired"]:
+                    raise RuntimeError(f"写入任务仍在运行（{lease['holder']}），请稍后重试")
+                providers = create_providers(cfg.providers)
+                out: list[dict[str, Any]] = []
+                try:
+                    for root_cfg in roots:
+                        scope = _scope_paths(root_cfg)
+                        rels = sorted(scope) if scope is not None else []
+                        if not rels:
+                            out.append({"root": root_cfg.name, "processed": 0,
+                                        "note": "该目录下没有音频文件"})
+                            continue
+                        result = run_ingest(
+                            state, cfg, root_cfg, providers,
+                            rel_paths=rels[:2000], progress=progress,
+                        )
+                        out.append({"root": root_cfg.name, **{
+                            k: v for k, v in result.items() if k != "task_id"
+                        }, "task_id": result.get("task_id")})
+                finally:
+                    for provider in providers:
+                        provider.close()
+                return {"roots": out}
+
+        return runner.start("ingest", job).to_dict()
+
+    @app.post("/api/v1/tasks/cover-fetch", dependencies=[Depends(require_auth)])
+    def start_cover_fetch(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """按目录批量补封面：同目录图 + CAA（按专辑聚合，一次下载逐文件嵌入）。"""
+        payload = payload or {}
+        root_name = payload.get("root")
+        apply_now = bool(payload.get("apply"))
+        if apply_now and not cfg.policy.write_enabled:
+            raise HTTPException(
+                status_code=409, detail="配置里写入开关是关的（policy.write_enabled=false）"
+            )
+        dir_prefix = str(payload.get("dir") or "").strip().strip("/")
+        if ".." in dir_prefix.split("/"):
+            raise HTTPException(status_code=400, detail="目录参数不能包含 ..")
+        roots = [r for r in cfg.enabled_roots if not root_name or r.name == root_name]
+        if not roots:
+            raise HTTPException(status_code=400, detail="没有匹配的受管根")
+
+        from . import scan as scan_mod
+        from .ingest import run_cover_stage
+
+        def job(progress: Callable[[str], None]) -> dict[str, Any]:
+            with _manual_lease(state, wait_seconds=120, label="manual-cover") as lease:
+                if not lease["acquired"]:
+                    raise RuntimeError(f"写入任务仍在运行（{lease['holder']}），请稍后重试")
+                saved_auto = cfg.policy.cover.auto_write
+                try:
+                    cfg.policy.cover.auto_write = saved_auto or apply_now
+                    out: list[dict[str, Any]] = []
+                    for root_cfg in roots:
+                        base = root_cfg.resolved_path
+                        target = (base / dir_prefix).resolve() if dir_prefix else base
+                        if target != base and base not in target.parents:
+                            raise HTTPException(status_code=400, detail="目录不在受管根内")
+                        if not target.is_dir():
+                            raise HTTPException(
+                                status_code=404, detail=f"目录不存在：{dir_prefix}"
+                            )
+                        rels = sorted(
+                            str(path.relative_to(base))
+                            for path in scan_mod.iter_audio_files(target, root_cfg)
+                        )
+                        progress(f"{root_cfg.name}: 处理 {len(rels)} 个文件")
+                        result = run_cover_stage(state, cfg, root_cfg, rel_paths=rels)
+                        out.append({"root": root_cfg.name, **result})
+                    return {"roots": out}
+                finally:
+                    cfg.policy.cover.auto_write = saved_auto
+
+        return runner.start("cover-fetch", job).to_dict()
+
+    def _cover_settings_view() -> dict[str, Any]:
+        return {
+            "policy": asdict(cfg.policy.cover),
+            "revision": state.get_meta("settings.revision") or "",
+        }
+
+    @app.get("/api/v1/settings/cover", dependencies=[Depends(require_auth)])
+    def cover_settings_view() -> dict[str, Any]:
+        return _cover_settings_view()
+
+    @app.put("/api/v1/settings/cover", dependencies=[Depends(require_auth)])
+    def update_cover_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        try:
+            apply_cover_policy_values(cfg, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state.set_meta("settings.cover_policy", json.dumps(payload, ensure_ascii=False))
+        revision = str(time.time_ns())
+        state.set_meta("settings.revision", revision)
+        _invalidate_caches()
+        return {"ok": True, "policy": asdict(cfg.policy.cover), "revision": revision}
+
+    def _organize_settings_view() -> dict[str, Any]:
+        return {
+            "policy": asdict(cfg.policy.organize),
+            "revision": state.get_meta("settings.revision") or "",
+        }
+
+    @app.get("/api/v1/settings/organize", dependencies=[Depends(require_auth)])
+    def organize_settings_view() -> dict[str, Any]:
+        return _organize_settings_view()
+
+    @app.put("/api/v1/settings/organize", dependencies=[Depends(require_auth)])
+    def update_organize_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        try:
+            apply_organize_policy_values(cfg, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state.set_meta("settings.organize_policy", json.dumps(payload, ensure_ascii=False))
+        revision = str(time.time_ns())
+        state.set_meta("settings.revision", revision)
+        _invalidate_caches()
+        return {"ok": True, "policy": asdict(cfg.policy.organize), "revision": revision}
+
+    def _lyrics_settings_view() -> dict[str, Any]:
+        return {
+            "settings": asdict(cfg.lyrics),
+            "revision": state.get_meta("settings.revision") or "",
+        }
+
+    @app.get("/api/v1/settings/lyrics", dependencies=[Depends(require_auth)])
+    def lyrics_settings_view() -> dict[str, Any]:
+        return _lyrics_settings_view()
+
+    @app.put("/api/v1/settings/lyrics", dependencies=[Depends(require_auth)])
+    def update_lyrics_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        try:
+            apply_lyrics_settings_values(cfg, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state.set_meta("settings.lyrics_format", json.dumps(payload, ensure_ascii=False))
+        revision = str(time.time_ns())
+        state.set_meta("settings.revision", revision)
+        _invalidate_caches()
+        return {"ok": True, "settings": asdict(cfg.lyrics), "revision": revision}
+
+    @app.get("/api/v1/settings/acoustid", dependencies=[Depends(require_auth)])
+    def acoustid_settings_view() -> dict[str, Any]:
+        key = cfg.providers.acoustid.api_key
+        masked = (key[:4] + "…" + key[-4:]) if len(key) > 8 else ("已配置" if key else "")
+        return {
+            "enabled": cfg.providers.acoustid.enabled,
+            "has_key": bool(key),
+            "masked": masked,
+            "source": "env" if os.environ.get("LYRA_ACOUSTID_API_KEY") else (
+                "settings" if state.get_meta("settings.acoustid_key") else "none"
+            ),
+        }
+
+    @app.put("/api/v1/settings/acoustid", dependencies=[Depends(require_auth)])
+    def update_acoustid_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        if os.environ.get("LYRA_ACOUSTID_API_KEY"):
+            raise HTTPException(
+                status_code=409,
+                detail="环境变量 LYRA_ACOUSTID_API_KEY 已设置且优先，无需在此保存",
+            )
+        api_key = payload.get("api_key")
+        try:
+            apply_acoustid_key(cfg, api_key if isinstance(api_key, str) else "")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state.set_meta("settings.acoustid_key", cfg.providers.acoustid.api_key)
+        state.set_meta(
+            "settings.acoustid_enabled", "1" if payload.get("enabled") else "0"
+        )
+        cfg.providers.acoustid.enabled = bool(payload.get("enabled"))
+        revision = str(time.time_ns())
+        state.set_meta("settings.revision", revision)
+        _invalidate_caches()
+        return {"ok": True, "has_key": bool(cfg.providers.acoustid.api_key)}
 
     @app.post("/api/v1/tasks/tags-audit", dependencies=[Depends(require_auth)])
     def start_tags_audit(payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -4221,6 +4722,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         }
         if kind == "lyrics":
             parsed = parse_lrc(text)
+            # 歌词编辑器需要原文（行视图会丢元信息行与原始时间戳写法）
+            payload["text"] = text
             payload.update(
                 {
                     "state": parsed.state.value,
@@ -5237,6 +5740,16 @@ def _safe_batch_entries(store: StateStore) -> list[dict[str, Any]]:
     return safe
 
 
+def _parse_ai_json(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _staged(
     store: StateStore,
     *,
@@ -5313,6 +5826,7 @@ def _staged(
     # 对不上，先怀疑这里。
     rows = store.conn.execute(
         f"""SELECT s.id, s.state, s.provider, s.provider_id, s.score, s.duration_delta,
+                       s.ai_json,
                    s.content_hash, s.created_at, s.origin, l.rel_path,
                    ro.name AS root_name,
                    COALESCE(
@@ -5353,6 +5867,9 @@ def _staged(
                 # 歌词的**获取方式**。使用者必须能区分源站原生 LRC 与
                 # AI 对齐/生成——后者可信度完全不同。
                 "origin": r["origin"],
+                # AI 预审结论（未开启时为 None）：复核界面据此展示
+                # 「模型认为是同一首，置信 0.9」这类建议
+                "ai": _parse_ai_json(r["ai_json"]),
                 **_staged_reason(r["candidate_json"]),
             }
             for r in rows
@@ -5393,6 +5910,7 @@ def _staged(
                 "无判定记录，重新刮削可生成。"
             ),
             "has_evidence": bool(item.get("has_evidence")),
+            "ai": item.get("ai"),
             "failed_checks": item.get("failed_checks") or [],
             # 有 reason 才算有判定证据；旧快照可能两者皆空
             "safe": _is_safe_for_batch(

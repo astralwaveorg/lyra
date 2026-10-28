@@ -610,6 +610,11 @@ class GateCheck:
     detail: str = ""
 
 
+#: 近似匹配的标题核心下限。0.90 意味着规范化后几乎逐字一致；
+#: 低于此值的一律当作另一首歌，绝不进入「近似」通道。
+_APPROXIMATE_MIN_TITLE = 0.90
+
+
 @dataclass(frozen=True, slots=True)
 class Recommendation:
     """给复核者的采用建议。"""
@@ -709,6 +714,11 @@ class MatchDecision:
     recommendation: Recommendation | None = None
     scored: tuple[CandidateScore, ...] = ()
     rejected: tuple[CandidateScore, ...] = field(default=())
+    approximate: bool = False
+    """近似匹配：版本不一致（现场版拿到录音室词）但标题核心与艺人一致、
+    时长在硬闸门内。AI 判定同曲异版且高置信时可自动采用；无 AI 时归入
+    待办的「近似可接受」组。标题核心不达标的候选绝不进入这个类别——
+    「毫不相关」的歌词永远不能以近似名义放行。"""
 
 
 def score_candidates(
@@ -759,10 +769,19 @@ def decide(
     result = _decide_core(ctx, scores, policy)
     if result.best is None:
         return result
+    recommendation = (
+        Recommendation(
+            "approximate",
+            "同一首歌的不同版本，歌词内容大概率适用；AI 确认后可自动采用，"
+            "或人工对比后确认。",
+        )
+        if result.approximate
+        else recommend(ctx, result.best, policy)
+    )
     return replace(
         result,
         checks=evaluate_gates(ctx, result.best, policy),
-        recommendation=recommend(ctx, result.best, policy),
+        recommendation=recommendation,
     )
 
 
@@ -816,13 +835,33 @@ def _decide_core(
     if not best.version_ok:
         version_ok_options = [s for s in accepted if s.version_ok]
         if not version_ok_options:
+            # 近似匹配分级：版本不一致 ≠ 另一首歌。现场版拿到录音室词，
+            # 歌词内容基本是对的——直接判「无匹配」会逼人手动找词，
+            # 而这正是自动化的主要痛点之一。放行条件极严：标题核心 ≥0.90
+            # + 艺人证据成立 + 时长在硬闸门内；三者缺一就是「毫不相关」，
+            # 一票否决（宁缺勿滥：错词比缺词更糟）。
+            approximate = (
+                policy.allow_approximate
+                and best.title_score >= _APPROXIMATE_MIN_TITLE
+                and _artist_evidence_ok(ctx, best, policy)[0]
+                and best.duration_delta is not None
+                and best.duration_delta <= policy.max_duration_delta_seconds
+            )
+            reason = "; ".join(best.details) or "版本证据不一致"
+            if approximate:
+                reason = (
+                    f"近似匹配：{reason}；标题与艺人一致、时长差 "
+                    f"{best.duration_delta:.2f}s 在闸门内，"
+                    "同一首歌的不同版本"
+                )
             return MatchDecision(
                 decision=Decision.NEEDS_REVIEW,
-                reason="; ".join(best.details) or "版本证据不一致",
+                reason=reason,
                 best=best,
                 runner_up=runner,
                 scored=scored,
                 rejected=rejected,
+                approximate=approximate,
             )
         best = version_ok_options[0]
         rest = [s for s in accepted if s is not best]

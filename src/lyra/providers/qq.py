@@ -32,6 +32,7 @@ from .base import (
     SchemaChangedError,
     TrackQuery,
 )
+from .headers import browser_headers
 
 __all__ = [
     "QQProvider", "QQ_SEARCH_URL", "QQ_LYRIC_URL", "QQ_SONG_DETAIL_URL",
@@ -43,17 +44,10 @@ QQ_LYRIC_URL = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg"
 #: 单曲详情。**只用于人工粘贴链接的场景**（需要把 id 显示成「这是哪一首」）。
 QQ_SONG_DETAIL_URL = "https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg"
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
-
-# 实际：搜索要 Referer 到站点根，歌词要 Referer 到播放器页，否则可能被拒
-_SEARCH_HEADERS = {"User-Agent": _USER_AGENT, "Referer": "https://y.qq.com/"}
-_LYRIC_HEADERS = {
-    "User-Agent": _USER_AGENT,
-    "Referer": "https://y.qq.com/portal/player.html",
-}
+# 实际：搜索要 Referer 到站点根，歌词要 Referer 到播放器页，否则可能被拒。
+# UA 由 providers/headers.py 集中管理（providers.user_agent 可整体替换）。
+_SEARCH_HEADERS = browser_headers(referer="https://y.qq.com/")
+_LYRIC_HEADERS = browser_headers(referer="https://y.qq.com/portal/player.html")
 
 # QQProviderConfig 里没有熔断参数（未获授权修改 config.py），这里用保守默认值。
 # 5 次连续失败即暂停 5 分钟；QQ 是主源，不希望它被轻易长时间熔断。
@@ -200,12 +194,24 @@ class QQProvider(HttpProviderBase):
         self,
         config: QQProviderConfig,
         *,
+        user_agent: str | None = None,
         transport: httpx.BaseTransport | None = None,
         client: httpx.Client | None = None,
         clock: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._config = config
+        # providers.user_agent 可整体替换伪装 UA；空值用内置默认
+        self._search_headers = (
+            browser_headers(user_agent=user_agent, referer="https://y.qq.com/")
+            if user_agent else dict(_SEARCH_HEADERS)
+        )
+        self._lyric_headers = (
+            browser_headers(
+                user_agent=user_agent, referer="https://y.qq.com/portal/player.html"
+            )
+            if user_agent else dict(_LYRIC_HEADERS)
+        )
         effective_clock = clock or time.monotonic
         effective_sleep = sleep or time.sleep
         super().__init__(
@@ -234,7 +240,19 @@ class QQProvider(HttpProviderBase):
         self._mid_cache: dict[str, str] = {}
 
     def request_headers(self) -> dict[str, str]:
-        return dict(_SEARCH_HEADERS)
+        return dict(self._search_headers)
+
+    def _target(self, url: str) -> str:
+        """透明反代网关：providers.qq.base_url 配置后只换根，路径与参数原样。
+
+        单一出口原则：配置了网关就不再直连，避免同一账号特征命中两个出口。
+        """
+        base = (self._config.base_url or "").strip().rstrip("/")
+        if not base:
+            return url
+        from urllib.parse import urlsplit
+
+        return base + urlsplit(url).path
 
     # -- 查询规划 ---------------------------------------------------------
 
@@ -325,7 +343,7 @@ class QQProvider(HttpProviderBase):
 
     def _search_once(self, query: str) -> _QueryOutcome:
         response = self.get(
-            QQ_SEARCH_URL,
+            self._target(QQ_SEARCH_URL),
             params={
                 "p": "1",
                 "n": str(self._config.candidates_per_query),
@@ -460,14 +478,14 @@ class QQProvider(HttpProviderBase):
         # 得先换成 mid 才能取词。
         songmid = self._resolve_mid(c.provider_id) or c.provider_id
         response = self.get(
-            QQ_LYRIC_URL,
+            self._target(QQ_LYRIC_URL),
             params={
                 "songmid": songmid,
                 "format": "json",
                 "nobase64": "1",
                 "g_tk": "5381",
             },
-            headers=_LYRIC_HEADERS,
+            headers=self._lyric_headers,
         )
         payload = self.decode_json(response, provider=self.name)
         return self._parse_lyric(payload, provider_id=c.provider_id)
@@ -486,7 +504,7 @@ class QQProvider(HttpProviderBase):
             return cached
         try:
             response = self.get(
-                QQ_SONG_DETAIL_URL,
+                self._target(QQ_SONG_DETAIL_URL),
                 params={
                     "songid": song_id,
                     "format": "json",
@@ -519,7 +537,7 @@ class QQProvider(HttpProviderBase):
         try:
             if song_id.isdigit():
                 response = self.get(
-                    QQ_SONG_DETAIL_URL,
+                    self._target(QQ_SONG_DETAIL_URL),
                     params={
                         "songid": song_id,
                         "format": "json",
@@ -529,7 +547,7 @@ class QQProvider(HttpProviderBase):
                 )
             else:
                 response = self.get(
-                    QQ_SONG_DETAIL_URL,
+                    self._target(QQ_SONG_DETAIL_URL),
                     params={
                         "songmid": song_id,
                         "format": "json",
@@ -589,7 +607,9 @@ class QQProvider(HttpProviderBase):
             return None
 
         word_level = False
+        raw_text = None
         if looks_like_qrc(text):
+            raw_text = text  # 降级前的原文；keep_word_level 开启时随暂存保留
             text = qrc_to_line_lrc(text)
             word_level = True
             if not text.strip():
@@ -612,4 +632,5 @@ class QQProvider(HttpProviderBase):
             synced=synced,
             translation=translation,
             word_level=word_level,
+            raw_text=raw_text,
         )

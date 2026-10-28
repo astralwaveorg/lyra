@@ -50,6 +50,50 @@ async function restore(batch: TrashBatch, relPath: string) {
   }
 }
 
+/** 还原目标：把选择挪到动作里，不再依赖页头那个容易漏选的下拉。 */
+function pickRoot(): string | null {
+  if (roots.value.length === 1) return roots.value[0]
+  if (root.value) return root.value
+  ElMessage.warning('先选择要还原到哪个受管目录（右上角）')
+  return null
+}
+
+async function restoreBatch(batch: TrashBatch) {
+  const target = pickRoot()
+  if (!target) return
+  const audioItems = batch.items
+  try {
+    await ElMessageBox.confirm(
+      `把这一批 ${audioItems.length} 个文件还原到「${target}」的原位置。`,
+      '批量还原',
+      { confirmButtonText: '还原', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  busy.value = `batch:${batch.batch}`
+  let ok = 0
+  const failures: string[] = []
+  try {
+    for (const item of audioItems) {
+      try {
+        await api.restoreTrash(batch.batch, item.rel_path, target)
+        ok += 1
+      } catch (err) {
+        failures.push(`${item.name}：${err instanceof Error ? err.message : '失败'}`)
+      }
+    }
+    if (failures.length) {
+      ElMessage.warning(`已还原 ${ok} 个，${failures.length} 个失败：${failures[0]}`)
+    } else {
+      ElMessage.success(`已还原 ${ok} 个文件到原位置`)
+    }
+    await load()
+  } finally {
+    busy.value = ''
+  }
+}
+
 async function empty(batch?: string) {
   try {
     await ElMessageBox.confirm(
@@ -119,6 +163,14 @@ onMounted(async () => {
         <span class="card-title num">{{ batch.batch }}</span>
         <span class="card-hint">{{ batch.items.length }} 个文件</span>
         <div class="card-actions">
+          <el-button
+            size="small"
+            class="accent"
+            :loading="busy === `batch:${batch.batch}`"
+            @click="restoreBatch(batch)"
+          >
+            还原整批
+          </el-button>
           <el-button size="small" text type="danger" :loading="busy === batch.batch" @click="empty(batch.batch)">
             删除该批次
           </el-button>

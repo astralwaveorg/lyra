@@ -6,7 +6,10 @@ import type {
   AIProtocol,
   AISettings,
   AITestResult,
+  CoverPolicySettings,
+  LyricsSettings,
   NetworkSettings,
+  OrganizePolicySettings,
   ProxyFeature,
   TagPolicy,
   TokenRow,
@@ -48,6 +51,16 @@ const aiToken = ref('')
 const clearAIToken = ref(false)
 const aiTest = ref<AITestResult | null>(null)
 const aiError = ref('')
+
+const coverPolicy = ref<CoverPolicySettings | null>(null)
+const organizePolicy = ref<OrganizePolicySettings | null>(null)
+const lyricsSettings = ref<LyricsSettings | null>(null)
+const acoustid = ref<{ enabled: boolean; has_key: boolean; masked: string; source: string } | null>(null)
+const acoustidKey = ref('')
+const coverSaving = ref(false)
+const organizeSaving = ref(false)
+const lyricsSaving = ref(false)
+const acoustidSaving = ref(false)
 
 const network = ref<NetworkSettings | null>(null)
 const networkLoading = ref(false)
@@ -112,6 +125,80 @@ async function saveTagPolicy() {
     ElMessage.error(err instanceof Error ? err.message : '保存失败')
   } finally {
     tagSaving.value = false
+  }
+}
+
+async function loadAutomationSettings() {
+  try {
+    const [cover, organize, lyrics, acid] = await Promise.all([
+      api.coverSettings(),
+      api.organizeSettings(),
+      api.lyricsSettings(),
+      api.acoustidSettings(),
+    ])
+    coverPolicy.value = cover.policy
+    organizePolicy.value = organize.policy
+    lyricsSettings.value = lyrics.settings
+    acoustid.value = acid
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '自动化设置加载失败')
+  }
+}
+
+async function saveCoverPolicy() {
+  if (!coverPolicy.value) return
+  coverSaving.value = true
+  try {
+    coverPolicy.value = (await api.updateCoverSettings(coverPolicy.value)).policy
+    ElMessage.success('封面设置已保存，监控进程会在一分钟内应用')
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '保存失败')
+  } finally {
+    coverSaving.value = false
+  }
+}
+
+async function saveOrganizePolicy() {
+  if (!organizePolicy.value) return
+  organizeSaving.value = true
+  try {
+    organizePolicy.value = (await api.updateOrganizeSettings(organizePolicy.value)).policy
+    ElMessage.success('归置设置已保存，监控进程会在一分钟内应用')
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '保存失败')
+  } finally {
+    organizeSaving.value = false
+  }
+}
+
+async function saveLyricsSettings() {
+  if (!lyricsSettings.value) return
+  lyricsSaving.value = true
+  try {
+    lyricsSettings.value = (await api.updateLyricsSettings(lyricsSettings.value)).settings
+    ElMessage.success('歌词输出设置已保存')
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '保存失败')
+  } finally {
+    lyricsSaving.value = false
+  }
+}
+
+async function saveAcoustid() {
+  acoustidSaving.value = true
+  try {
+    const payload: { api_key?: string; enabled?: boolean } = {
+      enabled: acoustid.value?.enabled ?? false,
+    }
+    if (acoustidKey.value.trim()) payload.api_key = acoustidKey.value.trim()
+    await api.updateAcoustidSettings(payload)
+    acoustid.value = await api.acoustidSettings()
+    acoustidKey.value = ''
+    ElMessage.success('指纹设置已保存')
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '保存失败')
+  } finally {
+    acoustidSaving.value = false
   }
 }
 
@@ -328,7 +415,13 @@ async function copyToken() {
 
 onMounted(async () => {
   if (!meta.summary) await meta.refresh().catch(() => undefined)
-  await Promise.all([loadTokens(), loadTagPolicy(), loadAISettings(), loadNetworkSettings()])
+  await Promise.all([
+    loadTokens(),
+    loadTagPolicy(),
+    loadAISettings(),
+    loadAutomationSettings(),
+    loadNetworkSettings(),
+  ])
 })
 </script>
 
@@ -462,6 +555,161 @@ onMounted(async () => {
 
   <section class="card">
     <div class="card-head">
+      <span class="card-title">封面与归置</span>
+      <span class="card-hint">入库流水线的两个自动化开关；移动文件可逐条撤销</span>
+    </div>
+    <div v-if="coverPolicy && organizePolicy" class="card-body col">
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">同目录图片自动嵌入</div>
+          <div class="cell-meta">检测到 cover.jpg 等规范命名图片时，自动嵌入同目录缺封面的文件</div>
+        </div>
+        <el-switch v-model="coverPolicy.auto_embed_sibling" />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">网络封面自动嵌入</div>
+          <div class="cell-meta">
+            关闭时只把封面候选放进待办，确认后写入；打开则直接嵌入（按专辑一次下载）
+          </div>
+        </div>
+        <el-switch v-model="coverPolicy.auto_write" />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">封面质量门</div>
+          <div class="cell-meta">宽×高不小于该值才采用，不足自动换下一来源</div>
+        </div>
+        <el-input-number
+          v-model="coverPolicy.min_min_pixels"
+          :min="0"
+          :max="10000000"
+          :step="10000"
+          controls-position="right"
+        />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">自动归位</div>
+          <div class="cell-meta">
+            只对「新入库文件」生效：按模板建目录并移动，冲突转待办。
+            存量曲库永远在整理页预览后手动执行；所有移动可撤销。
+          </div>
+        </div>
+        <el-select v-model="organizePolicy.mode" style="width: 210px">
+          <el-option label="不动文件（只出建议）" value="off" />
+          <el-option label="新文件自动归位" value="new_files" />
+          <el-option label="收件箱流转" value="inbox" />
+        </el-select>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">目录模板</div>
+          <div class="cell-meta">
+            可用字段：artist、albumartist、album、title、track_no、disc_no、year、ext
+          </div>
+        </div>
+        <el-input
+          v-model="organizePolicy.template"
+          style="max-width: 340px"
+          placeholder="{artist}/{album}/{track_no} - {title}"
+        />
+      </div>
+      <div class="setting-actions">
+        <el-button type="primary" :loading="coverSaving || organizeSaving" @click="saveCoverPolicy(); saveOrganizePolicy()">
+          保存封面与归置设置
+        </el-button>
+        <span class="cell-meta">归位记录在整理日志，可逐条撤销</span>
+      </div>
+    </div>
+    <el-skeleton v-else :loading="true" animated :rows="4" class="settings-skeleton" />
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">歌词输出</span>
+      <span class="card-hint">翻译歌词与逐字歌词的落盘形态</span>
+    </div>
+    <div v-if="lyricsSettings" class="card-body col">
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">翻译歌词</div>
+          <div class="cell-meta">
+            双语文体：翻译行紧跟原文行写入 .lrc 与内嵌，本地播放器兼容最好；
+            翻译数据默认一直在抓取，只是之前从未落盘
+          </div>
+        </div>
+        <el-select v-model="lyricsSettings.translation" style="width: 210px">
+          <el-option label="双语文体（推荐）" value="bilingual" />
+          <el-option label="不写入翻译" value="off" />
+          <el-option label="暂存保留（不写入）" value="field" />
+        </el-select>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">保留逐字歌词原文</div>
+          <div class="cell-meta">QQ 逐字词（QRC）另存为同名 .qrc 文件；默认关</div>
+        </div>
+        <el-switch v-model="lyricsSettings.keep_word_level" />
+      </div>
+      <div class="setting-actions">
+        <el-button type="primary" :loading="lyricsSaving" @click="saveLyricsSettings">
+          保存歌词输出设置
+        </el-button>
+      </div>
+    </div>
+    <el-skeleton v-else :loading="true" animated :rows="3" class="settings-skeleton" />
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">声学指纹</span>
+      <span class="card-hint">
+        AcoustID：标签缺失或有歧义时，用音频本身确认「这是哪首歌」——身份识别的最后兜底
+      </span>
+    </div>
+    <div v-if="acoustid" class="card-body col">
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">启用指纹兜底</div>
+          <div class="cell-meta">
+            需要 fpcalc（Chromaprint）与 API key。
+            <span v-if="acoustid.source === 'env'">key 来自环境变量，此处只读</span>
+            <span v-else-if="acoustid.has_key">已保存：{{ acoustid.masked }}</span>
+          </div>
+        </div>
+        <el-switch v-model="acoustid.enabled" />
+      </div>
+      <div v-if="acoustid.source !== 'env'" class="setting-row">
+        <div class="setting-text">
+          <div class="label">API key</div>
+          <div class="cell-meta">在 acoustid.org 免费申请；只保存在服务端数据目录</div>
+        </div>
+        <el-input
+          v-model="acoustidKey"
+          type="password"
+          show-password
+          clearable
+          :placeholder="acoustid.has_key ? '留空不修改' : '粘贴 AcoustID API key'"
+          style="max-width: 360px"
+        />
+      </div>
+      <div class="setting-actions">
+        <el-button
+          type="primary"
+          :loading="acoustidSaving"
+          :disabled="acoustid.source === 'env'"
+          @click="saveAcoustid"
+        >
+          保存指纹设置
+        </el-button>
+      </div>
+    </div>
+    <el-skeleton v-else :loading="true" animated :rows="3" class="settings-skeleton" />
+  </section>
+
+  <section class="card">
+    <div class="card-head">
       <span class="card-title">大模型</span>
       <span class="card-hint">用于歌词语义复核；Token 只保存在服务端数据目录</span>
     </div>
@@ -571,6 +819,36 @@ onMounted(async () => {
           </div>
         </div>
         <el-switch v-model="ai.use_proxy" />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">智能预审</div>
+          <div class="cell-meta">
+            对落入待审查的候选调用模型判定「是否同一首歌」，判定结论显示在待办里，
+            高置信时自动采纳（留痕、可撤销）。可大幅减少逐首人工确认。
+          </div>
+        </div>
+        <el-switch v-model="ai.pre_review" />
+      </div>
+      <div v-if="ai.pre_review" class="setting-row">
+        <div class="setting-text">
+          <div class="label">自动采纳阈值</div>
+          <div class="cell-meta">模型置信度达到该值且程序闸门（时长/版本）也通过时才自动写入</div>
+        </div>
+        <el-input-number
+          v-model="ai.pre_review_confidence"
+          :min="0.5"
+          :max="1"
+          :step="0.05"
+          controls-position="right"
+        />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">标签候选核验</div>
+          <div class="cell-meta">标签搜索到的候选经模型核验后按「已核验」处理</div>
+        </div>
+        <el-switch v-model="ai.verify_tags" />
       </div>
       <div class="setting-actions">
         <el-button type="primary" :loading="aiSaving" @click="saveAISettings">

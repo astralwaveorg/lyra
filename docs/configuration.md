@@ -115,6 +115,7 @@ cjk_uses_zh_priority = true
 
 ```toml
 [providers.qq]
+base_url = ""
 minimum_request_interval_seconds = 2
 query_limit_per_round = 3
 candidates_per_query = 20
@@ -124,6 +125,12 @@ max_inline_retry_wait_seconds = 5
 ```
 
 QQ 接口在部分网络环境下不可用，表现为 HTTP 500 或空结果。Lyra 会按失败类型区分，不会把网络故障当成「没有歌词」。
+
+`base_url` 是可选的**透明反代网关**根（替换 `https://c.y.qq.com`，路径与响应完全一致）：
+直连被风控时（来源健康面板的「被风控」计数持续增长）可指向自建 nginx / Workers 反代；
+配置后单一出口，不再直连。`[providers]` 根下另有 `user_agent` 可整体替换直连伪装 UA。
+返回 HTML 验证页 / HTTP 412 会被识别为风控拦截：不写负缓存、更快熔断，
+并计入「自动化 → 来源健康」面板。
 
 ### 网易云音乐
 

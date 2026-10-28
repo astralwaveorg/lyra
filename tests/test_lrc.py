@@ -21,6 +21,7 @@ import pytest
 from lyra.lrc import (
     decode_lyrics_bytes,
     is_placeholder_only,
+    merge_bilingual,
     normalize_lrc,
     parse_lrc,
 )
@@ -368,3 +369,136 @@ def test_带_BOM_的_UTF16_仍然能读():
     raw = "[00:01.00]测试歌词\n".encode("utf-16")
     text, _bom = decode_lyrics_bytes(raw)
     assert "测试歌词" in text
+
+
+# ---------------------------------------------------------------------------
+# 双语合并
+# ---------------------------------------------------------------------------
+
+
+def test_双语合并时间轴完全一致时逐行紧邻输出():
+    """每条原文时间轴行下面紧跟一条翻译行，且翻译沿用原文行的时间轴。"""
+    text = "[00:01.00]当一艘船沉入海底\n[00:03.00]当一个人成了谜\n[00:05.00]你不知道 他们为何离去"
+    trans = (
+        "[00:01.00]When a ship sank into the sea\n"
+        "[00:03.00]When a man became a mystery\n"
+        "[00:05.00]You never knew why they left"
+    )
+    merged = merge_bilingual(text, trans)
+    assert merged == (
+        "[00:01.00]当一艘船沉入海底\n"
+        "[00:01.00]When a ship sank into the sea\n"
+        "[00:03.00]当一个人成了谜\n"
+        "[00:03.00]When a man became a mystery\n"
+        "[00:05.00]你不知道 他们为何离去\n"
+        "[00:05.00]You never knew why they left"
+    )
+
+
+def test_双语合并容差内仍配对并沿用原文时间轴():
+    """翻译行晚 500ms 仍在默认容差内；输出时翻译行写的是原文行的时间轴。"""
+    merged = merge_bilingual("[00:01.00]第一行", "[00:01.50]first line")
+    assert merged == "[00:01.00]第一行\n[00:01.00]first line"
+
+
+def test_双语合并超出容差则不配对():
+    """差 2000ms 超过默认容差：没有一对配得上，原文整段原样返回。"""
+    text = "[00:01.00]第一行\n[00:02.00]第二行"
+    trans = "[00:04.00]来得太晚的翻译"
+    assert merge_bilingual(text, trans) == text
+
+
+def test_双语合并容差参数可调():
+    """tolerance_ms 收紧后 500ms 的偏差也配不上；放宽到 500ms 时恰在界内（≤）。"""
+    text = "[00:01.00]第一行"
+    trans = "[00:01.50]first line"
+    assert merge_bilingual(text, trans, tolerance_ms=100) == text
+    assert merge_bilingual(text, trans, tolerance_ms=500) == "[00:01.00]第一行\n[00:01.00]first line"
+
+
+def test_双语合并多出的翻译行被丢弃():
+    """配不上任何原文行的翻译行不能留在输出里，否则会出现无主的翻译。"""
+    text = "[00:01.00]A\n[00:02.00]B"
+    trans = "[00:01.00]甲\n[00:02.00]乙\n[00:09.00]丙"
+    merged = merge_bilingual(text, trans)
+    assert merged == "[00:01.00]A\n[00:01.00]甲\n[00:02.00]B\n[00:02.00]乙"
+    assert "丙" not in merged
+
+
+def test_双语合并缺翻译的原文行原样保留():
+    """缺翻译的行不能被删改；太远的翻译也不会被『就近硬凑』到别的行上。"""
+    text = "[00:01.00]A\n[00:02.00]B\n[00:03.00]C"
+    trans = "[00:02.00]乙"
+    merged = merge_bilingual(text, trans)
+    assert merged == "[00:01.00]A\n[00:02.00]B\n[00:02.00]乙\n[00:03.00]C"
+
+
+def test_双语合并不干扰元信息行与无时间轴行():
+    """元信息行与无时间轴行原样留在原位置，既不配翻译也不被丢弃。"""
+    text = "[ti:歌名]\n[ar:歌手]\n[00:01.00]A\n自由行\n[00:02.00]B"
+    trans = "[00:01.00]甲\n[00:02.00]乙"
+    merged = merge_bilingual(text, trans)
+    assert merged == (
+        "[ti:歌名]\n"
+        "[ar:歌手]\n"
+        "[00:01.00]A\n"
+        "[00:01.00]甲\n"
+        "自由行\n"
+        "[00:02.00]B\n"
+        "[00:02.00]乙"
+    )
+
+
+def test_双语合并兼容混合时间轴格式():
+    """`[00:01.00]` 与 `[00:01.000]` 是同一时刻，必须能配对。"""
+    text = "[00:01.00]A\n[00:02.000]B"
+    trans = "[00:01.000]甲\n[00:02.00]乙"
+    merged = merge_bilingual(text, trans)
+    assert merged == "[00:01.00]A\n[00:01.00]甲\n[00:02.000]B\n[00:02.00]乙"
+
+
+def test_双语合并相同时间轴的原文行不共享翻译():
+    """一条翻译只消费一次：时间轴相同的两条原文行只有第一条拿到。"""
+    merged = merge_bilingual("[00:01.00]A\n[00:01.00]B", "[00:01.00]甲")
+    assert merged == "[00:01.00]A\n[00:01.00]甲\n[00:01.00]B"
+
+
+@pytest.mark.parametrize(
+    "translation",
+    ["", "   ", "没有时间轴的翻译\n第二行", "[ti:只有元信息]"],
+)
+def test_翻译为空或没有时间轴时返回原文原样(translation: str):
+    """翻译侧没有可用时间轴（空文本 / 纯文本 / 只有元信息）时不动原文。"""
+    text = "[00:01.00]A\n[00:02.00]B"
+    assert merge_bilingual(text, translation) == text
+
+
+def test_原文为空或没有时间轴时直接返回原文():
+    """空输入与无时间轴输入都直接返回原文——即使翻译侧有完整时间轴。"""
+    trans = "[00:01.00]甲\n[00:02.00]乙"
+    assert merge_bilingual("", trans) == ""
+    assert merge_bilingual("第一行\n第二行", trans) == "第一行\n第二行"
+
+
+def test_双语合并保留原文末尾换行状态():
+    """合并不改写原文已有的行尾形态：末尾有无换行都如实保留。"""
+    trans = "[00:01.00]甲"
+    assert merge_bilingual("[00:01.00]A\n", trans) == "[00:01.00]A\n[00:01.00]甲\n"
+    assert merge_bilingual("[00:01.00]A", trans) == "[00:01.00]A\n[00:01.00]甲"
+
+
+def test_双语合并只做行级配对不受占位文案影响():
+    """占位词会让 parse_lrc 判成 PLACEHOLDER/SUSPICIOUS，但合并只按时间轴配对。
+
+    翻译里的占位行同样是一条时间轴行：能不能配上原文只看时间差，
+    不因状态判定改变行为。
+    """
+    text = "[00:01.00]当一艘船沉入海底\n[00:03.00]当一个人成了谜"
+    trans = "[00:01.00]纯音乐，请欣赏\n[00:03.00]When a man became a mystery"
+    merged = merge_bilingual(text, trans)
+    assert merged == (
+        "[00:01.00]当一艘船沉入海底\n"
+        "[00:01.00]纯音乐，请欣赏\n"
+        "[00:03.00]当一个人成了谜\n"
+        "[00:03.00]When a man became a mystery"
+    )

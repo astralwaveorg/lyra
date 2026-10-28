@@ -11,6 +11,7 @@ import TagEditorPanel from './TagEditorPanel.vue'
 import CoverEditorPanel from './CoverEditorPanel.vue'
 import FileOpsPanel from './FileOpsPanel.vue'
 import LyricsViewer from './LyricsViewer.vue'
+import LyricsEditor from '@/components/LyricsEditor.vue'
 import ScrapeDialog from './ScrapeDialog.vue'
 
 const props = withDefaults(
@@ -65,6 +66,31 @@ async function loadMeta() {
   }
 }
 
+const editing = ref(false)
+
+function startEditing() {
+  editing.value = true
+}
+
+function editorText(): string {
+  // 优先用接口返回的原文（保留元信息行与原始写法）；旧响应没有 text 时按行拼回
+  if (lyricContent.value?.text !== undefined) return lyricContent.value.text
+  return (lyricContent.value?.lines ?? [])
+    .map((line) => (line.stamp ? `${line.stamp}${line.text}` : line.text))
+    .join('\n')
+}
+
+function afterEditorSaved() {
+  editing.value = false
+  lyricContent.value = null
+  void loadLyrics()
+  emit('refresh')
+}
+
+function afterEditorCancel() {
+  editing.value = false
+}
+
 async function loadLyrics() {
   if (!isAudio.value) return
   lyricLoading.value = true
@@ -116,7 +142,10 @@ watch(
 )
 
 watch(active, (tab) => {
-  if (tab === 'lyrics' && !lyricContent.value) void loadLyrics()
+  if (tab === 'lyrics') {
+    editing.value = false
+    if (!lyricContent.value) void loadLyrics()
+  }
 })
 </script>
 
@@ -172,6 +201,13 @@ watch(active, (tab) => {
               <div class="lyric-actions">
                 <el-button size="small" type="primary" @click="scrapeOpen = true">刮削歌词</el-button>
                 <el-button
+                  v-if="lyricContent && !editing"
+                  size="small"
+                  @click="startEditing"
+                >
+                  编辑歌词
+                </el-button>
+                <el-button
                   v-if="sidecar?.exists && sidecar.name_differs"
                   size="small"
                   @click="renameSidecar"
@@ -182,6 +218,14 @@ watch(active, (tab) => {
             </div>
 
             <el-skeleton v-if="lyricLoading" animated :rows="6" />
+            <LyricsEditor
+              v-else-if="editing && lyricContent"
+              :root="root"
+              :path="path"
+              :initial-text="editorText()"
+              @saved="afterEditorSaved"
+              @cancel="afterEditorCancel"
+            />
             <template v-else-if="lyricContent">
               <div class="lyric-meta">
                 <el-tag size="small" :type="stateTone(lyricContent.state)">

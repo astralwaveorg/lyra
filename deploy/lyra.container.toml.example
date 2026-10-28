@@ -21,6 +21,10 @@ host_path = ""
 # 审计阶段可以改成 true 以彻底禁止写入
 read_only = false
 enabled = true
+# 归置模式覆盖（空 = 继承 policy.organize.mode）：off / new_files / inbox
+organize_mode = ""
+# INBOX 根必配：入库处理后流转到哪个 library 根（按 name）；未配置只出建议
+target_root = ""
 
 [storage]
 data_dir = "/data"
@@ -57,6 +61,8 @@ enabled = ["qq", "netease", "lrclib"]
 
 [providers.qq]
 # QQ 的可用性受地区和网络影响；部分地区会返回 500
+# 直连被风控时可指向自建透明反代（替换 https://c.y.qq.com，路径与响应一致）；留空 = 直连
+base_url = ""
 minimum_request_interval_seconds = 2
 query_limit_per_round = 3
 candidates_per_query = 20
@@ -126,6 +132,8 @@ auto_write = true
 fingerprint = true
 max_auto_write_per_run = 2000
 max_duration_delta_seconds = 5.0
+# 低风险纠正自动写：强证据来源把英文标题纠正为中文（文字体系切换）
+low_risk_auto_correct = true
 
 [policy.matching]
 # 时长闸门：识别版本差异的主要判据
@@ -135,6 +143,20 @@ min_confidence = 0.75
 # 时长差 ≤ 此值时，即使候选难分高下也直接接受（消除重复条目造成的假歧义）。
 # 不绕过版本校验：时长相同不足以区分现场版/重生版。
 auto_accept_within_seconds = 1.0
+# 近似匹配：现场版可拿录音室词（AI 高置信判定同曲异版时自动采用）
+allow_approximate = true
+
+[policy.cover]
+# 同目录规范命名图片（cover.jpg 等）自动嵌入；网络抓取默认只暂存待确认
+auto_embed_sibling = true
+fetch_sources = ["caa"]
+min_min_pixels = 90000
+auto_write = false
+
+[policy.organize]
+# 目录归置。默认 off = 只出建议不动文件；new_files 仅对新增文件自动归位
+mode = "off"
+template = "{artist}/{album}/{track_no} - {title}"
 
 [retry]
 not_found_intervals_days = [7, 30, 90]
@@ -146,8 +168,11 @@ encoding = "utf-8"
 bom = false
 line_ending = "lf"
 format = "line_lrc"
-translation = false
+# off=丢弃翻译；bilingual=双语文体；field=仅 FLAC 独立字段（true/false 旧写法兼容）
+translation = "bilingual"
 romanization = false
+# 保留逐字歌词原文（QQ QRC）为同名 .qrc 文件
+keep_word_level = false
 
 [web]
 # 容器内监听所有接口，宿主机只发布到回环，由反向代理对外提供 HTTPS
@@ -191,3 +216,9 @@ timeout_seconds = 30.0
 max_requests_per_run = 12
 # 高置信度的重复歌词是否自动清理（仍要求「歌词行 100% 被现有那份覆盖」）
 auto_clean_duplicates = false
+# 智能预审：对「待审查」候选调用模型判定（enabled=false 时无效）
+pre_review = false
+pre_review_confidence = 0.85
+# 高置信判定直接自动采纳（留痕可撤销）
+auto_accept = true
+verify_tags = false

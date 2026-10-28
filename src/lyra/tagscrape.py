@@ -846,10 +846,37 @@ def _strong_evidence(match: MatchResult) -> bool:
     return False
 
 
+def _is_script_switch(local: str, suggested: str) -> bool:
+    """文字体系切换：一边纯 ASCII（英文/罗马字），另一边含 CJK。
+
+    典型场景：本地标题是英文/拼音转写，来源（同一录音的权威记录）是中文
+    正名。这类「纠正」不改变语义，只改写法——对播放器排序、搜索、展示
+    都是低风险改进。注意它**不判断转写是否正确**：只该在强证据（同一
+    MBID/核验搜索）下使用，因此本函数只被 `_auto_resolve_conflicts`
+    的强证据分支调用。
+    """
+
+    def has_cjk(text: str) -> bool:
+        return any(
+            "\u4e00" <= ch <= "\u9fff" or "\u3040" <= ch <= "\u30ff"
+            for ch in text
+        )
+
+    a, b = local.strip(), suggested.strip()
+    if not a or not b:
+        return False
+    ascii_a = a.isascii()
+    ascii_b = b.isascii()
+    if ascii_a == ascii_b:
+        return False  # 同一文字体系（或一边为空），谈不上「切换」
+    return (ascii_a and has_cjk(b)) or (has_cjk(a) and ascii_b)
+
+
 def _auto_resolve_conflicts(
     rows: Sequence[Mapping[str, object]],
     match: MatchResult,
     snap: TrackSnapshot,
+    cfg: Config | None = None,
 ) -> list[dict]:
     """对已确认同一录音的冲突，按「远程更权威」自动采纳。
 
@@ -940,8 +967,15 @@ def _auto_resolve_conflicts(
         ):
             adopt = True
         elif key == "TITLE":
-            adopt = _title_equivalent(
-                " ".join(item["current"]), " ".join(item["suggested"])
+            current_title = " ".join(item["current"])
+            suggested_title = " ".join(item["suggested"])
+            adopt = _title_equivalent(current_title, suggested_title) or (
+                # 低风险纠正（用户明确要求自动化）：英文/罗马字标题 → 中文正名
+                #（或反向）。已在函数入口的强证据闸门内，这里只补一条
+                # 可关闭的开关。
+                cfg is not None
+                and cfg.policy.tags.low_risk_auto_correct
+                and _is_script_switch(current_title, suggested_title)
             )
         elif key in ("ARTIST", "ARTISTS"):
             adopt = artist_rule
@@ -1658,7 +1692,7 @@ def scan_tags(
                 rows = compare_fields(snap.tags, match.fields)
             if match.source == SOURCE_SEARCH:
                 rows = _mark_search_corrections(rows, match, snap)
-            rows = _auto_resolve_conflicts(rows, match, snap)
+            rows = _auto_resolve_conflicts(rows, match, snap, cfg)
             state = _decide_state(snap, match, rows, cfg)
             if state == "satisfied":
                 summary.satisfied += 1

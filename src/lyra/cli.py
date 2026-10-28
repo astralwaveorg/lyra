@@ -888,6 +888,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     import signal
     import threading
 
+    from .ingest import finish_new_files
     from .pipeline import run_apply, run_fetch
     from .providers import create_providers
     from .watcher import LibraryWatcher
@@ -1046,6 +1047,24 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                     )
                 _beat(store, "已写入", f"累计 {done + applied.applied} 首",
                       applied=done + applied.applied, failed=applied.apply_failed)
+            if fetched.ai_accepted:
+                print(
+                    f"[watch] {root.name}: AI 预审自动采纳 {fetched.ai_accepted}"
+                    f"（判定已留档，写入可撤销）",
+                    flush=True,
+                )
+            # 入库后半程：封面支线 + 归位（mode=new_files 时自动归位，全程可撤销）
+            try:
+                finished = finish_new_files(store, cfg, root, list(paths))
+                if finished.get("covers") or finished.get("moved"):
+                    print(
+                        f"[watch] {root.name}: 封面嵌入 {finished.get('covers', 0)}"
+                        f"／自动归位 {finished.get('moved', 0)}",
+                        flush=True,
+                    )
+            except Exception as exc:  # noqa: BLE001 — 后半程失败不阻塞下一轮
+                print(f"[watch] {root.name}: 封面/归位失败 {type(exc).__name__}: {exc}",
+                      flush=True)
             return bool(fetched.yielded or (applied is not None and applied.yielded))
 
     def make_callback(root):  # noqa: ANN001, ANN202
@@ -1135,12 +1154,48 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     # 封面文件名统一小写：几乎不用做第二次，但启动后的第一轮要做一次，
     # 之后每小时扫一遍足够（新拷进来的专辑可能带 Cover.JPG）。
     _COVER_NAME_REPAIR_SECONDS = 3600.0
+    # 来源烟雾探测：每天一次最小搜索请求，探测非官方来源是否仍可用。
+    # 结果进 provider_health，自动化页健康卡展示——「来源被风控了」不该
+    # 等到用户发现歌词抓不到才知道。
+    _PROBE_SECONDS = 86400.0
     last_orphan_clean = 0.0
     last_cover_repair = 0.0
     last_name_repair = 0.0
     last_state_sync = 0.0
     last_policy_check = 0.0
     last_network_check = 0.0
+    last_probe = 0.0
+
+    def _provider_probe() -> None:
+        """对每个已启用来源发一次最小搜索，把结果记进健康表。"""
+        from .providers.base import ProviderError
+
+        probe = {
+            "title": "Lyra",
+            "artists": ("probe",),
+            "album": "",
+            "duration": None,
+            "musicbrainz_trackid": "",
+            "isrc": "",
+        }
+        for provider in providers:
+            name = getattr(provider, "name", "")
+            if not name:
+                continue
+            try:
+                found = provider.search(probe)
+            except ProviderError as exc:
+                store.bump_provider_health(name, blocked=True, error=str(exc)[:200])
+                print(f"[watch] 来源 {name} 烟雾探测失败: {exc}", flush=True)
+                continue
+            except Exception as exc:  # noqa: BLE001 — 探测绝不影响主循环
+                store.bump_provider_health(
+                    name, schema_error=True, error=f"{type(exc).__name__}: {exc}"[:200]
+                )
+                continue
+            # 探测词本身查无结果是正常的：接口可达即算健康
+            store.bump_provider_health(name, ok=True)
+            _ = found
 
     # 标签自动刮削：按配置间隔在后台线程跑。
     #
@@ -1425,6 +1480,13 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 except Exception as exc:  # noqa: BLE001 — 对账失败不能停掉监控
                     print(f"[watch] {root.name}: 状态对账失败 {type(exc).__name__}: {exc}",
                           flush=True)
+            # 来源烟雾探测：每天一次，与对账解耦（探测失败不影响任何状态）
+            if now - last_probe >= _PROBE_SECONDS:
+                last_probe = now
+                try:
+                    _provider_probe()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[watch] 来源探测异常 {type(exc).__name__}: {exc}", flush=True)
             # 每轮对账都报一次存活：否则没有写入活动时，界面会把
             # 「进程空闲」显示成「心跳异常」（实际 30 分钟后就出现）。
             _touch(store)

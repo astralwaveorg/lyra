@@ -55,6 +55,7 @@ comment 包所在的**页面区域**，把该区域内的所有包重新分页�
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import struct
@@ -76,6 +77,7 @@ __all__ = [
     "ogg_crc32",
     "ogg_parse_bytes",
     "ogg_parse_file",
+    "ogg_rewrite_cover",
     "ogg_rewrite_tags",
     "ogg_rewrite_with_lyrics",
 ]
@@ -735,6 +737,46 @@ def ogg_rewrite_tags(
     layout = ogg_parse_file(source)
     updated = layout.comments.with_tags(tags, remove=drop)
     _rewrite_comment_packet(layout, updated, source=source, target=target)
+
+
+#: 旧式封面字段（xiph 历史方案，已被 METADATA_BLOCK_PICTURE 取代）
+_OGG_LEGACY_COVER_FIELDS = ("COVERART", "COVERARTMIME", "COVERARTTYPE")
+_OGG_PICTURE_FIELD = "METADATA_BLOCK_PICTURE"
+_PICTURE_BLOCK_MIN_LEN = 4 + 4 + 4 + 4 + 16 + 4  # type+mime_len+desc_len+尺寸×3+data_len 的下限
+
+
+def ogg_rewrite_cover(
+    source: Path,
+    target: Path,
+    *,
+    picture_block: bytes | None,
+) -> None:
+    """替换或移除 OGG（Vorbis / Opus）封面。
+
+    `picture_block` 是 **FLAC PICTURE 块载荷**（与 cover.build_picture_block 的
+    产物同构）；METADATA_BLOCK_PICTURE 就是它的 base64——同一份字节两种容器通用。
+    同时清除旧式 COVERART* 字段，避免同一文件里出现两套封面表示。
+    `picture_block=None` 表示移除封面。
+
+    继承 `ogg_rewrite_tags` 的全部安全语义：音频包逐字节不变、comment 包与
+    音频包同页无法分离时明确拒绝。
+    """
+    if picture_block is None:
+        ogg_rewrite_tags(
+            source,
+            target,
+            remove=(_OGG_PICTURE_FIELD, *_OGG_LEGACY_COVER_FIELDS),
+        )
+        return
+    if len(picture_block) < _PICTURE_BLOCK_MIN_LEN:
+        raise ValueError(f"PICTURE 块载荷过短（{len(picture_block)} 字节），疑似无效")
+    encoded = base64.b64encode(picture_block).decode("ascii")
+    ogg_rewrite_tags(
+        source,
+        target,
+        tags={_OGG_PICTURE_FIELD: [encoded]},
+        remove=_OGG_LEGACY_COVER_FIELDS,
+    )
 
 
 def _rewrite_comment_packet(

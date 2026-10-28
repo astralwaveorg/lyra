@@ -33,6 +33,8 @@ __all__ = [
     "detect_image",
     "build_picture_block",
     "download_cover",
+    "caa_front_url",
+    "cover_quality_ok",
     "PICTURE_TYPE_FRONT_COVER",
 ]
 
@@ -257,6 +259,31 @@ def ensure_public_host(host: str, port: int) -> None:
             raise CoverDownloadError(
                 f"图片地址指向非公网地址（{addr}），已拒绝。只允许公网 http/https 图片。"
             )
+
+
+def caa_front_url(release_id: str, *, size: int = 500) -> str:
+    """Cover Art Archive 的发行封面直链（302 跳转到实际图床）。
+
+    标签里的 MUSICBRAINZ_ALBUMID 就是发行 ID，直接拼 URL 即可，
+    不需要新的查询链路；下载复用 download_cover（SSRF 防护与上限都在）。
+    """
+    rid = (release_id or "").strip()
+    if not rid:
+        raise CoverDownloadError("缺少 MusicBrainz 发行 ID，无法从 CAA 获取封面")
+    return f"https://coverartarchive.org/release/{rid}/front-{int(size)}"
+
+
+def cover_quality_ok(info: CoverInfo, *, min_pixels: int = 90000) -> bool:
+    """自动链的质量门：JPEG/PNG 且像素数达标。
+
+    WebP/GIF 拒收——车机与老播放器支持差（这也是下载头不声明 WebP 的原因）；
+    尺寸不足说明是缩略图，嵌进整张专辑得不偿失。不过关就换下一来源。
+    """
+    if info.mime not in ("image/jpeg", "image/png"):
+        return False
+    if info.width <= 0 or info.height <= 0:
+        return False
+    return info.width * info.height >= min_pixels
 
 
 def download_cover(

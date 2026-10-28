@@ -49,27 +49,49 @@ def test_另一首歌会被明确指认为标题不匹配():
 
 
 def test_时长与艺人吻合但标题差一点时建议采用():
-    """繁简/括号/空格差异导致的轻微标题不符，应当建议采用而不是拒绝。"""
+    """繁简/括号/空格差异导致的轻微标题不符，应当建议采用而不是拒绝。
+
+    候选带 (Live) 版本标记与本地不一致 → 走「近似匹配」通道（决策仍是
+    needs_review，AI 判定同曲异版后才自动采用，或人工确认）。
+    """
     _ctx, result = run(
         {"TITLE": ["突然之间"], "ARTIST": ["G.E.M. 鄧紫棋"]},
         202.7,
         [cand("突然之间 (Live)", "G.E.M.邓紫棋", 202.8)],
     )
     assert result.recommendation is not None
-    assert result.recommendation.verdict in ("adopt", "inspect")
+    assert result.recommendation.verdict in ("adopt", "inspect", "approximate")
 
 
 def test_版本冲突必须给出人工判断而非采纳():
+    """本地是现场版、候选是录音室版：同一首歌的不同版本 → 近似匹配。
+
+    决策仍是 needs_review（版本闸门未过，绝不直接自动写）；
+    建议给「approximate」——歌词内容大概率适用，AI 确认同曲异版后
+    可自动采用，或人工对比后确认。
+    """
     ctx, result = run(
         {"TITLE": ["喜欢你 (Live)"], "ARTIST": ["G.E.M. 鄧紫棋"]},
         262.0,
         [cand("喜欢你", "G.E.M.邓紫棋", 262.0)],
     )
     assert result.decision.value == "needs_review"
+    assert result.approximate is True
     assert result.recommendation is not None
-    assert result.recommendation.verdict == "inspect"
+    assert result.recommendation.verdict == "approximate"
     version = next(c for c in result.checks if c.key == "version")
     assert not version.passed
+
+
+def test_标题核心不匹配时绝不进入近似匹配():
+    """「毫不相关」的候选一票否决：标题核心 <0.90 就不是近似，是另一首歌。"""
+    _ctx, result = run(
+        {"TITLE": ["晴天"], "ARTIST": ["周杰伦"]},
+        269.3,
+        [cand("放弃", "周杰伦", 269.3)],
+    )
+    assert result.decision.value == "needs_review"
+    assert result.approximate is False
 
 
 def test_自动接受时也带完整的闸门记录():

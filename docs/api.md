@@ -154,6 +154,18 @@ curl -b cookies.txt \
 
 服务端会校验分类、组成员、建议删除标记和参照项。任意一组不合法时整批拒绝。
 
+### 待办与流水线（2.0 新增）
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/v1/todo` | 六类待办收件箱：`counts` 全量 + 按 `kind` 分页的 `items`（lyrics / tags / covers / organize / orphans / failed） |
+| `GET /api/v1/runs/{task_id}` | 批量任务明细：任务状态（含内存实时值）+ 每文件 × 每环节的步骤矩阵 |
+| `GET /api/v1/providers/health` | 歌词来源 30 天健康计数（正常 / 查无结果 / 被风控 / 结构变更） |
+| `POST /api/v1/tasks/ingest` | 手动重跑入库流水线（审计 → 身份 → 歌词 → 封面 → 归位），范围同抓取任务 |
+| `POST /api/v1/tasks/cover-fetch` | 按目录批量补封面（同目录图 + Cover Art Archive，按专辑聚合） |
+| `GET/PUT /api/v1/settings/cover` `/organize` `/lyrics` `/acoustid` | 新增设置项，行为与 `settings/tags` 一致（写入数据库并热加载） |
+| `POST /api/v1/tracks/apply-lyrics` | 扩展：只给 `text`（不给来源）时为歌词编辑器直写模式 |
+
 ## 错误格式
 
 错误返回 JSON：

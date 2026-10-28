@@ -130,6 +130,9 @@ export const TASK_KIND_LABEL: Record<string, string> = {
   apply: '写入歌词',
   'tags-audit': '标签审计',
   'tags-scan': '标签扫描',
+  ingest: '入库流水线',
+  'cover-fetch': '封面抓取',
+  'dedupe-scan': '重复检测',
 }
 
 export const TASK_STATE_LABEL: Record<string, string> = {
@@ -138,6 +141,61 @@ export const TASK_STATE_LABEL: Record<string, string> = {
   failed: '失败',
   // 进程重启时被标记的状态；不映射就会在界面上直接显示 interrupted
   interrupted: '已中断',
+}
+
+/** 待办六类队列。 */
+export const TODO_KIND_LABEL: Record<string, string> = {
+  lyrics: '歌词',
+  tags: '标签',
+  covers: '封面',
+  organize: '归置',
+  orphans: '孤儿',
+  failed: '失败',
+}
+
+/** 任务步骤的环节名（入库流水线每文件 × 每环节）。 */
+export const STEP_KIND_LABEL: Record<string, string> = {
+  identity: '身份识别',
+  tags: '标签',
+  lyrics: '歌词',
+  cover: '封面',
+  organize: '归位',
+  verify: '质检',
+}
+
+export const STEP_STATE_LABEL: Record<string, string> = {
+  done: '完成',
+  review: '待确认',
+  failed: '失败',
+  skipped: '跳过',
+}
+
+/** 来源健康计数。 */
+export const HEALTH_FIELD_LABEL: Record<string, string> = {
+  ok: '正常',
+  not_found: '查无结果',
+  blocked: '被风控',
+  schema_error: '结构变更',
+}
+
+/** 匹配建议判定（后端 verdict，含重构新增的 approximate）。 */
+export function decisionLabel(verdict: string): string {
+  if (verdict === 'approximate') return '近似匹配可接受'
+  return DECISION_LABEL[verdict] ?? verdict
+}
+
+/** 归置模式。 */
+export const ORGANIZE_MODE_LABEL: Record<string, string> = {
+  off: '不动文件（只出建议）',
+  new_files: '新文件自动归位',
+  inbox: '收件箱流转',
+}
+
+/** 翻译歌词落盘形态。 */
+export const TRANSLATION_LABEL: Record<string, string> = {
+  off: '不写入翻译',
+  bilingual: '双语文体',
+  field: '暂存保留（不写入）',
 }
 
 export const TXN_STATE_LABEL: Record<string, string> = {

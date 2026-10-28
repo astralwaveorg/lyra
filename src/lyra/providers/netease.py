@@ -28,6 +28,7 @@ from .base import (
     SchemaChangedError,
     TrackQuery,
 )
+from .headers import browser_headers
 
 __all__ = [
     "NETEASE_SEARCH_URL",
@@ -44,16 +45,13 @@ NETEASE_DETAIL_URL = "https://music.163.com/api/song/detail"
 _BREAKER_THRESHOLD = 5
 _BREAKER_INITIAL_SECONDS = 60.0
 
-_HEADERS: dict[str, str] = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
-    # 关键：见模块文档，缺 Referer 会得到「空结果」而非报错
-    "Referer": "https://music.163.com/",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-}
+# 关键：见模块文档，缺 Referer 会得到「空结果」而非报错。
+# UA 由 providers/headers.py 集中管理（providers.user_agent 可整体替换）。
+_HEADERS: dict[str, str] = browser_headers(
+    referer="https://music.163.com/",
+    accept="application/json, text/plain, */*",
+    accept_language="zh-CN,zh;q=0.9",
+)
 
 
 def _detail_from_song_detail(payload: object) -> dict[str, object] | None:
@@ -100,12 +98,23 @@ class NetEaseProvider(HttpProviderBase):
         self,
         config: NetEaseProviderConfig,
         *,
+        user_agent: str | None = None,
         transport: httpx.BaseTransport | None = None,
         client: httpx.Client | None = None,
         clock: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._config = config
+        # providers.user_agent 可整体替换伪装 UA；空值用内置默认
+        self._headers = (
+            browser_headers(
+                user_agent=user_agent,
+                referer="https://music.163.com/",
+                accept="application/json, text/plain, */*",
+                accept_language="zh-CN,zh;q=0.9",
+            )
+            if user_agent else dict(_HEADERS)
+        )
         effective_clock = clock or time.monotonic
         effective_sleep = sleep or time.sleep
         super().__init__(
@@ -130,7 +139,7 @@ class NetEaseProvider(HttpProviderBase):
         self._lyric_budget = max(0, config.detail_and_lyric_limit_per_round)
 
     def request_headers(self) -> dict[str, str]:
-        return dict(_HEADERS)
+        return dict(self._headers)
 
     # -- 端点适配 ---------------------------------------------------------
     # 自建 NeteaseCloudMusicApi（binaryify/netease_cloud_music_api）的

@@ -35,6 +35,7 @@ __all__ = [
     "TransientNetworkError",
     "RateLimitedError",
     "SchemaChangedError",
+    "ProviderBlockedError",
     "AuthRequiredError",
     "BudgetExhaustedError",
     # 机制
@@ -117,6 +118,10 @@ class RawLyrics:
     translation: str | None = None
     word_level: bool = False
     """上游是否提供逐字数据（KRC/QRC/增强型 LRC）。"""
+    raw_text: str | None = None
+    """逐字歌词原文（QRC 等）。降级为行级 LRC 前的原样字节；上游只有
+    行级数据时为 None。`lyrics.keep_word_level=true` 时随暂存保留，
+    供写入 <同名>.qrc。"""
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +164,16 @@ class RateLimitedError(ProviderError):
 
 class SchemaChangedError(ProviderError):
     """响应结构不符合预期。绝不能兜底成空列表。"""
+
+
+class ProviderBlockedError(ProviderError):
+    """来源的风控拦截（返回 HTML 验证页、412 等）。
+
+    与普通失败的区别：**绝不写负缓存**（不是「没有结果」，是「这次根本没查成」），
+    熔断阈值更低、时长按分钟计，并计入健康表的 blocked 列——自动化页据此
+    提示「来源被风控」，必要时切自建网关。
+    """
+    retry_after_seconds: float | None = None
 
 
 class AuthRequiredError(ProviderError):
@@ -359,6 +374,9 @@ class CircuitBreaker:
 # 若把 503 当作「没有歌词」，整个负缓存就废了。
 _RATE_LIMITED_STATUS: frozenset[int] = frozenset({429, 503})
 
+# 412 = 风控前置条件拦截（anti-bot 常用），与普通失败区别对待
+_BLOCKED_STATUS = 412
+
 # 401 = 需要认证；403 = 客户端标识被服务端拦截/拒绝。
 # 对 LRCLIB 而言 403 **不是**「请求太频繁」——过频是 429。LRCLIB 会过滤
 # 某些默认客户端标识（例如 Jellyfin-Server），403 更可能意味着我们的
@@ -381,6 +399,8 @@ def classify_http_status(status: int) -> type[ProviderError] | None:
         return None
     if status in _RATE_LIMITED_STATUS:
         return RateLimitedError
+    if status == _BLOCKED_STATUS:
+        return ProviderBlockedError
     if status in _AUTH_STATUS:
         return AuthRequiredError
     if status >= 500:
@@ -576,7 +596,19 @@ class HttpProviderBase:
 
     @staticmethod
     def decode_json(response: httpx.Response, *, provider: str) -> object:
-        """解析 JSON；失败即契约变化，绝不兜底成空结构。"""
+        """解析 JSON；失败即契约变化，绝不兜底成空结构。
+
+        例外：JSON 接口返回 HTML（200 + text/html）几乎总是风控验证页，
+        按 `ProviderBlockedError` 处理——不写负缓存、熔断更久，与
+        「结构变化」区别对待。
+        """
+        content_type = (response.headers.get("content-type") or "").lower()
+        if content_type.startswith("text/html") or b"<html" in response.content[:512].lower():
+            raise ProviderBlockedError(
+                provider,
+                f"来源返回了 HTML 页面而非 JSON（HTTP {response.status_code}），"
+                "疑似风控验证页",
+            )
         try:
             return response.json()
         except ValueError as exc:

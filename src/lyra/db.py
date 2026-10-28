@@ -32,7 +32,7 @@ __all__ = [
     "TransactionState",
 ]
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 19
 
 
 class DatabaseError(Exception):
@@ -578,6 +578,93 @@ UPDATE tag_proposals
  WHERE state = 'ignored' AND dismissed_at IS NULL;
 """
 
+_MIGRATION_16 = """
+-- 身份解析结论（重构方案：一次定身份，驱动标签/歌词/封面/归置四支线）。
+--
+-- 只存「解析结论」，不存网络失败的重试计划——那仍是 resolutions 负缓存的职责，
+-- 两者职责不重叠。input_hash 是解析输入（标签关键字段+文件名+目录名+标签MBID）
+-- 的指纹：输入变了结论自动失效，下一轮重算，不需要人工触发。
+CREATE TABLE identities (
+    location_id      INTEGER PRIMARY KEY REFERENCES locations(id) ON DELETE CASCADE,
+    state            TEXT NOT NULL,
+    recording_id     TEXT NOT NULL DEFAULT '',
+    release_id       TEXT NOT NULL DEFAULT '',
+    release_group_id TEXT NOT NULL DEFAULT '',
+    evidence         TEXT NOT NULL DEFAULT '',
+    confidence       REAL,
+    source           TEXT NOT NULL DEFAULT '',
+    query_used       TEXT NOT NULL DEFAULT '',
+    evidence_json    TEXT NOT NULL DEFAULT '{}',
+    input_hash       TEXT NOT NULL,
+    resolved_at      REAL NOT NULL
+);
+CREATE INDEX idx_identities_state ON identities(state);
+"""
+
+_MIGRATION_17 = """
+-- 专辑封面缓存：封面是发行属性不是曲目属性，按专辑聚合一次下载、逐文件嵌入。
+-- 图片字节落在 data/cover-cache/（file_path），库里只存指纹与元数据，避免库膨胀。
+CREATE TABLE cover_albums (
+    id            INTEGER PRIMARY KEY,
+    album_key     TEXT NOT NULL UNIQUE,
+    source        TEXT NOT NULL,
+    image_hash    TEXT NOT NULL,
+    file_path     TEXT NOT NULL,
+    mime          TEXT NOT NULL,
+    width         INTEGER NOT NULL,
+    height        INTEGER NOT NULL,
+    fetched_at    REAL NOT NULL,
+    applied_count INTEGER NOT NULL DEFAULT 0,
+    state         TEXT NOT NULL DEFAULT 'ready'
+);
+CREATE INDEX idx_cover_albums_state ON cover_albums(state, fetched_at DESC);
+"""
+
+_MIGRATION_18 = """
+-- 歌词的翻译、逐字原文与 AI 预审结论。
+--
+-- translation：上游（QQ trans / 网易 tlyric）一直有产出，但写链路从未消费，
+-- 数据在源头被丢弃——先暂存下来，写入时按策略决定形态（双语/独立字段/忽略）。
+-- raw_qrc：逐字歌词默认降级为行级 LRC，原文按策略可选保留（.qrc sidecar）。
+-- ai_json：模型对候选的判定（best/confidence/reason/rejected）。复核界面直接
+-- 展示这个结论；高置信且程序闸门全过时，允许自动采纳——判定留档可回溯。
+ALTER TABLE staged_lyrics ADD COLUMN translation TEXT;
+ALTER TABLE staged_lyrics ADD COLUMN raw_qrc TEXT;
+ALTER TABLE staged_lyrics ADD COLUMN ai_json TEXT;
+"""
+
+_MIGRATION_19 = """
+-- 任务步骤明细与来源健康。
+--
+-- task_steps：一次批量任务的「每文件 × 每环节」结果矩阵，失败不再只能翻日志，
+-- 待办「失败」队列直接从这里取数。
+-- provider_health：非官方来源（QQ/网易云）的每日健康计数，烟雾探测与自动化页
+-- 健康卡共用；blocked/schema_error 单列，是「来源被风控/结构变更」的信号，
+-- 与普通失败区分对待（不写负缓存、摘除降级）。
+CREATE TABLE task_steps (
+    id          INTEGER PRIMARY KEY,
+    task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    location_id INTEGER,
+    rel_path    TEXT,
+    state       TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX idx_task_steps_task ON task_steps(task_id, seq);
+
+CREATE TABLE provider_health (
+    provider     TEXT NOT NULL,
+    day          TEXT NOT NULL,
+    ok           INTEGER NOT NULL DEFAULT 0,
+    not_found    INTEGER NOT NULL DEFAULT 0,
+    blocked      INTEGER NOT NULL DEFAULT 0,
+    schema_error INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    PRIMARY KEY (provider, day)
+);
+"""
+
 _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -594,6 +681,10 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (13, _MIGRATION_13),
     (14, _MIGRATION_14),
     (15, _MIGRATION_15),
+    (16, _MIGRATION_16),
+    (17, _MIGRATION_17),
+    (18, _MIGRATION_18),
+    (19, _MIGRATION_19),
 )
 
 
@@ -1350,10 +1441,15 @@ class StateStore:
         duration_delta: float | None = None,
         state: str = "staged",
         origin: str = "auto",
+        translation: str | None = None,
+        raw_qrc: str | None = None,
+        ai_json: str | None = None,
     ) -> int:
         """暂存一份抓取到的歌词。
 
-        同一位置同一内容重复暂存时**不重复插入**，保持幂等。
+        同一位置同一内容重复暂存时**不重复插入**，保持幂等（更新判级与来源）。
+        translation / raw_qrc / ai_json 是重构新增的附属数据：翻译供双语文体
+        落盘，raw_qrc 供逐字歌词保留，ai_json 留档模型判定供复核界面展示。
         """
         with self.transaction() as tx:
             row = tx.execute(
@@ -1363,15 +1459,19 @@ class StateStore:
             if row:
                 tx.execute(
                     "UPDATE staged_lyrics SET provider=?, provider_id=?, score=?, "
-                    "duration_delta=?, state=?, origin=? WHERE id=?",
+                    "duration_delta=?, state=?, origin=?, "
+                    "translation=COALESCE(?, translation), "
+                    "raw_qrc=COALESCE(?, raw_qrc), "
+                    "ai_json=COALESCE(?, ai_json) WHERE id=?",
                     (provider, provider_id, score, duration_delta, state,
-                     origin, row["id"]),
+                     origin, translation, raw_qrc, ai_json, row["id"]),
                 )
                 return int(row["id"])
             cur = tx.execute(
                 "INSERT INTO staged_lyrics(location_id, content_hash, content, provider, "
-                "provider_id, score, duration_delta, state, origin, created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "provider_id, score, duration_delta, state, origin, translation, "
+                "raw_qrc, ai_json, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     location_id,
                     content_hash,
@@ -1382,6 +1482,9 @@ class StateStore:
                     duration_delta,
                     state,
                     origin,
+                    translation,
+                    raw_qrc,
+                    ai_json,
                     time.time(),
                 ),
             )
@@ -1721,6 +1824,188 @@ class StateStore:
             "DELETE FROM staged_lyrics WHERE state!='staged' AND created_at<?", (cutoff,)
         )
         return cur.rowcount or 0
+
+    # -- 身份解析（重构方案：一次定身份，驱动标签/歌词/封面/归置） --------
+
+    def upsert_identity(
+        self,
+        *,
+        location_id: int,
+        state: str,
+        recording_id: str = "",
+        release_id: str = "",
+        release_group_id: str = "",
+        evidence: str = "",
+        confidence: float | None = None,
+        source: str = "",
+        query_used: str = "",
+        evidence_json: str = "{}",
+        input_hash: str,
+    ) -> None:
+        """写入/更新身份结论。input_hash 变了才重算——这里是幂等入口。"""
+        now = time.time()
+        with self.transaction() as tx:
+            tx.execute(
+                "INSERT INTO identities(location_id, state, recording_id, release_id, "
+                "release_group_id, evidence, confidence, source, query_used, "
+                "evidence_json, input_hash, resolved_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(location_id) DO UPDATE SET "
+                "state=excluded.state, recording_id=excluded.recording_id, "
+                "release_id=excluded.release_id, "
+                "release_group_id=excluded.release_group_id, "
+                "evidence=excluded.evidence, confidence=excluded.confidence, "
+                "source=excluded.source, query_used=excluded.query_used, "
+                "evidence_json=excluded.evidence_json, input_hash=excluded.input_hash, "
+                "resolved_at=excluded.resolved_at",
+                (location_id, state, recording_id, release_id, release_group_id,
+                 evidence, confidence, source, query_used, evidence_json,
+                 input_hash, now),
+            )
+
+    def get_identity(self, location_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM identities WHERE location_id=?", (location_id,)
+        ).fetchone()
+
+    # -- 专辑封面缓存 ------------------------------------------------------
+
+    def upsert_cover_album(
+        self,
+        *,
+        album_key: str,
+        source: str,
+        image_hash: str,
+        file_path: str,
+        mime: str,
+        width: int,
+        height: int,
+    ) -> int:
+        now = time.time()
+        with self.transaction() as tx:
+            row = tx.execute(
+                "SELECT id FROM cover_albums WHERE album_key=?", (album_key,)
+            ).fetchone()
+            if row:
+                tx.execute(
+                    "UPDATE cover_albums SET source=?, image_hash=?, file_path=?, "
+                    "mime=?, width=?, height=?, fetched_at=?, state='ready' WHERE id=?",
+                    (source, image_hash, file_path, mime, width, height, now,
+                     row["id"]),
+                )
+                return int(row["id"])
+            cur = tx.execute(
+                "INSERT INTO cover_albums(album_key, source, image_hash, file_path, "
+                "mime, width, height, fetched_at) VALUES(?,?,?,?,?,?,?,?)",
+                (album_key, source, image_hash, file_path, mime, width, height, now),
+            )
+            return int(cur.lastrowid or 0)
+
+    def get_cover_album(self, album_key: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM cover_albums WHERE album_key=?", (album_key,)
+        ).fetchone()
+
+    def bump_cover_applied(self, album_key: str) -> None:
+        self.conn.execute(
+            "UPDATE cover_albums SET applied_count = applied_count + 1 WHERE album_key=?",
+            (album_key,),
+        )
+
+    # -- 任务步骤明细（每文件 × 每环节的结果矩阵） --------------------------
+
+    def add_task_step(
+        self,
+        *,
+        task_id: str,
+        seq: int,
+        kind: str,
+        location_id: int | None = None,
+        rel_path: str | None = None,
+        state: str,
+        detail: dict | None = None,
+    ) -> None:
+        with self.transaction() as tx:
+            tx.execute(
+                "INSERT INTO task_steps(task_id, seq, kind, location_id, rel_path, "
+                "state, detail_json) VALUES(?,?,?,?,?,?,?)",
+                (task_id, seq, kind, location_id, rel_path, state,
+                 json.dumps(detail or {}, ensure_ascii=False)),
+            )
+
+    def iter_task_steps(self, task_id: str) -> Iterator[sqlite3.Row]:
+        yield from self.conn.execute(
+            "SELECT * FROM task_steps WHERE task_id=? ORDER BY seq", (task_id,)
+        )
+
+    def failed_task_steps(self, *, limit: int = 200) -> list[sqlite3.Row]:
+        """最近失败的步骤，供待办「失败」队列取数。"""
+        return list(
+            self.conn.execute(
+                "SELECT s.task_id, s.seq, s.kind, s.rel_path, s.state, s.detail_json, "
+                "t.kind AS task_kind, t.started_at FROM task_steps s "
+                "JOIN tasks t ON t.id = s.task_id "
+                "WHERE s.state='failed' ORDER BY t.started_at DESC, s.seq LIMIT ?",
+                (int(limit),),
+            )
+        )
+
+    # -- 来源健康（非官方来源的每日计数与风控信号） -------------------------
+
+    def bump_provider_health(
+        self,
+        provider: str,
+        *,
+        ok: bool = False,
+        not_found: bool = False,
+        blocked: bool = False,
+        schema_error: bool = False,
+        error: str = "",
+    ) -> None:
+        """按「今天」累计一次结果。day 用本地日期，健康卡按天展示。"""
+        day = time.strftime("%Y-%m-%d")
+        column = (
+            "ok" if ok else "not_found" if not_found
+            else "blocked" if blocked else "schema_error"
+        )
+        with self.transaction() as tx:
+            tx.execute(
+                f"INSERT INTO provider_health(provider, day, {column}, last_error) "
+                "VALUES(?,?,1,?) "
+                "ON CONFLICT(provider, day) DO UPDATE SET "
+                f"{column} = {column} + 1, "
+                "last_error=CASE WHEN excluded.last_error IS NOT NULL "
+                "THEN excluded.last_error ELSE provider_health.last_error END",
+                (provider, day, error or None),
+            )
+
+    def provider_health_summary(self, *, days: int = 30) -> list[dict]:
+        cutoff = time.strftime(
+            "%Y-%m-%d", time.localtime(time.time() - days * 86400)
+        )
+        rows = self.conn.execute(
+            "SELECT provider, day, ok, not_found, blocked, schema_error, last_error "
+            "FROM provider_health WHERE day >= ? ORDER BY provider, day",
+            (cutoff,),
+        ).fetchall()
+        summary: dict[str, dict] = {}
+        for row in rows:
+            entry = summary.setdefault(
+                row["provider"],
+                {"provider": row["provider"], "ok": 0, "not_found": 0,
+                 "blocked": 0, "schema_error": 0, "last_error": None, "days": []},
+            )
+            for key in ("ok", "not_found", "blocked", "schema_error"):
+                entry[key] += int(row[key] or 0)
+            if row["last_error"]:
+                entry["last_error"] = row["last_error"]
+            entry["days"].append(
+                {"day": row["day"], "ok": int(row["ok"] or 0),
+                 "not_found": int(row["not_found"] or 0),
+                 "blocked": int(row["blocked"] or 0),
+                 "schema_error": int(row["schema_error"] or 0)}
+            )
+        return list(summary.values())
 
     # -- 标签刮削 ---------------------------------------------------------
 

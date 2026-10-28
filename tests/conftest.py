@@ -200,6 +200,62 @@ def make_ogg_vorbis(
     return path
 
 
+def make_mp3(
+    path: Path,
+    *,
+    version: int = 3,
+    entries=(("TIT2", "测试曲目"), ("TPE1", "测试艺人")),
+    audio: bytes | None = None,
+) -> Path:
+    """写出一个最小但结构合法的 MP3（ID3v2 + 一帧 MPEG 数据）。
+
+    只要求容器结构正确（供 sniff_container / id3meta 解析），音频帧内容
+    无需可播放——字节级写入测试关心的是「音频段逐字节不变」。
+    """
+    def _synchsafe(value: int) -> bytes:
+        return bytes(((value >> 21) & 0x7F, (value >> 14) & 0x7F, (value >> 7) & 0x7F, value & 0x7F))
+
+    frames = b""
+    for frame_id, value in entries:
+        encoding = 0x03 if version == 4 else 0x01
+        text = str(value).encode("utf-8" if version == 4 else "utf-16")
+        body = bytes((encoding,)) + text
+        size = _synchsafe(len(body)) if version == 4 else len(body).to_bytes(4, "big")
+        frames += frame_id.encode("ascii") + size + b"\x00\x00" + body
+
+    body = frames + b"\x00" * 128
+    tag = b"ID3" + bytes((version, 0, 0)) + _synchsafe(len(body))
+    mpeg = audio if audio is not None else b"\xff\xfb\x90\x00" + b"\x00" * 413
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(tag + body + mpeg)
+    return path
+
+
+def make_png_bytes(width: int = 4, height: int = 4) -> bytes:
+    """最小 PNG：签名 + IHDR（cover.detect_image 从 IHDR 读宽高，不校验 CRC）。"""
+    import struct
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr_data = struct.pack(">II", width, height) + bytes((8, 6, 0, 0, 0))
+    ihdr = struct.pack(">I", len(ihdr_data)) + b"IHDR" + ihdr_data + b"\x00\x00\x00\x00"
+    return signature + ihdr + b"\x00" * 16
+
+
+def make_jpeg_bytes(width: int = 4, height: int = 4) -> bytes:
+    """最小 JPEG：SOI + SOF0（detect_image 从 SOF 读宽高）+ EOI。"""
+    import struct
+
+    sof_body = (
+        bytes((8,))                      # 精度
+        + struct.pack(">HH", height, width)
+        + bytes((3,))                    # 分量数
+        + b"\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+    )
+    sof = b"\xff\xc0" + struct.pack(">H", len(sof_body) + 2) + sof_body
+    return b"\xff\xd8" + sof + b"\xff\xd9"
+
+
 # ---------------------------------------------------------------------------
 # 通用工具
 # ---------------------------------------------------------------------------

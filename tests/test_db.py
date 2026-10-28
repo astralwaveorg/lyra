@@ -49,6 +49,24 @@ def test_迁移到当前版本且幂等(store: StateStore):
     assert store.migrate() == SCHEMA_VERSION  # 第二次不应报错或改变版本
 
 
+def test_迁移创建重构新增表(store: StateStore):
+    """迁移 16-19：身份层、专辑封面缓存、歌词翻译/逐字列、任务步骤与来源健康。"""
+    store.migrate()
+    tables = {
+        row[0]
+        for row in store.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    assert {"identities", "cover_albums", "task_steps", "provider_health"} <= tables
+    lyric_cols = {
+        row[1] for row in store.conn.execute("PRAGMA table_info(staged_lyrics)")
+    }
+    assert {"translation", "raw_qrc"} <= lyric_cols
+    rule_cols = {row[1] for row in store.conn.execute("PRAGMA table_info(rules)")}
+    assert "action" in rule_cols  # action 枚举扩展为 TEXT 值，无 DDL
+
+
 def test_完整性检查通过(store: StateStore):
     assert store.integrity_check() == "ok"
 

@@ -430,17 +430,25 @@ def apply_cover_edit(
     """替换或移除音频文件的封面。**音频数据与标签都必须逐字节不变。**
 
     与标签改写同一套流程：写临时文件 → 校验音频哈希 → 校验标签块未变 →
-    原子替换 → 回读确认。
+    原子替换 → 回读确认。按容器分派：FLAC（PICTURE 块）、MP3（APIC 帧）、
+    OGG/Opus（METADATA_BLOCK_PICTURE）。
     """
     source = plan.audio_path
     if not source.is_file():
         return CoverEditOutcome(ok=False, error=f"文件不存在: {source}")
-    if plan.media_format is not MediaFormat.FLAC:
-        return CoverEditOutcome(
-            ok=False,
-            error=f"暂不支持改写 {plan.media_format.value} 的封面（目前仅 FLAC）",
-        )
+    if plan.media_format is MediaFormat.FLAC:
+        return _apply_cover_edit_flac(plan)
+    if plan.media_format in (MediaFormat.MP3, MediaFormat.OGG_VORBIS, MediaFormat.OGG_OPUS):
+        return _apply_cover_edit_block_container(plan)
+    return CoverEditOutcome(
+        ok=False,
+        error=f"暂不支持改写 {plan.media_format.value} 的封面"
+        "（支持 FLAC / MP3 / OGG Vorbis / Opus）",
+    )
 
+
+def _apply_cover_edit_flac(plan: CoverEditPlan) -> CoverEditOutcome:
+    source = plan.audio_path
     before_audio = flacmeta.flac_audio_hash(source)
     before_layout = flacmeta.flac_parse_file(source)
     before_comments = before_layout.comments()
@@ -472,6 +480,153 @@ def apply_cover_edit(
         ok=True,
         has_cover=final.block(flacmeta.BlockType.PICTURE) is not None,
         audio_hash=flacmeta.flac_audio_hash(source),
+        full_hash=file_sha256(source),
+    )
+
+
+def _apply_cover_edit_block_container(plan: CoverEditPlan) -> CoverEditOutcome:
+    """MP3 / OGG / Opus 的封面改写。
+
+    PICTURE 块载荷是自描述的（类型 + MIME + 图片字节）：MP3 取出字节与 MIME
+    重建 APIC 帧，OGG 直接 base64 整块。校验口径与 FLAC 相同——音频哈希不变、
+    封面以外的内容不变。
+    """
+    from .cover import parse_picture_block
+
+    source = plan.audio_path
+    block = plan.picture_block
+    picture_type = int.from_bytes(block[0:4], "big") if block is not None else 3
+    image: bytes | None = None
+    mime = "image/jpeg"
+    if block is not None:
+        mime, image = parse_picture_block(block)
+
+    if plan.media_format is MediaFormat.MP3:
+        return _apply_cover_edit_mp3(plan, source, image, mime, picture_type)
+    return _apply_cover_edit_ogg(plan, source, block)
+
+
+def _apply_cover_edit_mp3(
+    plan: CoverEditPlan,
+    source: Path,
+    image: bytes | None,
+    mime: str,
+    picture_type: int,
+) -> CoverEditOutcome:
+    """MP3：替换/移除同一 picture_type 的 APIC 帧，其余帧逐字节保留。"""
+    from . import id3meta
+
+    try:
+        before = id3meta.id3_parse_file(source)
+    except id3meta.Id3FormatError as exc:
+        if "没有 ID3v2 标签" not in str(exc):
+            raise
+        before = None  # 与 id3_rewrite_cover 一致：无标签时新建 v2.4
+    before_audio = before.audio_sha256 if before is not None else id3meta.id3_audio_hash(source)
+
+    def non_target_frames(layout: id3meta.Id3Layout) -> list[id3meta.Id3Frame]:
+        kept: list[id3meta.Id3Frame] = []
+        for frame in layout.frames:
+            if frame.frame_id == "APIC":
+                parsed = id3meta.parse_apic(frame.body)
+                if parsed is not None and parsed[1] == picture_type:
+                    continue  # 目标类型封面：本次操作的对象，不参与一致性比对
+            kept.append(frame)
+        return kept
+
+    tmp = source.with_name(f".lyra-cover-{uuid.uuid4().hex}.tmp")
+    try:
+        id3meta.id3_rewrite_cover(
+            source, tmp, picture=image, mime=mime, picture_type=picture_type
+        )
+        after = id3meta.id3_parse_file(tmp)
+        if after.audio_sha256 != before_audio:
+            return CoverEditOutcome(
+                ok=False, error="内部错误：改写封面时音频数据被改动，已放弃写入"
+            )
+        before_others = [f.raw for f in non_target_frames(before)] if before is not None else []
+        after_others = [f.raw for f in non_target_frames(after)]
+        if (
+            before_others != after_others
+            or (before is not None and before.trailer != after.trailer)
+        ):
+            return CoverEditOutcome(
+                ok=False, error="内部错误：改写封面时其它标签帧被改动，已放弃写入"
+            )
+        os.replace(tmp, source)
+        _fsync_dir(source.parent)
+    except Exception as exc:  # noqa: BLE001 — 任何失败都不能留下半成品
+        tmp.unlink(missing_ok=True)
+        return CoverEditOutcome(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+    final = id3meta.id3_parse_file(source)
+    has_cover = any(
+        frame.frame_id == "APIC"
+        and (parsed := id3meta.parse_apic(frame.body)) is not None
+        and parsed[1] == picture_type
+        for frame in final.frames
+    )
+    return CoverEditOutcome(
+        ok=True,
+        has_cover=has_cover,
+        audio_hash=final.audio_sha256,
+        full_hash=file_sha256(source),
+    )
+
+
+def _apply_cover_edit_ogg(
+    plan: CoverEditPlan,
+    source: Path,
+    block: bytes | None,
+) -> CoverEditOutcome:
+    """OGG/Opus：METADATA_BLOCK_PICTURE 写入；音频页哈希与非封面注释逐字节不变。"""
+    from . import oggmeta
+
+    _COVER_KEYS = {"METADATA_BLOCK_PICTURE", "COVERART", "COVERARTMIME", "COVERARTTYPE"}
+
+    def non_cover_comments(layout: oggmeta.OggLayout) -> bytes:
+        comments = layout.comments
+        stripped = flacmeta.VorbisComments(
+            vendor=comments.vendor,
+            entries=tuple(
+                (name, raw)
+                for name, raw in comments.entries
+                if name.decode("ascii", "replace").upper() not in _COVER_KEYS
+            ),
+        )
+        return stripped.to_bytes()
+
+    before = oggmeta.ogg_parse_file(source)
+    before_audio = before.audio_sha256
+    before_comments = non_cover_comments(before)
+
+    tmp = source.with_name(f".lyra-cover-{uuid.uuid4().hex}.tmp")
+    try:
+        oggmeta.ogg_rewrite_cover(source, tmp, picture_block=block)
+        after = oggmeta.ogg_parse_file(tmp)
+        if after.audio_sha256 != before_audio:
+            return CoverEditOutcome(
+                ok=False, error="内部错误：改写封面时音频数据被改动，已放弃写入"
+            )
+        if non_cover_comments(after) != before_comments:
+            return CoverEditOutcome(
+                ok=False, error="内部错误：改写封面时其它标签被改动，已放弃写入"
+            )
+        os.replace(tmp, source)
+        _fsync_dir(source.parent)
+    except Exception as exc:  # noqa: BLE001 — 任何失败都不能留下半成品
+        tmp.unlink(missing_ok=True)
+        return CoverEditOutcome(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+    final = oggmeta.ogg_parse_file(source)
+    has_cover = any(
+        name.decode("ascii", "replace").upper() in {"METADATA_BLOCK_PICTURE", "COVERART"}
+        for name, _raw in final.comments.entries
+    )
+    return CoverEditOutcome(
+        ok=True,
+        has_cover=has_cover,
+        audio_hash=final.audio_sha256,
         full_hash=file_sha256(source),
     )
 

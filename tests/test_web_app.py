@@ -65,17 +65,24 @@ def test_页面引用构建产物(index_html: str, asset_paths: list[str]):
 
 
 def test_每个视图都产出了独立分包():
-    """按路由懒加载的视图必须各自成包，否则首屏会一次性下载全部页面。"""
+    """按路由懒加载的视图必须各自成包，否则首屏会一次性下载全部页面。
+
+    重构后的对应关系：歌词审查/标签队列组件化进待办页（LyricsQueue /
+    TagsQueue 作为 TodoView 的静态依赖与其同包），歌词刮削页升级为
+    自动化控制台（AutomationView），新增待办页（TodoView）。
+    断言口径是「路由级视图」——静态导入的组件与宿主视图同包。
+    """
     names = {path.name for path in (WEB_DIR / "assets").glob("*.js")}
-    for view in ("OverviewView", "LibraryView", "ReviewView", "FilesView",
-                 "ScrapeView", "TagsScrapeView", "OrganizeView", "LogsView",
-                 "TrashView", "SettingsView", "AboutView"):
+    for view in ("OverviewView", "LibraryView", "FilesView", "AutomationView",
+                 "TodoView", "OrganizeView", "LogsView", "TrashView",
+                 "SettingsView", "AboutView"):
         assert any(name.startswith(view) for name in names), f"缺少 {view} 的构建产物"
 
 
 def test_子路由刷新回落到同一页面(client):
     """SPA 的地址栏会被收藏、会被分享，子路径刷新不能 404。"""
-    for path in ("/overview", "/library", "/review", "/files", "/tags", "/settings", "/about"):
+    for path in ("/overview", "/music", "/todo", "/automation", "/files",
+                 "/activity", "/settings", "/about"):
         response = client.get(path)
         assert response.status_code == 200, f"{path} 返回 {response.status_code}"
         assert "text/html" in response.headers["content-type"]
