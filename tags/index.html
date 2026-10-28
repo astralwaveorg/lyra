@@ -739,7 +739,7 @@
   <a href="#_5" class="md-nav__link">
     <span class="md-ellipsis">
       
-        自动扫描与自动写入
+        批量写入
       
     </span>
   </a>
@@ -750,7 +750,7 @@
   <a href="#_6" class="md-nav__link">
     <span class="md-ellipsis">
       
-        写入安全
+        自动扫描与自动写入
       
     </span>
   </a>
@@ -761,7 +761,7 @@
   <a href="#_7" class="md-nav__link">
     <span class="md-ellipsis">
       
-        按链接指定
+        写入安全
       
     </span>
   </a>
@@ -772,7 +772,7 @@
   <a href="#_8" class="md-nav__link">
     <span class="md-ellipsis">
       
-        人工确认与忽略
+        按链接指定
       
     </span>
   </a>
@@ -783,7 +783,7 @@
   <a href="#_9" class="md-nav__link">
     <span class="md-ellipsis">
       
-        写入历史与撤销
+        人工确认与忽略
       
     </span>
   </a>
@@ -792,6 +792,17 @@
       
         <li class="md-nav__item">
   <a href="#_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        写入历史与撤销
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_11" class="md-nav__link">
     <span class="md-ellipsis">
       
         常见问题
@@ -1421,7 +1432,7 @@
   <a href="#_5" class="md-nav__link">
     <span class="md-ellipsis">
       
-        自动扫描与自动写入
+        批量写入
       
     </span>
   </a>
@@ -1432,7 +1443,7 @@
   <a href="#_6" class="md-nav__link">
     <span class="md-ellipsis">
       
-        写入安全
+        自动扫描与自动写入
       
     </span>
   </a>
@@ -1443,7 +1454,7 @@
   <a href="#_7" class="md-nav__link">
     <span class="md-ellipsis">
       
-        按链接指定
+        写入安全
       
     </span>
   </a>
@@ -1454,7 +1465,7 @@
   <a href="#_8" class="md-nav__link">
     <span class="md-ellipsis">
       
-        人工确认与忽略
+        按链接指定
       
     </span>
   </a>
@@ -1465,7 +1476,7 @@
   <a href="#_9" class="md-nav__link">
     <span class="md-ellipsis">
       
-        写入历史与撤销
+        人工确认与忽略
       
     </span>
   </a>
@@ -1474,6 +1485,17 @@
       
         <li class="md-nav__item">
   <a href="#_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        写入历史与撤销
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_11" class="md-nav__link">
     <span class="md-ellipsis">
       
         常见问题
@@ -1569,7 +1591,18 @@
 <li>时长差超过标签写入容差。</li>
 <li>来源本身有歧义。</li>
 </ul>
-<h2 id="_5">自动扫描与自动写入<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<h2 id="_5">批量写入<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<p>待审查列表支持勾选多条后一次写入：</p>
+<ul>
+<li>行首勾选框选中单条；组头勾选框整组全选；「全选本页」选中当前页所有可写条目。</li>
+<li>「写入所选（N）」按每行的建议一次性写入，冲突也一并覆盖——逐行勾选就是人工确认，
+  与单条展开后写入同口径。确认框会列出补空、纠正和覆盖冲突的数量。</li>
+<li>标题搜索来源的条目不参与批量，请逐条确认；只读格式和没有可写字段的条目不可勾选。</li>
+<li>翻页或切换页签会清空勾选，不会把看不见的条目带进批量。</li>
+<li>单条写入失败（例如文件在扫描后被其他工具改动）只记入结果里的错误列表，不影响其余条目。</li>
+<li>「写入本页可补」仍然只写补空与纠正，不覆盖冲突；需要保守处理时用它。</li>
+</ul>
+<h2 id="_6">自动扫描与自动写入<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
 <p>监控进程按 <code>scan_interval_hours</code> 扫描全库。设置页可以修改间隔、自动写入、指纹和单轮上限，保存后一分钟内生效。</p>
 <p>自动写入只做两件事：</p>
 <ul>
@@ -1577,7 +1610,7 @@
 <li>按可信目录簇纠正发行级字段。</li>
 </ul>
 <p>冲突永不自动覆盖。单轮写入数量受 <code>max_auto_write_per_run</code> 限制。</p>
-<h2 id="_6">写入安全<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
+<h2 id="_7">写入安全<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
 <ul>
 <li>只改目标字段。音频数据、封面、歌词、作词人、未知标签保持不变。</li>
 <li>FLAC 使用 Vorbis comment 块级改写；MP3 使用 ID3v2 目标帧改写；OGG 重排 comment 页。</li>
@@ -1585,7 +1618,7 @@
 <li>校验失败自动回滚，并保留失败原因。</li>
 <li>撤销按字段恢复原值，不会把整份标签覆盖回旧版本。</li>
 </ul>
-<h2 id="_7">按链接指定<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
+<h2 id="_8">按链接指定<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h2>
 <p>「按链接指定」支持 MusicBrainz 的发行、录音、发行组和艺人链接。查询只读，不会改文件。</p>
 <p>适合以下情况：</p>
 <ul>
@@ -1594,7 +1627,7 @@
 <li>想指定某个发行版或某个现场版本。</li>
 </ul>
 <p>链接会校验域名必须是 <code>musicbrainz.org</code> 或其子域，避免 SSRF。</p>
-<h2 id="_8">人工确认与忽略<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h2>
+<h2 id="_9">人工确认与忽略<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h2>
 <p>队列里每一条都可能是人已经表过态的，所以人工决定必须留得住：</p>
 <ul>
 <li><strong>按链接指定</strong>是人工断言「就是这一条」。指定之后，自动扫描不会再用搜索结果覆盖它。</li>
@@ -1605,10 +1638,10 @@
 </ul>
 <p>自动扫描只在「没有人工痕迹」时才会重写提案：来源是搜索或目录推定、且没有人处理过的条目，
 每轮扫描都可以重新计算。</p>
-<h2 id="_9">写入历史与撤销<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h2>
+<h2 id="_10">写入历史与撤销<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h2>
 <p>每次写入记录文件名、写入时间、变更字段、原值和新值。可以在标签页的「写入记录」里逐条撤销。</p>
 <p>撤销只还原这次写入涉及的字段。如果之后有人手动改过同一字段，撤销会跳过或提示冲突，不会盲目覆盖。</p>
-<h2 id="_10">常见问题<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h2>
+<h2 id="_11">常见问题<a class="headerlink" href="#_11" title="Permanent link">&para;</a></h2>
 <p><strong>扫描显示 MusicBrainz 未配置。</strong></p>
 <p>检查 <code>providers.musicbrainz.enabled</code> 和 <code>base_url</code>。默认是 <code>https://musicbrainz.org</code>；容器内能访问公网即可。</p>
 <p><strong>扫描全部未匹配。</strong></p>
