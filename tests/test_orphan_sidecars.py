@@ -150,3 +150,118 @@ def test_接口返回分类计数(tmp_path, lib):
     assert d["duplicates"] == 1
     assert d["same_content"] == 1
     assert all("root" in i for i in d["items"])
+
+
+# ---------------------------------------------------------------------------
+# 判定「多余」的两条防线（2026-10-28 线上实测后补）
+# ---------------------------------------------------------------------------
+
+
+def test_中间子串不算同一首(tmp_path, flac_factory):
+    """`Love Me Do` 与 `ME!` 只是中间子串关系，不能当成同一首。
+
+    线上实测：61 份「无来源 .lrc」里 41 份是 Beatles 的歌，它们所在的专辑
+    目录里没有同名音频，模糊匹配把它们挂到了 `1-16 - ME!.flac` 上；那首歌
+    恰好有同名 lrc，于是这份真词被判成「重复」并被**默认勾选**——
+    点一次「批量删除」就会把 41 份真词删掉。
+    """
+    lib = tmp_path / "lib"
+    flac_factory(
+        lib / "Taylor Swift" / "Lover" / "1-16 - ME!.flac",
+        entries=(("TITLE", "ME!"), ("ARTIST", "Taylor Swift")),
+    )
+    (lib / "Taylor Swift" / "Lover").mkdir(parents=True, exist_ok=True)
+    (lib / "Taylor Swift" / "Lover" / "1-16 - ME!.lrc").write_text(
+        "[00:01.00]ME!\n[00:02.00]oh oh oh\n", encoding="utf-8")
+    flac_factory(
+        lib / "The Beatles" / "Please Please Me" / "08 - Love Me Do.flac",
+        entries=(("TITLE", "Love Me Do"), ("ARTIST", "The Beatles")),
+    )
+    (lib / "The Beatles" / "Please Please Me" / "08 - Love Me Do.lrc").write_text(
+        "[00:01.00]Love me do\n[00:02.00]love me do\n", encoding="utf-8")
+    # 孤儿所在目录里没有同名音频（专辑被重组过）
+    (lib / "The Beatles" / "1").mkdir(parents=True, exist_ok=True)
+    (lib / "The Beatles" / "1" / "01 Love Me Do.lrc").write_text(
+        "[00:01.00]Love me do\n[00:02.00]love me do\n", encoding="utf-8")
+
+    items = {
+        i["rel_path"]: i
+        for i in find_orphan_sidecars(
+            RootConfig(name="lib", role=RootRole.LIBRARY, path=str(lib))
+        )
+    }
+    item = items["The Beatles/1/01 Love Me Do.lrc"]
+    assert item["guess_audio"] == (
+        "The Beatles/Please Please Me/08 - Love Me Do.flac"
+    ), "不能把词挂到 ME! 那首歌上"
+    assert item["action"] == "duplicate", "Beatles 这首歌在别处已有歌词"
+    me = next(c for c in item["candidates"] if c["rel_path"].endswith("ME!.flac"))
+    assert me["how"] == "contained", "中间子串只能当提示，不能参与判定"
+
+
+def test_候选只有纯音乐占位时不算多余(tmp_path, flac_factory):
+    """目标音频那份 lrc 只是「纯音乐」占位 → 这一份可能是它真正的词。
+
+    占位文案不算歌词：那首音频其实还没有词，删掉这一份就没有了。
+    """
+    lib = tmp_path / "lib"
+    flac_factory(
+        lib / "James Last" / "05 - She Loves You.flac",
+        entries=(("TITLE", "She Loves You"), ("ARTIST", "James Last")),
+    )
+    (lib / "James Last").mkdir(parents=True, exist_ok=True)
+    (lib / "James Last" / "05 - She Loves You.lrc").write_text(
+        "[00:01.00]纯音乐，请欣赏\n", encoding="utf-8")
+    flac_factory(
+        lib / "The Beatles" / "Oldies" / "01 - She Loves You.flac",
+        entries=(("TITLE", "She Loves You"), ("ARTIST", "The Beatles")),
+    )
+    (lib / "The Beatles" / "Oldies" / "01 - She Loves You.lrc").write_text(
+        "[00:01.00]She loves you\n[00:02.00]yeah yeah yeah\n", encoding="utf-8")
+    (lib / "The Beatles" / "1").mkdir(parents=True, exist_ok=True)
+    (lib / "The Beatles" / "1" / "03 She Loves You.lrc").write_text(
+        "[00:01.00]She loves you\n[00:02.00]yeah yeah yeah\n", encoding="utf-8")
+
+    items = {
+        i["rel_path"]: i
+        for i in find_orphan_sidecars(
+            RootConfig(name="lib", role=RootRole.LIBRARY, path=str(lib))
+        )
+    }
+    item = items["The Beatles/1/03 She Loves You.lrc"]
+    assert item["action"] == "choose", "有一个候选还没有真歌词，不能判成多余"
+    assert item["paired_sidecar"] is None, "占位文案不算「已有歌词」"
+    assert item["paired_state"] == "placeholder"
+    assert item["guess_audio"] == "James Last/05 - She Loves You.flac", (
+        "默认目标应当是那份缺歌词的音频"
+    )
+
+
+def test_内嵌歌词也算那首音频已经有词(tmp_path, flac_factory):
+    """内嵌有词、同名 lrc 没有，也算「已有歌词」→ 这一份是多余的。
+
+    只看同名 lrc 会把「内嵌有词」的音频误判成还没有歌词，
+    于是真冗余的歌词被留在待处理列表里。
+    """
+    lib = tmp_path / "lib"
+    flac_factory(
+        lib / "专辑" / "01 歌.flac",
+        entries=(
+            ("TITLE", "歌"),
+            ("ARTIST", "某人"),
+            ("LYRICS", "[00:01.00]内嵌的词\n[00:02.00]还是内嵌的词\n"),
+        ),
+    )
+    (lib / "另一处").mkdir(parents=True, exist_ok=True)
+    (lib / "另一处" / "01 歌.lrc").write_text(
+        "[00:01.00]外置的词\n[00:02.00]还是外置的词\n", encoding="utf-8")
+
+    items = {
+        i["rel_path"]: i
+        for i in find_orphan_sidecars(
+            RootConfig(name="lib", role=RootRole.LIBRARY, path=str(lib))
+        )
+    }
+    item = items["另一处/01 歌.lrc"]
+    assert item["action"] == "duplicate"
+    assert item["target_has_lyrics"] is True

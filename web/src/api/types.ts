@@ -380,12 +380,21 @@ export type OrphanItem = {
   action: 'duplicate' | 'choose' | 'unmatched'
   guess_audio: string | null
   paired_sidecar: string | null
+  /** 目标音频那份同名 lrc 的状态（没有则 null）。「placeholder」＝只有纯音乐占位。 */
+  paired_state: string | null
+  /** 目标音频是不是已经有歌词（同名 lrc 或内嵌都算）。 */
+  target_has_lyrics: boolean
   same_content: boolean
   candidates: {
     rel_path: string
     how: string
     scope: string
     paired_sidecar: string | null
+    /** 那份同名 lrc 里是否真的有歌词（占位文案不算）。 */
+    paired_has_lyrics: boolean
+    paired_state: string | null
+    /** 那首音频整体是否已经有歌词（同名 lrc 或内嵌）。 */
+    has_lyrics: boolean
     same_content: boolean
   }[]
 }

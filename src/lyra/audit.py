@@ -472,6 +472,34 @@ def _iter_all_files(root: Path, cfg: RootConfig):
     yield from scan._walk(root, cfg)
 
 
+def _same_song_name(a: str, b: str) -> bool:
+    """两个规范化名是否指同一首歌。
+
+    只认两种关系：
+      - 完全相同；
+      - **前缀或后缀**关系——长的那个多半是「艺人 - 歌名」或「歌名 - 版本」。
+
+    中间的包含**不算**。实测 `01 Love Me Do.lrc` 规范化后是 `lovemedo`，
+    `1-16 - ME!.flac` 是 `me`，后者是前者的中间子串——那是另一首歌，
+    把歌词挂过去就是播放器里显示别的歌的词。
+
+    太短的名字不参与前缀/后缀判断：ASCII 至少 4 个字符、含中文至少 2 个。
+    `me` 是 `lovemedo` 的中间子串、`爱` 又是 `最爱` 的后缀——两者都说明
+    「短的」不足以证明是同一首，宁可留给人工判断。
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if short.isascii():
+        if len(short) < 4:
+            return False
+    elif len(short) < 2:
+        return False
+    return long.startswith(short) or long.endswith(short)
+
+
 def find_orphan_sidecars(root: RootConfig) -> list[dict[str, Any]]:
     """列出「没有任何音频归属于它」的 .lrc，并给出**可以据此行动**的判定。
 
@@ -490,9 +518,16 @@ def find_orphan_sidecars(root: RootConfig) -> list[dict[str, Any]]:
 
     **`pair_sidecars` 已经会自动配掉一切「唯一可推导」的情况**（同名、编号写法
     差异、双向唯一的包含关系）。所以走到这里还没被配走的 lrc，只可能是：
-        - `duplicate`：目标音频已经有别的 lrc → 这一份是多余的，应当清理；
-        - `choose`   ：有多个候选音频（包含关系有歧义），只能由人来指定给谁；
+        - `duplicate`：**严格同名**的候选音频都已有真歌词 → 这一份是多余的，
+          应当清理；
+        - `choose`   ：有候选但没把握 → 只能由人来指定给谁。两种情形：
+          候选是靠**包含关系**匹配上的（可能根本是另一首歌），或候选音频
+          那份同名 lrc 只是「纯音乐」占位（那种音频其实还没有歌词）；
         - `unmatched`：曲库里根本没有相关音频，只能清理或留着。
+
+    判定「多余」时**不用包含关系**：包含匹配会把词挂到完全不同的歌上
+    （实测 `01 Love Me Do.lrc` → `1-16 - ME!.flac`）。宁可多让人看一眼，
+    也不能把真词当冗余删掉——这份列表在界面上是**默认勾好**的。
 
     只读文件名与 lrc 内容，**不解析音频标签**，所以可以随界面按需调用。
     """
@@ -521,6 +556,36 @@ def find_orphan_sidecars(root: RootConfig) -> list[dict[str, Any]]:
         except Exception:  # noqa: BLE001 — 编码异常不能影响整个列表
             return ""
 
+    def _has_real_lyrics(side: Path | None) -> bool:
+        """那份同名 .lrc 里是不是**真的有歌词**。
+
+        「纯音乐，请欣赏」这类占位文案**不算**：那种音频其实还没有歌词，
+        当前这一份很可能就是它真正的词。实测 `James Last/.../05 - She Loves
+        You.flac` 的同名 lrc 只有 3 行占位文案，而 Beatles 那份孤儿歌词
+        才是这首歌唯一像样的词——按「已有歌词」判重会把真词当冗余删掉。
+        """
+        if side is None:
+            return False
+        finding = findings.get(side)
+        if finding is None or finding.is_effectively_absent:
+            return False
+        return finding.state is not LyricsState.PLACEHOLDER
+
+    def _audio_has_lyrics(audio: Path) -> bool:
+        """这个音频是不是已经有歌词（同名 lrc 或内嵌都算）。
+
+        内嵌歌词必须一起看：曲库里同一首歌常常是「内嵌有词、同名 lrc 没有」，
+        只看 lrc 会把「音频其实已经有歌词」误判成「还没有」。
+        """
+        paired = pairing.get(audio, (None, "none"))[0]
+        if _has_real_lyrics(paired):
+            return True
+        try:
+            meta = read_audio_meta(audio, base, probe_duration=False)
+        except Exception:  # noqa: BLE001 — 读不出来就当「没有」，不猜
+            return False
+        return meta.embedded.state not in (LyricsState.ABSENT, LyricsState.PLACEHOLDER)
+
     out: list[dict[str, Any]] = []
     for lrc in lrc_paths:
         if lrc in owned:
@@ -544,6 +609,8 @@ def find_orphan_sidecars(root: RootConfig) -> list[dict[str, Any]]:
                     continue
                 if name == target:
                     how = "normalized"
+                elif _same_song_name(target, name):
+                    how = "aligned"
                 elif target in name or name in target:
                     how = "contained"
                 else:
@@ -564,22 +631,41 @@ def find_orphan_sidecars(root: RootConfig) -> list[dict[str, Any]]:
                         "paired_sidecar": (
                             str(paired.relative_to(base)) if paired is not None else None
                         ),
+                        "paired_has_lyrics": _has_real_lyrics(paired),
+                        "paired_state": (
+                            findings[paired].state.value if paired is not None else None
+                        ),
+                        "has_lyrics": _audio_has_lyrics(audio),
                         "same_content": same,
                     }
                 )
             if any(c["scope"] == "same_dir" for c in candidates):
                 break
 
-        # 有候选并且候选已经有歌词 → 这一份是重复；否则交给人工指定或清理。
-        duplicate = next(
-            (c for c in candidates if c["paired_sidecar"] is not None), None
-        )
-        if duplicate is not None:
+        # 判定「这一份是多余的」只看**同一首**的候选（同名，或名字是
+        # 前缀/后缀关系）。
+        #
+        # 为什么不用「任意包含」：包含匹配会把词挂到完全不同的歌上。
+        # 实测 `The Beatles/1/01 Love Me Do.lrc` 规范化后是 `lovemedo`，
+        # 它包含 `me`（`Taylor Swift/Lover/1-16 - ME!.flac`），
+        # 而那首歌恰好有同名 lrc，于是这一份被误判成「重复」——
+        # 实际是 Beatles 这首歌的音频在别的专辑目录，歌词并没有多。
+        aligned = [c for c in candidates if c["how"] in ("normalized", "aligned")]
+
+        # 同一首的候选**都已有真歌词** → 这一份是多余的，可以清理。
+        # 只要有一个候选还没有真歌词（没有同名 lrc、内嵌也没有，
+        # 或同名 lrc 只是「纯音乐」占位），这一份就可能是它真正的词，
+        # 交给人工指定归属：改名配对后，占位那份进回收站，真词顶上。
+        if aligned and all(c["has_lyrics"] for c in aligned):
             action = "duplicate"
         elif candidates:
             action = "choose"
         else:
             action = "unmatched"
+
+        # 展示与后续动作都以「同一首」的候选优先：包含匹配出来的候选只是
+        # 提示，不能当成「这首歌的音频」。
+        guess = aligned[0] if aligned else (candidates[0] if candidates else None)
 
         text = _decode(lrc)
         finding = findings[lrc]
@@ -595,11 +681,20 @@ def find_orphan_sidecars(root: RootConfig) -> list[dict[str, Any]]:
                 "preview": text[:600],
                 "action": action,
                 # 保持单数形式的 `guess_*`：界面在 choose 之外只需一个提示目标
-                "guess_audio": candidates[0]["rel_path"] if candidates else None,
+                "guess_audio": guess["rel_path"] if guess else None,
+                # 只有「真的有歌词」的那份才算「已有歌词」；占位文案不算。
                 "paired_sidecar": (
-                    duplicate["paired_sidecar"] if duplicate is not None else None
+                    guess["paired_sidecar"]
+                    if guess is not None and guess["paired_has_lyrics"]
+                    else None
                 ),
-                "same_content": bool(duplicate and duplicate["same_content"]),
+                # 目标音频那份同名 lrc 的状态：界面据此说明「它其实只有占位」。
+                "paired_state": (
+                    guess["paired_state"] if guess is not None else None
+                ),
+                # 目标音频是不是已经有歌词（同名 lrc 或内嵌）。
+                "target_has_lyrics": bool(guess and guess["has_lyrics"]),
+                "same_content": bool(guess and guess["same_content"]),
                 "candidates": candidates[:8],
             }
         )
