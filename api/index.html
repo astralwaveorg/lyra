@@ -1782,6 +1782,26 @@
 </tr>
 <tr>
 <td>POST</td>
+<td><code>/api/v1/staged/batch-accept</code></td>
+<td>按给出的 id 批量接受（含硬性条件未过的项）</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/staged/batch-ignore</code></td>
+<td>批量忽略：写 path 级 skip_fetch 规则并清出队列</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/rules</code></td>
+<td>排除规则列表（「已忽略」标签的数据源）</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/api/v1/rules/{id}</code></td>
+<td>删除规则（恢复忽略）</td>
+</tr>
+<tr>
+<td>POST</td>
 <td><code>/api/v1/staged/safe-batch/accept</code></td>
 <td>批量接受安全候选</td>
 </tr>
