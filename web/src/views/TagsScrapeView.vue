@@ -174,6 +174,101 @@ const pageFillCount = computed(() =>
   ),
 )
 
+// ---- 批量勾选(仅待审查):行级勾选 → 整组/整页全选 → 写入所选 ----
+
+const checkedIds = ref<Set<number>>(new Set())
+
+/** 能进批量的行:可写、来源不是标题搜索、还有可写的字段。 */
+function selectable(item: TagProposal): boolean {
+  return (
+    item.writable !== false &&
+    item.source !== 'search' &&
+    (item.summary.total ?? 0) > (item.summary.same ?? 0)
+  )
+}
+
+const checkedItems = computed(() => items.value.filter((item) => checkedIds.value.has(item.id)))
+const checkedCount = computed(() => checkedItems.value.length)
+const pageSelectableCount = computed(() => items.value.filter(selectable).length)
+
+function groupSelectable(group: { items: TagProposal[] }): TagProposal[] {
+  return group.items.filter(selectable)
+}
+
+function isGroupChecked(group: { items: TagProposal[] }): boolean {
+  const list = groupSelectable(group)
+  return list.length > 0 && list.every((item) => checkedIds.value.has(item.id))
+}
+
+function isGroupIndeterminate(group: { items: TagProposal[] }): boolean {
+  const list = groupSelectable(group)
+  const hit = list.filter((item) => checkedIds.value.has(item.id)).length
+  return hit > 0 && hit < list.length
+}
+
+function toggleOne(id: number, value: boolean) {
+  const next = new Set(checkedIds.value)
+  if (value) next.add(id)
+  else next.delete(id)
+  checkedIds.value = next
+}
+
+function toggleGroup(group: { items: TagProposal[] }, value: boolean) {
+  const next = new Set(checkedIds.value)
+  for (const item of groupSelectable(group)) {
+    if (value) next.add(item.id)
+    else next.delete(item.id)
+  }
+  checkedIds.value = next
+}
+
+function selectPage() {
+  const next = new Set(checkedIds.value)
+  for (const item of items.value) {
+    if (selectable(item)) next.add(item.id)
+  }
+  checkedIds.value = next
+}
+
+function clearChecked() {
+  checkedIds.value = new Set()
+}
+
+async function applyChecked() {
+  const list = checkedItems.value
+  if (!list.length) return
+  const fills = list.reduce((sum, item) => sum + (item.summary.fill ?? 0), 0)
+  const corrects = list.reduce((sum, item) => sum + (item.summary.correct ?? 0), 0)
+  const conflicts = list.reduce((sum, item) => sum + (item.summary.conflict ?? 0), 0)
+  const parts: string[] = []
+  if (fills) parts.push(`补空 ${fills}`)
+  if (corrects) parts.push(`纠正 ${corrects}`)
+  if (conflicts) parts.push(`覆盖冲突 ${conflicts}`)
+  try {
+    await ElMessageBox.confirm(
+      `将按建议写入所选 ${list.length} 首${parts.length ? `（${parts.join('、')}）` : ''}；冲突覆盖不再逐首预览。`,
+      '写入所选',
+      { confirmButtonText: '写入', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  bulkBusy.value = true
+  try {
+    const result = await api.bulkApplyTags({
+      scope: 'recommended',
+      ids: list.map((item) => item.id),
+    })
+    ElMessage.success(`已写入 ${result.files} 首、${result.fields} 个字段`)
+    if (result.errors.length) ElMessage.warning(result.errors[0])
+    await refreshAll()
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '写入失败')
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
 async function loadSummary() {
   try {
     const first = summary.value === null
@@ -193,6 +288,8 @@ async function loadSummary() {
 async function load() {
   loading.value = true
   error.value = ''
+  // 勾选只属于当前这一页;列表一换就清空,绝不把看不见的行带进批量。
+  checkedIds.value = new Set()
   try {
     const data = await api.tagProposals({
       state: tab.value,
@@ -529,15 +626,31 @@ onUnmounted(() => {
         >
           全部采用
         </el-button>
-        <el-button
-          v-else-if="tab === 'review'"
-          :loading="bulkBusy"
-          :disabled="!pageFillCount || !summary?.write_enabled"
-          title="只写补空与目录纠正；冲突请逐条确认"
-          @click="applyPageFills"
-        >
-          写入本页可补
-        </el-button>
+        <template v-else-if="tab === 'review'">
+          <el-button text :disabled="!pageSelectableCount" @click="selectPage">
+            全选本页
+          </el-button>
+          <el-button text :disabled="!checkedCount" @click="clearChecked">
+            清除选择
+          </el-button>
+          <el-button
+            :loading="bulkBusy"
+            :disabled="!pageFillCount || !summary?.write_enabled"
+            title="只写补空与目录纠正；冲突请逐条确认"
+            @click="applyPageFills"
+          >
+            写入本页可补
+          </el-button>
+          <el-button
+            type="success"
+            :loading="bulkBusy"
+            :disabled="!checkedCount || !summary?.write_enabled"
+            title="按每行勾选批量应用建议，冲突一并写入"
+            @click="applyChecked"
+          >
+            写入所选{{ checkedCount ? `（${checkedCount}）` : '' }}
+          </el-button>
+        </template>
       </div>
     </div>
 
@@ -560,6 +673,13 @@ onUnmounted(() => {
     <template v-else-if="items.length">
       <div v-for="group in grouped" :key="group.key" class="group">
         <div class="group-head">
+          <el-checkbox
+            v-if="tab === 'review' && groupSelectable(group).length"
+            class="group-check"
+            :model-value="isGroupChecked(group)"
+            :indeterminate="isGroupIndeterminate(group)"
+            @change="toggleGroup(group, Boolean($event))"
+          />
           <span class="group-title ellipsis">{{ group.album }}</span>
           <span v-if="group.artist" class="group-artist ellipsis">{{ group.artist }}</span>
           <span class="group-count num">{{ group.items.length }} 首</span>
@@ -568,6 +688,9 @@ onUnmounted(() => {
           v-for="item in group.items"
           :key="item.id"
           :item="item"
+          :checkable="tab === 'review'"
+          :checked="checkedIds.has(item.id)"
+          @check="toggleOne(item.id, Boolean($event))"
           @applied="refreshAll"
           @ignored="refreshAll"
           @restored="refreshAll"
@@ -773,6 +896,11 @@ onUnmounted(() => {
   padding: 9px 14px 7px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+}
+.group-check {
+  align-self: center;
+  height: auto;
+  flex: none;
 }
 .group-title {
   font-size: 12.5px;

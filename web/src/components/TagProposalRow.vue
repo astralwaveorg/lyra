@@ -16,7 +16,13 @@ import { tagFieldLabel } from '@/utils/labels'
 import AppIcon from './AppIcon.vue'
 import PreviewPlayButton from './PreviewPlayButton.vue'
 
-const props = defineProps<{ item: TagProposal; busy?: boolean }>()
+const props = defineProps<{
+  item: TagProposal
+  busy?: boolean
+  /** 批量勾选:状态由父组件持有,本行只上报勾选变化。 */
+  checked?: boolean
+  checkable?: boolean
+}>()
 const emit = defineEmits<{
   (event: 'applied', message: string): void
   (event: 'ignored'): void
@@ -24,6 +30,7 @@ const emit = defineEmits<{
   (event: 'link', item: TagProposal): void
   (event: 'candidate', item: TagProposal, url: string): void
   (event: 'edit', item: TagProposal): void
+  (event: 'check', checked: boolean): void
 }>()
 
 const expanded = ref(false)
@@ -71,6 +78,17 @@ const NON_NAME_FIELDS = new Set([
 const nonNameConflicts = computed(() =>
   conflicts.value.filter((row) => NON_NAME_FIELDS.has(row.key)),
 )
+
+/** 批量勾选只对「能按建议写」的行开放:可写、有可写字段、来源经得起批量。 */
+const batchEligible = computed(
+  () => writable.value && selectableCount.value > 0 && props.item.source !== 'search',
+)
+const checkTitle = computed(() => {
+  if (!writable.value) return '只读格式，不支持写入'
+  if (props.item.source === 'search') return '标题搜索来源请逐条确认'
+  if (selectableCount.value === 0) return '没有可写的字段'
+  return ''
+})
 
 const tone = computed(() => {
   switch (props.item.source) {
@@ -256,6 +274,13 @@ async function restore() {
   <div class="proposal" :class="{ open: expanded, auto: isAuto }">
     <div class="line">
       <div class="name-line">
+        <span v-if="checkable" class="pick" :title="checkTitle || undefined">
+          <el-checkbox
+            :model-value="checked === true"
+            :disabled="!batchEligible"
+            @change="emit('check', Boolean($event))"
+          />
+        </span>
         <PreviewPlayButton :root="item.root" :path="item.rel_path" />
         <div class="names">
           <div class="title ellipsis" :title="title">{{ title }}</div>
@@ -472,6 +497,11 @@ async function restore() {
   gap: 12px;
   min-width: 0;
   flex: 1 1 320px;
+}
+.pick {
+  display: flex;
+  align-items: center;
+  flex: none;
 }
 .names {
   min-width: 0;
