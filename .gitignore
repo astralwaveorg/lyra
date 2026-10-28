@@ -47,3 +47,4 @@ web/dist/
 
 # ---- 文档构建产物 ----
 site/
+.zcode/
