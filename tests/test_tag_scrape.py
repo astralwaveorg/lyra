@@ -827,6 +827,132 @@ def test_批量写入只写可补字段(api_env):
     assert "USRC10100001" in tags["ISRC"]
 
 
+def test_批量按建议写入含冲突(api_env):
+    item = api_env.get("/api/v1/tags/proposals", params={"state": "review"}).json()["items"][0]
+    response = api_env.post(
+        "/api/v1/tags/proposals/bulk-apply",
+        json={"ids": [item["id"]], "scope": "recommended"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["files"] == 1
+    tags, _ = read_all_tags(api_env.target)  # type: ignore[attr-defined]
+    # 勾选整行批量应用等于确认按建议写：冲突的标题也被覆盖。
+    assert tags["TITLE"] == ["Song One"]
+    assert "USRC10100001" in tags["ISRC"]
+    # 全部写完 → 人工定案（done），留在库里、不再进待审查队列。
+    store = open_store(api_env.cfg.storage.resolved_data_dir)
+    try:
+        row = store.conn.execute(
+            "SELECT state FROM tag_proposals WHERE id=?", (item["id"],)
+        ).fetchone()
+        assert row is not None and row["state"] == "done"
+    finally:
+        store.close()
+    listing = api_env.get("/api/v1/tags/proposals", params={"state": "review"}).json()
+    assert listing["total"] == 0
+
+
+def test_批量按建议跳过标题搜索来源(api_env):
+    item = api_env.get("/api/v1/tags/proposals").json()["items"][0]
+    store = open_store(api_env.cfg.storage.resolved_data_dir)
+    try:
+        row = store.conn.execute(
+            "SELECT payload_json FROM tag_proposals WHERE id=?", (item["id"],)
+        ).fetchone()
+        payload = json.loads(row["payload_json"])
+        payload["match"]["source"] = "search"
+        store.conn.execute(
+            "UPDATE tag_proposals SET payload_json=? WHERE id=?",
+            (json.dumps(payload, ensure_ascii=False), item["id"]),
+        )
+        store.conn.commit()
+    finally:
+        store.close()
+
+    response = api_env.post(
+        "/api/v1/tags/proposals/bulk-apply",
+        json={"ids": [item["id"]], "scope": "recommended"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["files"] == 0
+    tags, _ = read_all_tags(api_env.target)  # type: ignore[attr-defined]
+    assert tags["TITLE"] == ["Song One (Live)"]
+
+    # 明确声明 include_search 才放行标题搜索来源。
+    response = api_env.post(
+        "/api/v1/tags/proposals/bulk-apply",
+        json={"ids": [item["id"]], "scope": "recommended", "include_search": True},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["files"] == 1
+
+
+def test_批量按建议单条失败不影响其他(tmp_path, flac_factory, monkeypatch):
+    library = tmp_path / "lib"
+    first = flac_factory(
+        library / "Test Artist" / "Test Album" / "01 Song One.flac",
+        entries=(
+            ("TITLE", "Song One (Live)"), ("ARTIST", "Test Artist"),
+            ("ALBUM", "Test Album"), ("TRACKNUMBER", "1"),
+            ("MUSICBRAINZ_ALBUMID", RELEASE),
+            ("MUSICBRAINZ_TRACKID", RECORDING),
+            ("MUSICBRAINZ_RELEASETRACKID", TRACK),
+            ("LABEL", "Local Label"),
+        ),
+    )
+    second = flac_factory(
+        library / "Test Artist" / "Test Album" / "02 Song Two.flac",
+        entries=(
+            ("TITLE", "Song Two"), ("ARTIST", "Test Artist"),
+            ("ALBUM", "Test Album"), ("TRACKNUMBER", "2"),
+            ("MUSICBRAINZ_ALBUMID", RELEASE),
+            ("MUSICBRAINZ_TRACKID", "22222222-2222-4222-8222-222222222223"),
+            ("MUSICBRAINZ_RELEASETRACKID", "33333333-3333-4333-8333-333333333334"),
+            ("LABEL", "Local Label"),
+        ),
+    )
+    cfg = _config(tmp_path, library)
+    monkeypatch.setattr(
+        api_module, "MusicBrainzProvider",
+        lambda config, **kw: MusicBrainzProvider(
+            config, transport=httpx.MockTransport(_handler), sleep=lambda _s: None
+        ),
+    )
+    store = open_store(cfg.storage.resolved_data_dir)
+    scan_tags(cfg, cfg.roots[0], store, MusicBrainzProvider(
+        MusicBrainzConfig(base_url="http://mb.test", minimum_request_interval_seconds=0),
+        transport=httpx.MockTransport(_handler), sleep=lambda _s: None,
+    ), auto_write=False, progress=lambda _m: None)
+    store.close()
+
+    # 模拟扫描后第一首被别的工具改了 LABEL → 这条必须被拒之门外。
+    from lyra.models import MediaFormat
+    from lyra.writer import TagEditPlan, apply_tag_edit
+
+    apply_tag_edit(TagEditPlan(
+        audio_path=first, media_format=MediaFormat.FLAC, tags={"LABEL": ["Someone Else"]},
+    ))
+
+    with TestClient(create_app(cfg)) as client:
+        listing = client.get("/api/v1/tags/proposals").json()
+        ids = [item["id"] for item in listing["items"]]
+        assert len(ids) == 2
+        response = client.post(
+            "/api/v1/tags/proposals/bulk-apply",
+            json={"ids": ids, "scope": "recommended"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["files"] == 1
+        assert len(body["errors"]) == 1
+        assert "已被修改" in body["errors"][0]
+        assert "01 Song One" in body["errors"][0]
+        tags_first, _ = read_all_tags(first)
+        assert tags_first["LABEL"] == ["Someone Else"]
+        tags_second, _ = read_all_tags(second)
+        assert tags_second["LABEL"] == ["Test Label"]
+
+
 def test_设置页保存标签策略并立即生效(api_env):
     current = api_env.get("/api/v1/settings/tags").json()["policy"]
     assert current["scan_interval_hours"] == 24.0

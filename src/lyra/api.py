@@ -91,6 +91,9 @@ from .providers.base import Candidate, ProviderError, TrackQuery
 from .rename import apply_general_rename
 from .stats import collect_stats
 from .tagsources import (
+    ACTION_CONFLICT,
+    ACTION_CORRECT,
+    ACTION_FILL,
     MbidLinkError,
     MusicBrainzConfig,
     MusicBrainzProvider,
@@ -185,6 +188,26 @@ def _make_mb_provider(cfg: Config) -> MusicBrainzProvider:
             detail_limit=mb_cfg.detail_limit,
         )
     )
+
+
+def _recommended_fields(row) -> list[str]:
+    """批量「应用建议」的字段集:除「一致」外的全部对比行。
+
+    人工勾选了整行就等于确认按建议写,冲突也包含——与单条展开后
+    默认全选非「一致」字段的口径一致。
+    """
+    try:
+        payload = json.loads(str(row["payload_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    rows = payload.get("rows") or []
+    return [
+        str(item.get("key"))
+        for item in rows
+        if isinstance(item, dict)
+        and item.get("action") in (ACTION_FILL, ACTION_CORRECT, ACTION_CONFLICT)
+        and str(item.get("key") or "").strip()
+    ]
 
 
 def _tag_proposal_dict(row, cfg: Config) -> dict[str, Any]:
@@ -3252,7 +3275,9 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         """批量写入。
 
         - `scope=auto`：所有高置信、无冲突的自动项；
-        - `scope=fills`：给定 id 里只写「补空」字段（冲突留给人）。
+        - `scope=fills`：给定 id 里只写「补空」字段（冲突留给人）；
+        - `scope=recommended`：给定 id 里按建议写入，含冲突——
+        人工逐行勾选后批量应用，属于显式确认，与单条展开写入同口径。
         """
         from .tagwrite import apply_proposal
 
@@ -3265,7 +3290,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="ids 必须是整数数组") from exc
         scope = str(payload.get("scope") or ("fills" if ids else "auto"))
-        if scope not in ("auto", "fills"):
+        if scope not in ("auto", "fills", "recommended"):
             raise HTTPException(status_code=400, detail="未知的批量写入范围")
 
         if scope == "auto":
@@ -3298,7 +3323,12 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         for row in rows:
             try:
                 root = _select_root(cfg, str(row["root_name"]))
-                outcome = apply_proposal(state, cfg, root, row, fields=None)
+                fields = None
+                if scope == "recommended":
+                    fields = _recommended_fields(row)
+                    if not fields:
+                        continue
+                outcome = apply_proposal(state, cfg, root, row, fields=fields)
             except Exception as exc:  # noqa: BLE001 — 单条失败不影响整批
                 errors.append(f"{row['rel_path']}: {type(exc).__name__}: {exc}")
                 continue
