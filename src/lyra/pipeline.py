@@ -324,9 +324,14 @@ def sync_state(
 
 
 def _excluded(store: StateStore, target: TrackTarget) -> str | None:
-    """返回排除原因；None 表示未被排除。"""
+    """返回排除原因；None 表示未被排除。
+
+    只有 skip 类动作算排除——`include` 是反向断言，绝不能当成排除用。
+    """
     now = time.time()
     for rule in store.iter_rules(now=now):
+        if rule["action"] not in ("skip_all", "skip_fetch"):
+            continue
         scope = rule["scope"]
         target_value = rule["target"]
         if scope == "path" and target_value == target.rel_path:

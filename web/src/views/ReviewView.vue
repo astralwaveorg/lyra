@@ -6,13 +6,14 @@ import { api } from '@/api/client'
 import type {
   LyricsPreview,
   ReviewPage,
+  Rule,
   SafeItem,
   StagedCandidate,
   StagedGroup,
 } from '@/api/types'
 import { useMeta } from '@/stores/meta'
 import { useNarrow } from '@/composables/useMedia'
-import { fmtScore, splitPath } from '@/utils/format'
+import { fmtAgo, fmtScore, splitPath } from '@/utils/format'
 import PageHead from '@/components/PageHead.vue'
 import ProviderBadge from '@/components/ProviderBadge.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -23,7 +24,7 @@ import ScrapeDialog from '@/components/ScrapeDialog.vue'
 import PreviewPlayButton from '@/components/PreviewPlayButton.vue'
 import AppIcon from '@/components/AppIcon.vue'
 
-type Tab = 'safe' | 'pending' | 'orphans'
+type Tab = 'safe' | 'pending' | 'ignored' | 'orphans'
 
 const meta = useMeta()
 const narrow = useNarrow()
@@ -31,14 +32,17 @@ const route = useRoute()
 const router = useRouter()
 
 /**
- * 三个标签按「该先看什么」排序：
+ * 四个标签按「该先看什么」排序：
  *   推荐采纳 —— 来源与曲目一致，只差分数，确认即可落盘；
  *   待审查   —— 需要逐首判断的候选；
+ *   已忽略   —— 被人工忽略的曲目（path 级 skip_fetch 规则），可恢复；
  *   无音源   —— 没有对应音频的歌词（原「独立LRC」）。
  */
 const requested = typeof route.query.tab === 'string' ? route.query.tab : ''
 const tab = ref<Tab>(
-  requested === 'pending' || requested === 'orphans' || requested === 'safe' ? requested : 'safe',
+  requested === 'pending' || requested === 'orphans' || requested === 'safe' || requested === 'ignored'
+    ? requested
+    : 'safe',
 )
 
 const data = ref<ReviewPage | null>(null)
@@ -55,6 +59,19 @@ const busyId = ref(0)
 const batchBusy = ref(false)
 const orphanCount = ref(0)
 const orphansRef = ref<InstanceType<typeof OrphansPanel> | null>(null)
+
+/**
+ * 批量勾选。两个标签各自独立，key 都是曲目路径（rel_path）：
+ * 勾住一首 = 采用这首歌的推荐候选，同一首的其它候选一并驳回。
+ * 只属于当前列表——换页、刷新即清空，绝不把看不见的行带进批量。
+ */
+const checkedPaths = ref<Set<string>>(new Set())
+const checkedSafePaths = ref<Set<string>>(new Set())
+const pendingBatchBusy = ref(false)
+
+/** 「已忽略」标签的数据：path 级 skip_fetch 规则。 */
+const ruleItems = ref<Rule[]>([])
+const restoreBusyId = ref(0)
 
 const total = computed(() => data.value?.total ?? 0)
 
@@ -96,8 +113,14 @@ const safeGroups = computed(() => {
 /** 推荐采纳按「首」计：列表按曲目聚合，同一首可能有多条安全候选。 */
 const safeTrackCount = computed(() => safeGroups.value.length)
 
+/** 歌词审查的忽略规则（目前接口里只有这一种规则来源）。 */
+const ignoredRules = computed(() =>
+  ruleItems.value.filter((rule) => rule.action === 'skip_fetch' && rule.scope === 'path'),
+)
+
 const activeCount = computed(() => {
   if (tab.value === 'safe') return safeTrackCount.value
+  if (tab.value === 'ignored') return ignoredRules.value.length
   if (tab.value === 'orphans') return orphanCount.value
   return total.value
 })
@@ -218,8 +241,11 @@ async function load() {
   loading.value = true
   safeLoading.value = true
   error.value = ''
+  // 勾选只属于当前这一页；列表一换就清空。
+  checkedPaths.value = new Set()
+  checkedSafePaths.value = new Set()
   try {
-    const [review, safeList] = await Promise.all([
+    const [review, safeList, ruleList] = await Promise.all([
       api.staged({
         state: 'needs_review',
         by_track: true,
@@ -229,10 +255,12 @@ async function load() {
         exclude_safe: true,
       }),
       api.safeBatch().catch(() => ({ total: 0, items: [] as SafeItem[] })),
+      api.listRules().catch(() => ({ total: 0, items: [] as Rule[] })),
     ])
     data.value = review
     safeItems.value = safeList.items
     safe.value = safeList.total
+    ruleItems.value = ruleList.items
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败'
   } finally {
@@ -309,11 +337,20 @@ async function acceptOne(group: { best: SafeItem; items: SafeItem[] }) {
   }
 }
 
-async function skip(group: StagedGroup) {
+async function ignoreGroup(group: StagedGroup) {
+  try {
+    await ElMessageBox.confirm(
+      `忽略后不再自动为这首歌匹配歌词，它不会再回到待审查队列；想反悔请到「已忽略」标签恢复。`,
+      '忽略这首歌',
+      { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
   busyId.value = group.best_id
   try {
-    await Promise.all(group.candidates.map((item) => api.rejectStaged(item.id)))
-    ElMessage.success('已跳过')
+    await api.ignoreStagedBatch(group.candidates.map((item) => item.id))
+    ElMessage.success('已忽略，之后的自动抓取会跳过它')
     await refresh()
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '操作失败')
@@ -357,6 +394,184 @@ const drawerOpen = ref(false)
 const drawerId = ref<number | null>(null)
 const drawerPath = ref('')
 
+/* ------------------------------------------------------------ 批量勾选 */
+
+/** 推荐候选已确认下架的曲目不能进批量：采用必然失败，让用户单条重新查询。 */
+function trackSelectable(group: StagedGroup): boolean {
+  return !unavailable.value.has(recommendedId(group))
+}
+
+const checkedGroups = computed(() =>
+  groups.value.filter((group) => checkedPaths.value.has(group.rel_path)),
+)
+const checkedCount = computed(() => checkedGroups.value.length)
+const pageSelectableCount = computed(() => groups.value.filter(trackSelectable).length)
+
+function toggleTrack(group: StagedGroup, value: boolean) {
+  const next = new Set(checkedPaths.value)
+  if (value) next.add(group.rel_path)
+  else next.delete(group.rel_path)
+  checkedPaths.value = next
+}
+
+function selectPage() {
+  const next = new Set(checkedPaths.value)
+  for (const group of groups.value) {
+    if (trackSelectable(group)) next.add(group.rel_path)
+  }
+  checkedPaths.value = next
+}
+
+function clearChecked() {
+  checkedPaths.value = new Set()
+}
+
+async function acceptChecked() {
+  const list = checkedGroups.value
+  if (!list.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将采用所选 ${list.length} 首的推荐候选（每首分数最高的一条），同一首的其它候选会被驳回；采用后等待写入。`,
+      '批量采用',
+      { confirmButtonText: '批量采用', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  pendingBatchBusy.value = true
+  try {
+    const result = await api.batchAcceptStaged(list.map((group) => recommendedId(group)))
+    ElMessage.success(`已采用 ${result.accepted} 首，等待写入`)
+    if (result.missing) {
+      ElMessage.warning(`${result.missing} 项已不在待审查队列里，本次未处理`)
+    }
+    page.value = 1
+    await refresh()
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '批量采用失败')
+  } finally {
+    pendingBatchBusy.value = false
+  }
+}
+
+async function ignoreChecked() {
+  const list = checkedGroups.value
+  if (!list.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将忽略所选 ${list.length} 首：不再自动匹配歌词，也不会再出现在待审查队列；想反悔可在「已忽略」标签恢复。`,
+      '批量忽略',
+      { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  pendingBatchBusy.value = true
+  try {
+    const result = await api.ignoreStagedBatch(list.map((group) => recommendedId(group)))
+    ElMessage.success(`已忽略 ${result.ignored} 首`)
+    page.value = 1
+    await refresh()
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '批量忽略失败')
+  } finally {
+    pendingBatchBusy.value = false
+  }
+}
+
+/* ------------------------------------------------- 推荐采纳的勾选批量 */
+
+const checkedSafeGroups = computed(() =>
+  safeGroups.value.filter((group) => checkedSafePaths.value.has(group.rel_path)),
+)
+const checkedSafeCount = computed(() => checkedSafeGroups.value.length)
+
+function toggleSafeTrack(path: string, value: boolean) {
+  const next = new Set(checkedSafePaths.value)
+  if (value) next.add(path)
+  else next.delete(path)
+  checkedSafePaths.value = next
+}
+
+function selectAllSafe() {
+  checkedSafePaths.value = new Set(
+    safeGroups.value
+      .filter((group) => !unavailable.value.has(group.best.id))
+      .map((group) => group.rel_path),
+  )
+}
+
+function clearSafeChecked() {
+  checkedSafePaths.value = new Set()
+}
+
+async function acceptCheckedSafe() {
+  const list = checkedSafeGroups.value
+  if (!list.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将采用所选 ${list.length} 条（来源与曲目一致，只是分数未达自动采用标准）；同一首的其它候选会被驳回。`,
+      '批量采用',
+      { confirmButtonText: '批量采用', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  batchBusy.value = true
+  try {
+    const result = await api.batchAcceptStaged(list.map((group) => group.best.id))
+    ElMessage.success(`已采用 ${result.accepted} 条，等待写入`)
+    if (result.missing) {
+      ElMessage.warning(`${result.missing} 项已不在待审查队列里，本次未处理`)
+    }
+    await refresh()
+    if (!safeTrackCount.value) tab.value = 'pending'
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '批量采用失败')
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function ignoreCheckedSafe() {
+  const list = checkedSafeGroups.value
+  if (!list.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将忽略所选 ${list.length} 条对应的曲目：不再自动匹配歌词；想反悔可在「已忽略」标签恢复。`,
+      '批量忽略',
+      { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  batchBusy.value = true
+  try {
+    const result = await api.ignoreStagedBatch(list.map((group) => group.best.id))
+    ElMessage.success(`已忽略 ${result.ignored} 首`)
+    await refresh()
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '批量忽略失败')
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+/* ---------------------------------------------------------- 已忽略标签 */
+
+async function restoreRule(rule: Rule) {
+  restoreBusyId.value = rule.id
+  try {
+    await api.removeRule(rule.id)
+    ElMessage.success('已恢复，下一轮抓取会重新匹配这首歌')
+    ruleItems.value = ruleItems.value.filter((item) => item.id !== rule.id)
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '恢复失败')
+  } finally {
+    restoreBusyId.value = 0
+  }
+}
+
 function compare(group: StagedGroup) {
   drawerId.value = group.best_id
   drawerPath.value = group.rel_path
@@ -385,7 +600,30 @@ onMounted(async () => {
             共 {{ safeTrackCount }} 条，来源与曲目一致，匹配分数未达到自动采用标准。
           </div>
         </div>
-        <el-button type="primary" :loading="batchBusy" @click="acceptSafe">全部采用</el-button>
+        <div class="notice-actions">
+          <el-button text :disabled="!safeTrackCount" @click="selectAllSafe">全选</el-button>
+          <el-button text :disabled="!checkedSafeCount" @click="clearSafeChecked">
+            清除选择
+          </el-button>
+          <el-button
+            type="primary"
+            :loading="batchBusy"
+            :disabled="!checkedSafeCount"
+            @click="acceptCheckedSafe"
+          >
+            采用所选{{ checkedSafeCount ? `（${checkedSafeCount}）` : '' }}
+          </el-button>
+          <el-button
+            text
+            type="warning"
+            :loading="batchBusy"
+            :disabled="!checkedSafeCount"
+            @click="ignoreCheckedSafe"
+          >
+            忽略所选
+          </el-button>
+          <el-button type="primary" :loading="batchBusy" @click="acceptSafe">全部采用</el-button>
+        </div>
       </div>
 
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
@@ -394,6 +632,13 @@ onMounted(async () => {
 
       <div v-else-if="safeGroups.length" class="safe-list">
         <div v-for="group in safeGroups" :key="group.rel_path" class="safe-row">
+          <el-checkbox
+            class="track-check"
+            :model-value="checkedSafePaths.has(group.rel_path)"
+            :disabled="unavailable.has(group.best.id)"
+            :title="unavailable.has(group.best.id) ? '来源已下架，请点「查看」后重新查询' : ''"
+            @change="toggleSafeTrack(group.rel_path, Boolean($event))"
+          />
           <div class="safe-main">
             <div class="name-line">
               <span class="path ellipsis">{{ splitPath(group.rel_path).name }}</span>
@@ -463,8 +708,44 @@ onMounted(async () => {
       <el-skeleton v-if="loading && !data" animated :rows="8" />
 
       <template v-else>
+        <div v-if="groups.length" class="select-bar">
+          <el-button size="small" text :disabled="!pageSelectableCount" @click="selectPage">
+            全选本页
+          </el-button>
+          <el-button size="small" text :disabled="!checkedCount" @click="clearChecked">
+            清除选择
+          </el-button>
+          <span class="select-tip">勾住一首即采用它的推荐候选，同一首的其它候选会被驳回</span>
+          <el-button
+            size="small"
+            text
+            type="warning"
+            :loading="pendingBatchBusy"
+            :disabled="!checkedCount"
+            @click="ignoreChecked"
+          >
+            批量忽略
+          </el-button>
+          <el-button
+            size="small"
+            type="primary"
+            :loading="pendingBatchBusy"
+            :disabled="!checkedCount"
+            @click="acceptChecked"
+          >
+            批量采用{{ checkedCount ? `（${checkedCount}）` : '' }}
+          </el-button>
+        </div>
+
         <section v-for="group in groups" :key="group.rel_path" class="card group">
           <header class="group-head">
+            <el-checkbox
+              class="track-check"
+              :model-value="checkedPaths.has(group.rel_path)"
+              :disabled="!trackSelectable(group)"
+              :title="trackSelectable(group) ? '' : '推荐候选的来源已下架，请点「查看」后重新查询'"
+              @change="toggleTrack(group, Boolean($event))"
+            />
             <div class="group-title">
               <div class="name-line">
                 <span class="path ellipsis">{{ splitPath(group.rel_path).name }}</span>
@@ -480,10 +761,11 @@ onMounted(async () => {
               <el-button
                 size="small"
                 text
+                type="warning"
                 :loading="busyId === group.best_id"
-                @click="skip(group)"
+                @click="ignoreGroup(group)"
               >
-                跳过
+                忽略
               </el-button>
             </div>
           </header>
@@ -575,6 +857,39 @@ onMounted(async () => {
           />
         </div>
       </template>
+    </el-tab-pane>
+
+    <el-tab-pane
+      :label="ignoredRules.length ? `已忽略 ${ignoredRules.length}` : '已忽略'"
+      name="ignored"
+    >
+      <div v-if="ignoredRules.length" class="safe-list">
+        <div v-for="rule in ignoredRules" :key="rule.id" class="safe-row">
+          <div class="safe-main">
+            <div class="name-line">
+              <span class="path ellipsis">{{ splitPath(rule.target).name }}</span>
+            </div>
+            <span class="cell-meta ellipsis">{{ splitPath(rule.target).dir }}</span>
+          </div>
+          <span class="cell-meta">忽略于 {{ fmtAgo(rule.created_at) }}</span>
+          <div class="safe-actions">
+            <el-button
+              size="small"
+              text
+              :loading="restoreBusyId === rule.id"
+              @click="restoreRule(rule)"
+            >
+              恢复
+            </el-button>
+          </div>
+        </div>
+      </div>
+      <EmptyState
+        v-else
+        title="没有忽略的曲目"
+        hint="点「忽略」的曲目会记在这里，之后的自动抓取会跳过它们；恢复后下一轮抓取会重新匹配。"
+        icon="Hide"
+      />
     </el-tab-pane>
 
     <el-tab-pane :label="orphanCount ? `无音源 ${orphanCount}` : '无音源'" name="orphans">
@@ -686,6 +1001,33 @@ onMounted(async () => {
 .notice-sub {
   font-size: 12.5px;
   color: var(--text-2);
+}
+
+.notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  flex-wrap: wrap;
+}
+
+.select-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.select-bar .select-tip {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.track-check {
+  flex: none;
+  height: auto;
 }
 
 .name-line {
@@ -879,6 +1221,18 @@ onMounted(async () => {
   .notice {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .notice-actions {
+    justify-content: flex-end;
+  }
+
+  .select-bar {
+    flex-wrap: wrap;
+  }
+
+  .select-bar .select-tip {
+    display: none;
   }
 
   .safe-row {

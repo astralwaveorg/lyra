@@ -127,3 +127,149 @@ def test_批量采用接口注册在正确路径上(seeded):
         )
         assert response.status_code == 200, response.text
         assert response.json()["accepted"] == 1
+
+
+def _staged_state(client: TestClient, staged_id: int) -> str:
+    return client.get(f"/api/v1/staged/{staged_id}").json()["state"]
+
+
+def test_批量采用待审查项并驳回同曲目其余候选(seeded):
+    """硬闸门未过的项也要能成批采用（勾选就是人的判断），且同曲目的
+    其余候选自动驳回——不驳回的话采用过的歌还会一直留在队列里。"""
+    cfg, safe_id, unsafe_id = seeded
+    with TestClient(create_app(cfg)) as client:
+        response = client.post(
+            "/api/v1/staged/batch-accept", json={"ids": [unsafe_id]}
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["accepted"] == 1
+        assert body["rejected"] == 1  # a.flac 的另一条候选
+        assert body["missing"] == 0
+        assert _staged_state(client, unsafe_id) == "staged"
+        assert _staged_state(client, safe_id) == "rejected"
+
+        # 其它曲目（b.flac 的两条候选）不受影响
+        rest = client.get(
+            "/api/v1/staged", params={"state": "needs_review"}
+        ).json()["items"]
+        assert {item["rel_path"] for item in rest} == {"b.flac"}
+
+
+def test_批量采用只认待审查状态(seeded):
+    """已采用/已驳回的 id 不重复处理，计入 missing 而不是报错——
+    界面拿的是刷新前的旧列表，重复提交是正常路径。"""
+    cfg, _safe_id, unsafe_id = seeded
+    with TestClient(create_app(cfg)) as client:
+        first = client.post("/api/v1/staged/batch-accept", json={"ids": [unsafe_id]})
+        assert first.json()["accepted"] == 1
+        again = client.post("/api/v1/staged/batch-accept", json={"ids": [unsafe_id]})
+        assert again.status_code == 200
+        assert again.json()["accepted"] == 0
+        assert again.json()["missing"] == 1
+        bogus = client.post(
+            "/api/v1/staged/batch-accept", json={"ids": [unsafe_id, 999999]}
+        )
+        assert bogus.json()["missing"] == 2
+
+
+def test_批量采用校验入参(seeded):
+    cfg, _safe_id, _unsafe_id = seeded
+    with TestClient(create_app(cfg)) as client:
+        for payload in ({}, {"ids": []}, {"ids": ["x"]}):
+            response = client.post("/api/v1/staged/batch-accept", json=payload)
+            assert response.status_code == 400, payload
+
+
+def test_批量忽略写规则并清空队列(seeded):
+    """「真正的忽略」：写 path 级 skip_fetch 规则（抓取从此跳过），
+    同一曲目的全部候选离开队列，其它曲目不受影响。"""
+    cfg, safe_id, unsafe_id = seeded
+    with TestClient(create_app(cfg)) as client:
+        response = client.post("/api/v1/staged/batch-ignore", json={"ids": [unsafe_id]})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["ignored"] == 1  # a.flac 一首
+        assert body["rejected"] == 2  # a.flac 的两条候选（含推荐那条）
+        assert _staged_state(client, unsafe_id) == "rejected"
+        assert _staged_state(client, safe_id) == "rejected"
+        rest = client.get(
+            "/api/v1/staged", params={"state": "needs_review"}
+        ).json()["items"]
+        assert {item["rel_path"] for item in rest} == {"b.flac"}
+        rules = client.get("/api/v1/rules").json()["items"]
+        assert len(rules) == 1
+        rule = rules[0]
+        assert (rule["scope"], rule["target"], rule["action"]) == (
+            "path", "a.flac", "skip_fetch",
+        )
+
+
+def test_恢复忽略(seeded):
+    """忽略只有删规则这一个反悔出口；删两次第二次 404。"""
+    cfg, _safe_id, unsafe_id = seeded
+    with TestClient(create_app(cfg)) as client:
+        client.post("/api/v1/staged/batch-ignore", json={"ids": [unsafe_id]})
+        rule_id = client.get("/api/v1/rules").json()["items"][0]["id"]
+        ok = client.delete(f"/api/v1/rules/{rule_id}")
+        assert ok.status_code == 200, ok.text
+        assert client.get("/api/v1/rules").json()["total"] == 0
+        again = client.delete(f"/api/v1/rules/{rule_id}")
+        assert again.status_code == 404
+
+
+def test_重复忽略不重复建规则(seeded):
+    """已离开队列的 id 再提交一次：不建规则、不报错（界面拿的旧列表）。"""
+    cfg, _safe_id, unsafe_id = seeded
+    with TestClient(create_app(cfg)) as client:
+        first = client.post("/api/v1/staged/batch-ignore", json={"ids": [unsafe_id]})
+        assert first.json()["ignored"] == 1
+        again = client.post("/api/v1/staged/batch-ignore", json={"ids": [unsafe_id]})
+        assert again.status_code == 200
+        assert again.json()["ignored"] == 0
+        assert client.get("/api/v1/rules").json()["total"] == 1
+
+
+def _fetch_env(tmp_path: Path, flac_factory):
+    """run_fetch 链路测试的最小环境：一首没有歌词的曲子。"""
+    lib = tmp_path / "lib"
+    flac_factory(lib / "a.flac", entries=(("TITLE", "a"), ("ARTIST", "X")))
+    cfg = Config(
+        roots=[RootConfig(name="lib", role=RootRole.LIBRARY, path=str(lib))],
+        storage=StorageConfig(data_dir=str(tmp_path / "data")),
+        web=WebConfig(auth_required=False),
+    )
+    return cfg, open_store(cfg.storage.resolved_data_dir)
+
+
+def test_被忽略的曲目在抓取时真正跳过(tmp_path, flac_factory):
+    """「下次还刷出来」的抓取侧守卫：有 skip_fetch 规则的曲目不进匹配，
+    队列里也就不会再出现它。空来源列表即可观测（排除发生在取词之前）。"""
+    from lyra.pipeline import run_fetch
+
+    cfg, store = _fetch_env(tmp_path, flac_factory)
+    try:
+        store.add_rule(scope="path", target="a.flac", action="skip_fetch", reason="人工忽略")
+        summary = run_fetch(store, cfg, cfg.roots[0], providers=[])
+        assert summary.skipped_excluded == 1
+        assert summary.considered == 0
+        pending = store.conn.execute(
+            "SELECT COUNT(*) FROM staged_lyrics WHERE state='needs_review'"
+        ).fetchone()[0]
+        assert pending == 0, "被忽略的曲目不该再产生待审查行"
+    finally:
+        store.close()
+
+
+def test_纳入动作不当成排除(tmp_path, flac_factory):
+    """include 是反向断言：绝不能因为命中规则就把曲目排除掉。"""
+    from lyra.pipeline import run_fetch
+
+    cfg, store = _fetch_env(tmp_path, flac_factory)
+    try:
+        store.add_rule(scope="path", target="a.flac", action="include", reason="测试")
+        summary = run_fetch(store, cfg, cfg.roots[0], providers=[])
+        assert summary.skipped_excluded == 0
+        assert summary.considered == 1
+    finally:
+        store.close()

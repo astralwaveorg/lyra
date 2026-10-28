@@ -1698,6 +1698,131 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         _invalidate_caches()
         return {"ok": True, "accepted": accepted, "total": len(targets)}
 
+    @app.post("/api/v1/staged/batch-accept", dependencies=[Depends(require_auth)])
+    def staged_batch_accept(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """**显式动作**：按给出的暂存 id 批量采用——单条「采用」的批量版。
+
+        与 `safe-batch/accept` 的分工：那份只收「硬闸门全过」的项；这里
+        **硬闸门未过也允许**，因为勾选本身就是人的判断（艺人相似度不足的
+        翻唱、版本不一致的现场，就靠它成批过），口径与界面上单条「采用」
+        按钮一致。只处理仍处于待审查状态的行，其余计入 `missing`。
+        同一曲目的其余待审查候选一并驳回——单条采用在界面上就是这么做的，
+        不驳回的话采用过的歌还会一直留在队列里。
+        """
+        payload = payload or {}
+        ids_raw = payload.get("ids")
+        if not isinstance(ids_raw, list) or not ids_raw:
+            raise HTTPException(status_code=400, detail="ids 必须是非空数组")
+        ids: list[int] = []
+        for value in ids_raw:
+            try:
+                ids.append(int(value))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="ids 里混有非数字") from None
+        placeholders = ",".join("?" * len(ids))
+        rows = state.conn.execute(
+            f"SELECT id, location_id FROM staged_lyrics "
+            f"WHERE id IN ({placeholders}) AND state='needs_review'",
+            ids,
+        ).fetchall()
+        for row in rows:
+            staged_id = int(row["id"])
+            state.set_staged_state(staged_id, "staged")
+            # 与单条 accept 同款：人工确认过的写入要做整份备份
+            state.mark_reviewed(staged_id)
+        rejected = 0
+        if rows:
+            accepted_ids = sorted({int(row["id"]) for row in rows})
+            location_ids = sorted({int(row["location_id"]) for row in rows})
+            id_marks = ",".join("?" * len(accepted_ids))
+            loc_marks = ",".join("?" * len(location_ids))
+            cur = state.conn.execute(
+                f"UPDATE staged_lyrics SET state='rejected' "
+                f"WHERE state='needs_review' "
+                f"AND location_id IN ({loc_marks}) AND id NOT IN ({id_marks})",
+                (*location_ids, *accepted_ids),
+            )
+            rejected = cur.rowcount or 0
+        _invalidate_caches()
+        return {
+            "ok": True,
+            "accepted": len(rows),
+            "rejected": rejected,
+            "missing": len(ids) - len(rows),
+        }
+
+    @app.post("/api/v1/staged/batch-ignore", dependencies=[Depends(require_auth)])
+    def staged_batch_ignore(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """**显式动作**：真正忽略——为曲目写 path 级 `skip_fetch` 规则。
+
+        「跳过」只驳回当前暂存行，下一轮扫描又会匹配出同样的候选刷回队列；
+        忽略是曲库层面的人工判断（与标签提案的 ignored 同一级别），
+        `run_fetch` 的规则排除会让这首歌从此不再取词、不再进待审查队列。
+        反悔只有一个出口：删规则（「已忽略」标签的「恢复」）。
+        同一曲目的全部待审查候选一并驳回，立刻离开两个标签。
+        """
+        payload = payload or {}
+        ids_raw = payload.get("ids")
+        if not isinstance(ids_raw, list) or not ids_raw:
+            raise HTTPException(status_code=400, detail="ids 必须是非空数组")
+        ids: list[int] = []
+        for value in ids_raw:
+            try:
+                ids.append(int(value))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="ids 里混有非数字") from None
+        placeholders = ",".join("?" * len(ids))
+        rows = state.conn.execute(
+            f"SELECT DISTINCT s.location_id, l.rel_path FROM staged_lyrics s "
+            f"JOIN locations l ON l.id=s.location_id "
+            f"WHERE s.id IN ({placeholders}) AND s.state='needs_review'",
+            ids,
+        ).fetchall()
+        for row in rows:
+            state.add_rule(
+                scope="path",
+                target=str(row["rel_path"]),
+                action="skip_fetch",
+                reason="歌词审查：人工忽略",
+            )
+        rejected = 0
+        if rows:
+            location_ids = sorted({int(row["location_id"]) for row in rows})
+            loc_marks = ",".join("?" * len(location_ids))
+            cur = state.conn.execute(
+                f"UPDATE staged_lyrics SET state='rejected' "
+                f"WHERE state='needs_review' AND location_id IN ({loc_marks})",
+                location_ids,
+            )
+            rejected = cur.rowcount or 0
+        _invalidate_caches()
+        return {"ok": True, "ignored": len(rows), "rejected": rejected}
+
+    @app.get("/api/v1/rules", dependencies=[Depends(require_auth)])
+    def list_rules() -> dict[str, Any]:
+        """排除/纳入规则。目前唯一来源是歌词审查的「忽略」。"""
+        items = [
+            {
+                "id": int(row["id"]),
+                "scope": str(row["scope"]),
+                "target": str(row["target"]),
+                "action": str(row["action"]),
+                "reason": row["reason"],
+                "created_at": float(row["created_at"] or 0),
+                "expires_at": float(row["expires_at"]) if row["expires_at"] else None,
+            }
+            for row in state.iter_rules()
+        ]
+        items.sort(key=lambda item: item["created_at"], reverse=True)
+        return {"total": len(items), "items": items}
+
+    @app.delete("/api/v1/rules/{rule_id}", dependencies=[Depends(require_auth)])
+    def delete_rule(rule_id: int) -> dict[str, Any]:
+        """删规则（恢复）。下一轮抓取会重新为这首歌取词。"""
+        if not state.remove_rule(rule_id):
+            raise HTTPException(status_code=404, detail="不存在")
+        return {"ok": True, "id": rule_id}
+
     @app.get("/api/v1/staged/{staged_id}", dependencies=[Depends(require_auth)])
     def staged_detail(staged_id: int) -> dict[str, Any]:
         row = state.conn.execute(

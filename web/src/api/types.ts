@@ -154,6 +154,17 @@ export type SafeItem = {
   reason: string | null
 }
 
+/** 排除规则。歌词审查的「忽略」就是 path 级 skip_fetch 规则。 */
+export type Rule = {
+  id: number
+  scope: string
+  target: string
+  action: string
+  reason: string | null
+  created_at: number
+  expires_at: number | null
+}
+
 export type StagedDetail = {
   id: number
   rel_path: string

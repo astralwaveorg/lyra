@@ -24,6 +24,7 @@ import type {
   RenameRow,
   ReviewPage,
   RootStats,
+  Rule,
   StagedDetail,
   StatsResponse,
   Summary,
@@ -219,6 +220,20 @@ export const api = {
       '/api/v1/staged/safe-batch/accept',
       json(ids ? { ids } : {}),
     ),
+  batchAcceptStaged: (ids: number[]) =>
+    request<{ accepted: number; rejected: number; missing: number }>(
+      '/api/v1/staged/batch-accept',
+      json({ ids }),
+    ),
+  ignoreStagedBatch: (ids: number[]) =>
+    request<{ ignored: number; rejected: number }>(
+      '/api/v1/staged/batch-ignore',
+      json({ ids }),
+    ),
+  listRules: () =>
+    request<{ total: number; items: Rule[] }>('/api/v1/rules'),
+  removeRule: (id: number) =>
+    request<{ ok: boolean; id: number }>(`/api/v1/rules/${id}`, del()),
   stagedDetail: (id: number) => request<StagedDetail>(`/api/v1/staged/${id}`),
   stagedAlternatives: (id: number) => request<Alternatives>(`/api/v1/staged/${id}/alternatives`),
   chooseAlternative: (id: number, provider: string, provider_id: string) =>

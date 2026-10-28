@@ -91,6 +91,10 @@ curl -b cookies.txt \
 | GET | `/api/v1/staged/{id}` | 候选详情 |
 | POST | `/api/v1/staged/{id}/accept` | 接受候选 |
 | POST | `/api/v1/staged/{id}/reject` | 拒绝候选 |
+| POST | `/api/v1/staged/batch-accept` | 按给出的 id 批量接受（含硬性条件未过的项） |
+| POST | `/api/v1/staged/batch-ignore` | 批量忽略：写 path 级 skip_fetch 规则并清出队列 |
+| GET | `/api/v1/rules` | 排除规则列表（「已忽略」标签的数据源） |
+| DELETE | `/api/v1/rules/{id}` | 删除规则（恢复忽略） |
 | POST | `/api/v1/staged/safe-batch/accept` | 批量接受安全候选 |
 | POST | `/api/v1/tasks/fetch` | 启动抓取任务 |
 | POST | `/api/v1/tasks/apply` | 启动写入任务 |
