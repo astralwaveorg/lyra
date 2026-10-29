@@ -1981,14 +1981,19 @@ class StateStore:
             "ok" if ok else "not_found" if not_found
             else "blocked" if blocked else "schema_error"
         )
+        # 成功的探测/请求证明来源已恢复：清掉 last_error，
+        # 否则修复后当天仍显示旧错误，误导排查
+        error_expr = (
+            "last_error=NULL" if ok
+            else "last_error=CASE WHEN excluded.last_error IS NOT NULL "
+            "THEN excluded.last_error ELSE provider_health.last_error END"
+        )
         with self.transaction() as tx:
             tx.execute(
                 f"INSERT INTO provider_health(provider, day, {column}, last_error) "
                 "VALUES(?,?,1,?) "
                 "ON CONFLICT(provider, day) DO UPDATE SET "
-                f"{column} = {column} + 1, "
-                "last_error=CASE WHEN excluded.last_error IS NOT NULL "
-                "THEN excluded.last_error ELSE provider_health.last_error END",
+                f"{column} = {column} + 1, {error_expr}",
                 (provider, day, error or None),
             )
 

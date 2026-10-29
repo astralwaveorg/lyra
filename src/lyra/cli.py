@@ -888,6 +888,49 @@ def cmd_tags_scan(args: argparse.Namespace, cfg: Config) -> int:
         store.close()
 
 
+def probe_providers(store, providers) -> None:
+    """来源烟雾探测：对每个已启用来源发一次最小搜索，结果记进健康表。
+
+    查询必须构造 **TrackQuery** 数据类——此前误传普通 dict，适配器访问
+    `q.title` 时抛 AttributeError，被兜底捕获后把「探测代码自身的 Bug」
+    记成了「来源结构变更」，健康面板显示了这条误导信息。
+    """
+    from .providers.base import ProviderBlockedError, ProviderError, TrackQuery
+
+    query = TrackQuery(
+        title="Lyra",
+        artists=("probe",),
+        album="",
+        duration=None,
+        musicbrainz_trackid="",
+        isrc="",
+    )
+    for provider in providers:
+        name = getattr(provider, "name", "")
+        if not name:
+            continue
+        try:
+            provider.search(query)
+        except ProviderBlockedError as exc:
+            store.bump_provider_health(name, blocked=True, error=str(exc)[:200])
+            print(f"[watch] 来源 {name} 烟雾探测失败: {exc}", flush=True)
+            continue
+        except ProviderError as exc:
+            # 需要登录 / 配额用尽 / 结构变化：不是「被风控」，别误导切网关
+            store.bump_provider_health(name, schema_error=True, error=str(exc)[:200])
+            print(f"[watch] 来源 {name} 烟雾探测失败: {exc}", flush=True)
+            continue
+        except Exception as exc:  # noqa: BLE001 — 探测绝不影响主循环
+            store.bump_provider_health(
+                name, schema_error=True, error=f"{type(exc).__name__}: {exc}"[:200]
+            )
+            continue
+        # 探测词本身查无结果是正常的：接口可达即算健康；
+        # 成功的探测同时清掉 last_error——「最近一次探测恢复了」比
+        # 「留着昨天那条错误」更有信息量
+        store.bump_provider_health(name, ok=True)
+
+
 def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     import signal
     import threading
@@ -1200,40 +1243,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     last_probe = 0.0
 
     def _provider_probe() -> None:
-        """对每个已启用来源发一次最小搜索，把结果记进健康表。"""
-        from .providers.base import ProviderBlockedError, ProviderError
-
-        probe = {
-            "title": "Lyra",
-            "artists": ("probe",),
-            "album": "",
-            "duration": None,
-            "musicbrainz_trackid": "",
-            "isrc": "",
-        }
-        for provider in providers:
-            name = getattr(provider, "name", "")
-            if not name:
-                continue
-            try:
-                found = provider.search(probe)
-            except ProviderBlockedError as exc:
-                store.bump_provider_health(name, blocked=True, error=str(exc)[:200])
-                print(f"[watch] 来源 {name} 烟雾探测失败: {exc}", flush=True)
-                continue
-            except ProviderError as exc:
-                # 需要登录 / 配额用尽 / 结构变化：不是「被风控」，别误导切网关
-                store.bump_provider_health(name, schema_error=True, error=str(exc)[:200])
-                print(f"[watch] 来源 {name} 烟雾探测失败: {exc}", flush=True)
-                continue
-            except Exception as exc:  # noqa: BLE001 — 探测绝不影响主循环
-                store.bump_provider_health(
-                    name, schema_error=True, error=f"{type(exc).__name__}: {exc}"[:200]
-                )
-                continue
-            # 探测词本身查无结果是正常的：接口可达即算健康
-            store.bump_provider_health(name, ok=True)
-            _ = found
+        probe_providers(store, providers)
 
     # 标签自动刮削：按配置间隔在后台线程跑。
     #
