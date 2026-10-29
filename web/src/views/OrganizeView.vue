@@ -199,7 +199,7 @@ async function execute() {
       '确认整理',
       {
         confirmButtonText: '开始整理',
-        cancelButtonText: '再看一眼',
+        cancelButtonText: '取消',
         type: 'warning',
       },
     )
@@ -326,7 +326,7 @@ async function deleteSelected() {
   const summary = selectedKindSummary()
   const keepNote =
     overridingKeeps.value > 0
-      ? `其中 ${overridingKeeps.value} 份是原本建议保留的，你改选了它们。\n`
+      ? `其中 ${overridingKeeps.value} 份是系统建议保留的，已被手动改选。\n`
       : ''
   try {
     await ElMessageBox.confirm(
@@ -603,14 +603,14 @@ onMounted(async () => {
     </el-select>
     <span class="cell-meta hint">
       {{ subpaths.length ? `已选 ${subpaths.length} 个目录` : '整个曲库' }}
-      {{ excludedPaths.length ? ` · 排除 ${excludedPaths.length} 个` : '' }} · 不会后台自动移动
+      {{ excludedPaths.length ? ` · 排除 ${excludedPaths.length} 个` : '' }} · 不会在后台自动移动
     </span>
   </div>
 
   <template v-if="tab === 'organize'">
     <section class="card intro">
       <div class="intro-main">
-        <div class="card-title">按标签生成 艺人 / 专辑 / 音轨号 - 曲名</div>
+        <div class="card-title">按标签生成 艺术家 / 专辑 / 音轨号 - 曲名</div>
         <p class="cell-meta">
           多艺人使用 <code>; </code> 连接，专辑目录优先用专辑艺人，合辑不会被拆散；
           缺专辑放进 <code>Unknown Album</code>，多碟自动加碟号前缀，缺音轨号直接用曲名。
@@ -703,7 +703,7 @@ onMounted(async () => {
           </span>
           <div class="card-actions">
             <el-button size="small" text @click="toggleAllDirs(true)">全选</el-button>
-            <el-button size="small" text @click="toggleAllDirs(false)">全不选</el-button>
+            <el-button size="small" text @click="toggleAllDirs(false)">清除选择</el-button>
           </div>
         </div>
         <el-checkbox-group v-model="selectedDirs" class="dir-grid">
@@ -778,9 +778,9 @@ onMounted(async () => {
     >
       <template #default>
         旧版可能把精确副本、同一录音和相似录音混在一组。请先重新检测，
-        否则不会允许按分类一键删除。
+        否则无法按分类一键删除。
         <el-button size="small" type="warning" plain :loading="scanning" @click="scanDupes">
-          立即重新分类
+          立即检查
         </el-button>
       </template>
     </el-alert>
@@ -971,7 +971,7 @@ onMounted(async () => {
       <EmptyState
         v-if="!visibleGroups.length"
         :title="kindFilter ? `没有「${kindLabel[kindFilter]}」分类` : '没有发现重复音频'"
-        :hint="kindFilter ? '切换其他分类，或点「立即检查」重新分析。' : '后台会定期检查；也可以点「立即检查」现在就跑一遍。'"
+        :hint="kindFilter ? '切换其他分类，或点「立即检查」重新分析。' : '后台会定期检查；也可以点「立即检查」立即执行一次。'"
         icon="CopyDocument"
       />
     </template>
@@ -982,7 +982,7 @@ onMounted(async () => {
       <div class="intro-main">
         <div class="card-title">递归确认没有音频的目录</div>
         <p class="cell-meta">
-          真空目录直接移除；只剩封面、歌词或说明文件的目录会整体移入回收站，
+          真正的空目录直接移除；只剩封面、歌词或说明文件的目录会整体移入回收站，
           不会静默丢掉内容。所有记录都能在整理日志里撤销。
         </p>
       </div>
@@ -1003,7 +1003,7 @@ onMounted(async () => {
       <div class="summary-row">
         <span class="pill">共 {{ cleanupItems.length }} 个无音频目录</span>
         <el-button size="small" text @click="toggleAllCleanup(true)">全选</el-button>
-        <el-button size="small" text @click="toggleAllCleanup(false)">全不选</el-button>
+        <el-button size="small" text @click="toggleAllCleanup(false)">清除选择</el-button>
       </div>
       <section v-if="cleanupItems.length" class="card">
         <el-checkbox-group v-model="selectedCleanup" class="dir-grid">
@@ -1289,7 +1289,7 @@ onMounted(async () => {
 
 .dup-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: 10px;
   padding: 12px;
 }

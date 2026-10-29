@@ -120,7 +120,7 @@ async function removeSelected() {
       errors.push(...result.errors)
     }
     if (moved.length) ElMessage.success(`已移入回收站 ${moved.length} 份`)
-    if (errors.length) ElMessage.warning(`有 ${errors.length} 份没处理成功：${errors[0]}`)
+    if (errors.length) ElMessage.warning(`有 ${errors.length} 份处理失败：${errors[0]}`)
     await load()
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '批量删除失败')
@@ -295,7 +295,7 @@ defineExpose({ reload: load })
   <EmptyState
     v-else-if="!visible.length"
     title="没有无音源的歌词文件"
-    hint="每个 .lrc 都能对上音频时，这里就是空的。"
+    hint="每个 .lrc 都能对上音频时，此列表为空。"
     icon="Files"
   />
 
@@ -344,7 +344,7 @@ defineExpose({ reload: load })
             </span>
             <span v-else-if="row.target_has_lyrics" class="cell-meta">那首音频已经有歌词</span>
             <span v-else-if="row.action === 'choose'" class="cell-meta">
-              目标按名字模糊匹配到的，需要你确认它属于哪首
+              目标按名字模糊匹配到的，请确认它属于哪一首
             </span>
           </div>
         </template>
@@ -368,7 +368,7 @@ defineExpose({ reload: load })
           </div>
         </template>
       </el-table-column>
-      <template #empty><EmptyState title="没有无归属的歌词文件" icon="Files" /></template>
+      <template #empty><EmptyState title="没有无音源的歌词文件" icon="Files" /></template>
     </el-table>
   </section>
 
@@ -408,7 +408,7 @@ defineExpose({ reload: load })
         <EmptyState v-if="!aiItems.length" title="没有需要判断的重复项" icon="CircleCheck" />
       </div>
       <div class="ai-note cell-meta">
-        只有「确认是同一首歌」且「多余那份没有独有歌词行」时才会建议清理；执行是移入回收站，可还原。
+        只有「确认是同一首歌」且「多余那份没有独有歌词行」时才会建议清理；执行时会移入回收站，可还原。
       </div>
     </template>
     <template #footer>

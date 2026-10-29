@@ -52,8 +52,13 @@ function asTab(value: string | undefined): Tab | null {
     : null
 }
 
-/** 初始标签：深链 > 父组件 prop > 默认「推荐采纳」。 */
-const requested = asTab(typeof route.query.tab === 'string' ? route.query.tab : '') ?? asTab(props.initialTab)
+/**
+ * 初始标签：深链 > 父组件 prop > 默认「推荐采纳」。
+ * query 键用 lyrics_tab 而不是 tab——本组件作为待办页的歌词面板嵌入，
+ * 待办的类目（kind）与标签队列（TagsQueue）也各有自己的页签，
+ * 共用一个 tab 键会互相污染（切到标签队列时把歌词的页签带给它）。
+ */
+const requested = asTab(typeof route.query.lyrics_tab === 'string' ? route.query.lyrics_tab : '') ?? asTab(props.initialTab)
 const tab = ref<Tab>(requested ?? 'safe')
 
 const data = ref<ReviewPage | null>(null)
@@ -73,7 +78,7 @@ const orphansRef = ref<InstanceType<typeof OrphansPanel> | null>(null)
 
 /**
  * 批量勾选。两个标签各自独立，key 都是曲目路径（rel_path）：
- * 勾住一首 = 采用这首歌的推荐候选，同一首的其它候选一并驳回。
+ * 勾住一首 = 采用这首歌的推荐候选，同一首的其他候选一并驳回。
  * 只属于当前列表——换页、刷新即清空，绝不把看不见的行带进批量。
  */
 const checkedPaths = ref<Set<string>>(new Set())
@@ -141,7 +146,7 @@ type ViewTarget = {
   reason: string | null
   /** 系统推荐的那一条（按分数取最高），按钮用绿色区分 */
   recommended?: boolean
-  /** 覆盖展示用的说明：推荐项不该显示「建议对比其它来源」那种判定文案。 */
+  /** 覆盖展示用的说明：推荐项不该显示「建议对比其他来源」那种判定文案。 */
   note?: string
 }
 
@@ -195,7 +200,7 @@ async function openPreview(target: ViewTarget, action: () => Promise<void>) {
   }
 }
 
-/* ---------------------------------------------------- 手动刮削 / 重新查询 */
+/* ---------------------------------------------------- 手动选词 / 重新查询 */
 
 /**
  * 候选都不合适时的出口：按链接指定一首歌，服务端重新取词并写入。
@@ -296,7 +301,7 @@ async function refreshActive() {
 }
 
 watch(tab, (value) => {
-  void router.replace({ query: { ...route.query, tab: value } })
+  void router.replace({ query: { ...route.query, lyrics_tab: value } })
 })
 
 /* ------------------------------------------------------------------ 操作 */
@@ -305,7 +310,7 @@ async function accept(group: StagedGroup, candidate: StagedCandidate) {
   busyId.value = candidate.id
   try {
     await api.acceptStaged(candidate.id)
-    // 同一首歌的其它候选一并拒绝：否则它们会一直留在队列里。
+    // 同一首歌的其他候选一并拒绝：否则它们会一直留在队列里。
     await Promise.all(
       group.candidates
         .filter((item) => item.id !== candidate.id)
@@ -344,7 +349,7 @@ async function acceptOne(group: { best: SafeItem; items: SafeItem[] }) {
 async function ignoreGroup(group: StagedGroup) {
   try {
     await ElMessageBox.confirm(
-      `忽略后不再自动为这首歌匹配歌词，它不会再回到待审查队列；想反悔请到「已忽略」标签恢复。`,
+      `忽略后不再自动为这首歌匹配歌词，它不会再回到待审查队列；如需恢复，可在「已忽略」页签中还原。`,
       '忽略这首歌',
       { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
     )
@@ -366,7 +371,7 @@ async function ignoreGroup(group: StagedGroup) {
 async function acceptSafe() {
   try {
     await ElMessageBox.confirm(
-      `这 ${safeTrackCount.value} 条的来源与曲目一致，匹配分数未达到自动采用标准。采用后会在下次写入时落盘。`,
+      `这 ${safeTrackCount.value} 条的来源与曲目一致，匹配分数未达到自动采用标准。采用后会在下次写入时生效。`,
       '批量采用',
       { confirmButtonText: '全部采用', cancelButtonText: '取消' },
     )
@@ -435,7 +440,7 @@ async function acceptChecked() {
   if (!list.length) return
   try {
     await ElMessageBox.confirm(
-      `将采用所选 ${list.length} 首的推荐候选（每首分数最高的一条），同一首的其它候选会被驳回；采用后等待写入。`,
+      `将采用所选 ${list.length} 首的推荐候选（每首分数最高的一条），同一首的其他候选会被驳回；采用后等待写入。`,
       '批量采用',
       { confirmButtonText: '批量采用', cancelButtonText: '取消', type: 'warning' },
     )
@@ -463,7 +468,7 @@ async function ignoreChecked() {
   if (!list.length) return
   try {
     await ElMessageBox.confirm(
-      `将忽略所选 ${list.length} 首：不再自动匹配歌词，也不会再出现在待审查队列；想反悔可在「已忽略」标签恢复。`,
+      `将忽略所选 ${list.length} 首：不再自动匹配歌词，也不会再出现在待审查队列；如需恢复，可在「已忽略」页签中还原。`,
       '批量忽略',
       { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
     )
@@ -514,7 +519,7 @@ async function acceptCheckedSafe() {
   if (!list.length) return
   try {
     await ElMessageBox.confirm(
-      `将采用所选 ${list.length} 条（来源与曲目一致，只是分数未达自动采用标准）；同一首的其它候选会被驳回。`,
+      `将采用所选 ${list.length} 条（来源与曲目一致，只是分数未达自动采用标准）；同一首的其他候选会被驳回。`,
       '批量采用',
       { confirmButtonText: '批量采用', cancelButtonText: '取消' },
     )
@@ -542,7 +547,7 @@ async function ignoreCheckedSafe() {
   if (!list.length) return
   try {
     await ElMessageBox.confirm(
-      `将忽略所选 ${list.length} 条对应的曲目：不再自动匹配歌词；想反悔可在「已忽略」标签恢复。`,
+      `将忽略所选 ${list.length} 条对应的曲目：不再自动匹配歌词；如需恢复，可在「已忽略」页签中还原。`,
       '批量忽略',
       { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
     )
@@ -676,7 +681,7 @@ onMounted(async () => {
                     score: group.best.score,
                     reason: group.best.reason,
                     recommended: true,
-                    note: '时长、版本、标题、艺人四项检查全部通过，只是总分未达自动采用线。',
+                    note: '时长、版本、标题、艺人四项检查全部通过，只是总分未达自动采用标准。',
                   },
                   () => acceptOne(group),
                 )
@@ -720,7 +725,7 @@ onMounted(async () => {
           <el-button size="small" text :disabled="!checkedCount" @click="clearChecked">
             清除选择
           </el-button>
-          <span class="select-tip">勾住一首即采用它的推荐候选，同一首的其它候选会被驳回</span>
+          <span class="select-tip">勾选一首即采用其推荐候选，同一首的其他候选会被驳回</span>
           <el-button
             size="small"
             text
@@ -761,7 +766,7 @@ onMounted(async () => {
             <div class="group-actions">
               <el-button size="small" text @click="compare(group)">对比来源</el-button>
               <el-button size="small" text class="manual-btn" @click="openManualForGroup(group)">
-                手动刮削
+                手动选词
               </el-button>
               <el-button
                 size="small"
@@ -886,7 +891,7 @@ onMounted(async () => {
             </div>
             <span class="cell-meta ellipsis">{{ splitPath(rule.target).dir }}</span>
           </div>
-          <span class="cell-meta">忽略于 {{ fmtAgo(rule.created_at) }}</span>
+          <span class="cell-meta">忽略时间：{{ fmtAgo(rule.created_at) }}</span>
           <div class="safe-actions">
             <el-button
               size="small"
@@ -901,13 +906,13 @@ onMounted(async () => {
       </div>
       <EmptyState
         v-else
-        title="没有忽略的曲目"
+        title="还没有忽略的曲目"
         hint="点「忽略」的曲目会记在这里，之后的自动抓取会跳过它们；恢复后下一轮抓取会重新匹配。"
         icon="Hide"
       />
     </el-tab-pane>
 
-    <el-tab-pane :label="orphanCount ? `无音源 ${orphanCount}` : '无音源'" name="orphans">
+    <el-tab-pane :label="orphanCount ? `无音源 ${orphanCount}` : '无音源'" name="orphans" lazy>
       <OrphansPanel ref="orphansRef" @count="orphanCount = $event" />
     </el-tab-pane>
   </el-tabs>
@@ -949,7 +954,7 @@ onMounted(async () => {
         class="manual-btn"
         @click="openManual(viewTarget)"
       >
-        手动刮削
+        手动选词
       </el-button>
       <el-button
         class="adopt-btn"

@@ -50,7 +50,7 @@ const stats = computed(() => {
 
 async function save() {
   if (!text.value.trim()) {
-    ElMessage.warning('歌词内容是空的')
+    ElMessage.warning('歌词内容为空')
     return
   }
   try {
@@ -88,7 +88,7 @@ async function save() {
 
 function cancel() {
   if (text.value !== props.initialText) {
-    ElMessageBox.confirm('改动还没有保存，确定放弃吗？', '放弃编辑', {
+    ElMessageBox.confirm('歌词歌词改动还没有保存，确定放弃吗？', '放弃编辑', {
       confirmButtonText: '放弃',
       cancelButtonText: '继续编辑',
       type: 'warning',

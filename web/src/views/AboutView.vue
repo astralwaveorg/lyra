@@ -8,7 +8,7 @@ import alipay from '@/assets/sponsor/alipay.jpg'
 import community from '@/assets/sponsor/community.jpg'
 
 const meta = useMeta()
-const version = computed(() => meta.version || '1.1.0')
+const version = computed(() => meta.version || '—')
 
 const links = [
   {
@@ -84,7 +84,7 @@ const links = [
   <section class="card">
     <div class="card-head">
       <span class="card-title">交流群</span>
-      <span class="card-hint">二维码有效期至 2026-10-26</span>
+      <span class="card-hint">二维码失效时请通过 GitHub Issues 获取最新交流群入口</span>
     </div>
     <div class="card-body community">
       <img :src="community" alt="Lyra 官方交流群二维码" loading="lazy" />

@@ -338,6 +338,8 @@ export type FileMeta = {
   embedded_fields: string[]
   has_cover: boolean
   problems: string[]
+  embedded_text?: string
+  embedded_text_error?: string | null
 }
 
 export type LyricContent = {

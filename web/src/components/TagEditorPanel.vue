@@ -248,7 +248,7 @@ function applyPicks() {
 }
 
 function actionLabel(action: string) {
-  return action === 'conflict' ? '不一致' : action === 'fill' ? '可补' : '一致'
+  return action === 'conflict' ? '冲突' : action === 'fill' ? '可补' : '一致'
 }
 </script>
 
@@ -270,7 +270,7 @@ function actionLabel(action: string) {
       type="warning"
       :closable="false"
       show-icon
-      :title="`文件扩展名 ${meta.extension} 与实际容器 ${meta.media_format} 不一致`"
+      :title="`文件扩展名 ${meta.extension} 与实际容器 ${meta.media_format} 冲突`"
       class="gap"
     />
 
@@ -322,7 +322,7 @@ function actionLabel(action: string) {
           </el-button>
         </el-tooltip>
       </div>
-      <div v-if="!editableRows.length" class="dim">没有其它标签</div>
+      <div v-if="!editableRows.length" class="dim">没有其他标签</div>
     </div>
 
     <div class="lookup">

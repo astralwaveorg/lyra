@@ -1462,7 +1462,9 @@ class StateStore:
                     "duration_delta=?, state=?, origin=?, "
                     "translation=COALESCE(?, translation), "
                     "raw_qrc=COALESCE(?, raw_qrc), "
-                    "ai_json=COALESCE(?, ai_json) WHERE id=?",
+                    # ai_json 直接覆写：旧判定对应上一轮候选集，本轮没有判定
+                    # 时保留它会让复核界面展示一条从未做过的结论
+                    "ai_json=? WHERE id=?",
                     (provider, provider_id, score, duration_delta, state,
                      origin, translation, raw_qrc, ai_json, row["id"]),
                 )
@@ -1500,6 +1502,8 @@ class StateStore:
         provider_id: str | None = None,
         score: float | None = None,
         duration_delta: float | None = None,
+        translation: str | None = None,
+        raw_qrc: str | None = None,
     ) -> int:
         """把**人工选定**的歌词写回**同一条**暂存记录（id 保持不变）。
 
@@ -1535,9 +1539,13 @@ class StateStore:
                 (location_id, content_hash, staged_id),
             )
             tx.execute(
+                # translation / raw_qrc 用新候选自带的（没有就置空）——
+                # 就地更新会保留旧候选的翻译，双语合并会把错配的翻译行写进文件；
+                # ai_json 直接清空：判定对应的是上一轮候选集，对新内容展示是误导。
                 "UPDATE staged_lyrics SET content_hash=?, content=?, provider=?, "
                 "provider_id=?, score=?, duration_delta=?, state='staged', "
-                "origin='manual', created_at=? WHERE id=?",
+                "origin='manual', translation=?, raw_qrc=?, ai_json=NULL, "
+                "created_at=? WHERE id=?",
                 (
                     content_hash,
                     content,
@@ -1545,6 +1553,8 @@ class StateStore:
                     provider_id,
                     score,
                     duration_delta,
+                    translation,
+                    raw_qrc,
                     time.time(),
                     staged_id,
                 ),
@@ -1939,11 +1949,14 @@ class StateStore:
         )
 
     def failed_task_steps(self, *, limit: int = 200) -> list[sqlite3.Row]:
-        """最近失败的步骤，供待办「失败」队列取数。"""
+        """最近失败的步骤，供待办「失败」队列取数。root 经 rel_path 反查。"""
         return list(
             self.conn.execute(
                 "SELECT s.task_id, s.seq, s.kind, s.rel_path, s.state, s.detail_json, "
-                "t.kind AS task_kind, t.started_at FROM task_steps s "
+                "t.kind AS task_kind, t.started_at, "
+                "(SELECT r.name FROM locations l JOIN roots r ON r.id = l.root_id "
+                " WHERE l.rel_path = s.rel_path LIMIT 1) AS root_name "
+                "FROM task_steps s "
                 "JOIN tasks t ON t.id = s.task_id "
                 "WHERE s.state='failed' ORDER BY t.started_at DESC, s.seq LIMIT ?",
                 (int(limit),),

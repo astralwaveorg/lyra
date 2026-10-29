@@ -128,7 +128,6 @@ const tagItems = computed(() =>
 
 const history = computed(() => meta.summary?.coverage_history ?? [])
 
-const reviewCount = computed(() => meta.summary?.counts.needs_review ?? 0)
 const pendingCount = computed(() => meta.summary?.counts.staged_pending ?? 0)
 
 const todos = computed(() => {
@@ -367,7 +366,7 @@ onMounted(async () => {
 
 .grid-2 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
   gap: 14px;
 }
 

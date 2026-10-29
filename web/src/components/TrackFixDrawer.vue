@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api/client'
 import type { FileMeta, LyricContent } from '@/api/types'
 import { useNarrow } from '@/composables/useMedia'
@@ -97,7 +97,32 @@ async function loadLyrics() {
   lyricContent.value = null
   try {
     const wanted = sidecar.value?.path
-    if (wanted) lyricContent.value = await api.fileContent(props.root, wanted)
+    if (wanted) {
+      lyricContent.value = await api.fileContent(props.root, wanted)
+    } else if (meta.value?.embedded_text) {
+      // 没有 .lrc 但内嵌有词：以内嵌为底稿，预览与编辑都可用
+      //（保存走 apply-lyrics 的 text 直写，会同时落内嵌与新建 .lrc）
+      const text = meta.value.embedded_text
+      lyricContent.value = {
+        rel_path: props.path,
+        kind: 'lyrics',
+        size: text.length,
+        truncated: false,
+        has_bom: false,
+        state: meta.value.embedded_state,
+        line_count: text.split('\n').filter((l) => l.trim()).length,
+        timestamp_count: (text.match(/\[[0-9]/g) ?? []).length,
+        offset_ms: 0,
+        has_word_level: false,
+        tags: {},
+        problems: [],
+        lines: text.split('\n').map((line) => {
+          const m = line.match(/^\[([^\]]+)\]/)
+          return { ms: null, stamp: m ? m[0] : '', text: m ? line.slice(m[0].length) : line }
+        }),
+        text,
+      }
+    }
   } catch (err) {
     ElMessage.warning(err instanceof Error ? err.message : '读取歌词失败')
   } finally {
@@ -123,29 +148,57 @@ async function renameSidecar() {
 }
 
 function refreshAll() {
-  void loadMeta()
-  lyricContent.value = null
+  void loadMeta().then(() => {
+    // 刮削成功后用户多半还停在歌词页签：同链路刷新，别显示旧词或假空态
+    if (active.value === 'lyrics' && !editing.value) void loadLyrics()
+  })
   emit('refresh')
 }
 
 watch(
   () => [props.modelValue, props.path] as const,
-  ([open]) => {
+  ([open], previous) => {
+    const prevOpen = previous?.[0]
     if (!open) return
+    const reopened = prevOpen === true && open
+    // 重新打开且停留在歌词页签时，active 不变会让 watch(active) 失效，
+    // 歌词页会停留在上一次清空的「没有可预览的歌词文件」假空态
+    if (!reopened) editing.value = false
     active.value = props.tab
     meta.value = null
     sidecar.value = null
     lyricContent.value = null
-    void loadMeta()
+    void loadMeta().then(() => {
+      if (active.value === 'lyrics') void loadLyrics()
+    })
   },
   { immediate: true },
 )
 
-watch(active, (tab) => {
+watch(active, (tab, prev) => {
   if (tab === 'lyrics') {
-    editing.value = false
     if (!lyricContent.value) void loadLyrics()
+    return
   }
+  // 离开歌词页签时若有未保存的编辑，先确认再切，避免静默丢失
+  if (prev === 'lyrics' && editing.value && lyricContent.value) {
+    const draft = (document.querySelector('.el-drawer textarea') as HTMLTextAreaElement | null)?.value
+    if (draft !== undefined && draft !== editorText()) {
+      ElMessageBox.confirm('歌词改动还没有保存，确定放弃吗？', '放弃编辑', {
+        confirmButtonText: '放弃',
+        cancelButtonText: '继续编辑',
+        type: 'warning',
+      })
+        .then(() => {
+          editing.value = false
+        })
+        .catch(() => {
+          active.value = 'lyrics'
+        })
+      return
+    }
+  }
+  editing.value = false
 })
 </script>
 
@@ -199,7 +252,7 @@ watch(active, (tab) => {
                 </div>
               </div>
               <div class="lyric-actions">
-                <el-button size="small" type="primary" @click="scrapeOpen = true">刮削歌词</el-button>
+                <el-button size="small" type="primary" @click="scrapeOpen = true">抓取歌词</el-button>
                 <el-button
                   v-if="lyricContent && !editing"
                   size="small"

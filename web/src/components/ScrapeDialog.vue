@@ -40,7 +40,7 @@ const allOptions = computed<TrackCandidate[]>(() => data.value?.options ?? [])
 /**
  * 只显示**有时间轴**的候选。
  *
- * 没有时间轴的歌词写进播放器也用不了（Lyra 的自动流程本来就不写它们），
+ * 没有时间轴的歌词写入后播放器无法逐行显示（Lyra 的自动流程本来就不写它们），
  * 摆在列表里只会让人白点一次。来源能提前判断的（LRCLIB 的搜索结果带
  * syncedLyrics 字段）直接排除；判断不了的照常显示，取词预览时会提示。
  */
@@ -221,7 +221,7 @@ watch(
 <template>
   <el-dialog
     v-model="visible"
-    :title="`刮削歌词 · ${fileName}`"
+    :title="`抓取歌词 · ${fileName}`"
     :width="narrow ? '94%' : '940px'"
     :top="narrow ? '3vh' : '6vh'"
     destroy-on-close
@@ -301,7 +301,7 @@ watch(
             <EmptyState
               v-if="!options.length"
               title="各来源都没有返回候选"
-              hint="可以直接粘贴歌曲链接，用你确定的那一条。"
+              hint="可以直接粘贴歌曲链接，采用确认过的那一条。"
               icon="Search"
             />
           </div>
@@ -316,14 +316,14 @@ watch(
           </div>
           <el-alert
             v-if="previewNoTimeline"
-            title="这份歌词没有时间轴，写进播放器也用不了。建议换一个候选。"
+            title="这份歌词没有时间轴，写入后播放器无法逐行显示。建议换一个候选。"
             type="warning"
             :closable="false"
             show-icon
           />
           <el-alert
             v-else-if="previewOverrun"
-            :title="`这份歌词的时间轴超出音频 ${Math.round(previewOverrun)} 秒，多半是别的版本的词。写进去仍会算「时间轴异常」，建议换一个候选。`"
+            :title="`这份歌词的时间轴超出音频 ${Math.round(previewOverrun)} 秒，通常是其他版本的歌词。写进去仍会算「时间轴异常」，建议换一个候选。`"
             type="warning"
             :closable="false"
             show-icon
@@ -343,7 +343,7 @@ watch(
         <div class="link-row">
           <el-input
             v-model="linkUrl"
-            placeholder="粘贴 QQ 音乐或网易云音乐的歌曲链接"
+            placeholder="粘贴 QQ音乐或网易云音乐的歌曲链接"
             clearable
             @keyup.enter="resolveLink"
           />

@@ -75,12 +75,20 @@ export const routes = [
   },
   // ---- 旧地址重定向（客户端路由，保留外部书签可用） ----
   { path: '/library', redirect: '/music' },
-  { path: '/review', redirect: '/todo?kind=lyrics' },
+  {
+    // /review?tab=safe|pending|ignored 深链要把页签带过去，不能整体丢
+    path: '/review',
+    redirect: (to: { query: Record<string, unknown> }) => {
+      const tab = typeof to.query.tab === 'string' ? to.query.tab : ''
+      const kindTab = ['safe', 'pending', 'ignored'].includes(tab) ? `&lyrics_tab=${tab}` : ''
+      return `/todo?kind=lyrics${kindTab}`
+    },
+  },
   { path: '/scrape', redirect: '/automation' },
   { path: '/tags', redirect: '/todo?kind=tags' },
   { path: '/logs', redirect: '/activity' },
   // 旧地址：歌词整理已并入「待办 · 歌词 · 独立LRC」
-  { path: '/orphans', redirect: '/todo?kind=lyrics&tab=orphans' },
+  { path: '/orphans', redirect: '/todo?kind=lyrics&lyrics_tab=orphans' },
   { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ]
 

@@ -55,7 +55,7 @@ const isAuto = computed(() => props.item.state === 'auto')
 /** 忽略时间只放在悬浮提示里，表格行高不受影响。 */
 const ignoredTitle = computed(() =>
   props.item.dismissed_at
-    ? `忽略于 ${fmtAgo(props.item.dismissed_at)}`
+    ? `忽略时间：${fmtAgo(props.item.dismissed_at)}`
     : '已忽略',
 )
 const name = computed(() => splitPath(props.item.rel_path).name)
@@ -247,7 +247,7 @@ async function ignore() {
   working.value = true
   try {
     await api.ignoreTagProposal(props.item.id)
-    ElMessage.success('已忽略，不会再被扫描翻出来')
+    ElMessage.success('已忽略，不会再出现在扫描结果中')
     emit('ignored')
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '操作失败')
@@ -351,7 +351,7 @@ async function restore() {
             :loading="working"
             @click="applyNonName"
           >
-            专辑信息
+            采用采用专辑信息
           </el-button>
           <el-button size="small" :class="{ on: expanded }" @click="expanded = !expanded">
             {{ expanded ? '收起' : '查看对照' }}
@@ -413,7 +413,7 @@ async function restore() {
           <button type="button" class="select-all" @click="selectAll">
             全选（{{ selectableCount }}）
           </button>
-          <button type="button" class="select-all" @click="clearAll">取消全选</button>
+          <button type="button" class="select-all" @click="clearAll">清除选择</button>
         </template>
         <span class="spacer" />
         <el-button

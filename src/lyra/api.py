@@ -70,7 +70,12 @@ from .cover import (
 )
 from .db import StateStore, open_store
 from .fileops import move_to_trash
-from .formats import read_all_tags, read_audio_meta, sniff_container
+from .formats import (
+    read_all_tags,
+    read_audio_meta,
+    read_embedded_lyrics_texts,
+    sniff_container,
+)
 from .lrc import (
     content_hash,
     decode_lyrics_bytes,
@@ -494,6 +499,31 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001 — 配置损坏不该阻止启动
             print(f"[startup] AI 设置读取失败：{exc}", flush=True)
 
+        # 设置页保存的封面 / 归置 / 歌词输出 / 指纹 key 同样在启动时恢复。
+        # 不恢复的话：用户开了「自动归位」，服务重启后归置模式悄悄回到 off，
+        # 新文件不再归位，而设置页因为读内存也显示不出任何异常。
+        for meta_key, apply_fn in (
+            ("settings.cover_policy", apply_cover_policy_values),
+            ("settings.organize_policy", apply_organize_policy_values),
+            ("settings.lyrics_format", apply_lyrics_settings_values),
+        ):
+            try:
+                raw = state.get_meta(meta_key)
+                if raw:
+                    apply_fn(cfg, json.loads(raw))
+            except Exception as exc:  # noqa: BLE001 — 配置损坏不该阻止启动
+                print(f"[startup] {meta_key} 读取失败：{exc}", flush=True)
+        try:
+            saved_acoustid = state.get_meta("settings.acoustid_key")
+            if saved_acoustid and not os.environ.get("LYRA_ACOUSTID_API_KEY"):
+                cfg.providers.acoustid.api_key = saved_acoustid
+            if state.get_meta("settings.acoustid_enabled") is not None:
+                cfg.providers.acoustid.enabled = (
+                    state.get_meta("settings.acoustid_enabled") == "1"
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[startup] 指纹设置读取失败：{exc}", flush=True)
+
         # **崩溃恢复。** `recover_pending` 早就实现了、也有测试，但从来没有
         # 任何生产代码调用它——于是崩溃中断的事务永远停在非终态，
         # 界面上只显示「事务（未完成 N）」而无从处理。
@@ -765,7 +795,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         payload = payload or {}
         dry_run = payload.get("dry_run", True)
         if not dry_run and not cfg.policy.write_enabled:
-            raise HTTPException(status_code=409, detail="写入开关是关的")
+            raise HTTPException(status_code=409, detail="写入开关已关闭")
         from .pipeline import normalize_cover_names
 
         root_name = str(payload.get("root") or "")
@@ -1129,7 +1159,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if not cfg.policy.write_enabled:
             raise HTTPException(
                 status_code=409,
-                detail="配置里写入开关是关的（policy.write_enabled=false）",
+                detail="配置里写入开关已关闭",
             )
         root_name = str(payload.get("root") or "")
         rel = str(payload.get("path") or "")
@@ -1246,7 +1276,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if not cfg.policy.write_enabled:
             raise HTTPException(
                 status_code=409,
-                detail="配置里写入开关是关的（policy.write_enabled=false）",
+                detail="配置里写入开关已关闭",
             )
         root_cfg, resolved = _safe_root_file(cfg, root, path)
         if _kind_of(resolved) != "audio":
@@ -1317,7 +1347,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if not cfg.policy.write_enabled:
             raise HTTPException(
                 status_code=409,
-                detail="配置里写入开关是关的（policy.write_enabled=false）",
+                detail="配置里写入开关已关闭",
             )
         root_name = str(payload.get("root") or "")
         rel = str(payload.get("path") or "")
@@ -1382,7 +1412,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if not cfg.policy.write_enabled:
             raise HTTPException(
                 status_code=409,
-                detail="配置里写入开关是关的（policy.write_enabled=false）",
+                detail="配置里写入开关已关闭",
             )
         root_name = str(payload.get("root") or "")
         rel = str(payload.get("path") or "")
@@ -2011,6 +2041,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             provider_id=provider_id,
             score=score.score if score else None,
             duration_delta=score.duration_delta if score else None,
+            translation=raw.translation or None,
+            raw_qrc=raw.raw_text if cfg.lyrics.keep_word_level else None,
         )
         return {
             "ok": True,
@@ -2240,7 +2272,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if apply_now and not cfg.policy.write_enabled:
             raise HTTPException(
                 status_code=409,
-                detail="配置里写入开关是关的（policy.write_enabled=false）",
+                detail="配置里写入开关已关闭",
             )
 
         root_id = state.upsert_root(
@@ -2252,7 +2284,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if location is None:
             raise HTTPException(
                 status_code=404,
-                detail="该文件还没有登记过，请先让监控或一次刮削扫描到它",
+                detail="该文件还没有登记过，请先让监控或一次抓取扫描到它",
             )
         location_id = int(location["id"])
 
@@ -3080,7 +3112,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="没有匹配的受管根")
         if apply_now and not cfg.policy.write_enabled:
             raise HTTPException(
-                status_code=409, detail="配置里写入开关是关的（policy.write_enabled=false）"
+                status_code=409, detail="配置里写入开关已关闭"
             )
 
         def _dir_paths(root_cfg: RootConfig) -> set[str]:
@@ -3203,7 +3235,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                JOIN locations loc ON loc.id = obs.location_id
                WHERE obs.id IN (SELECT MAX(id) FROM lyric_observations GROUP BY location_id)
                  AND loc.missing_since IS NULL
-                 AND (obs.issues LIKE '%no_embedded_cover%' OR obs.issues LIKE '%no_cover_artwork%')"""
+                 AND EXISTS (SELECT 1 FROM json_each(obs.issues)
+                             WHERE json_each.value IN ('no_embedded_cover','no_cover_artwork'))"""
         ).fetchone()[0])
         orphans = 0
         try:
@@ -3257,22 +3290,20 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         size = max(1, size)
         items: list[dict[str, Any]] = []
         total = 0
-        if kind in ("lyrics", "failed"):
+        if kind == "lyrics":
+            # 单态查询：两态混查再在 Python 里过滤会让分页窗口被另一态占坑，
+            # 部分条目任何页都翻不到
             rows = state.conn.execute(
                 "SELECT s.id, s.state, s.provider, s.provider_id, s.score, s.ai_json, "
                 "l.rel_path, r.name AS root_name "
                 "FROM staged_lyrics s JOIN locations l ON l.id = s.location_id "
                 "JOIN roots r ON r.id = l.root_id "
-                "WHERE s.state IN ('needs_review','failed') "
+                "WHERE s.state = 'needs_review' "
                 "ORDER BY s.created_at DESC LIMIT ? OFFSET ?",
                 (size, (page - 1) * size),
             ).fetchall()
-            total = counts["lyrics"] if kind == "lyrics" else counts["failed"]
+            total = counts["lyrics"]
             for row in rows:
-                if kind == "failed" and row["state"] != "failed":
-                    continue
-                if kind == "lyrics" and row["state"] != "needs_review":
-                    continue
                 ai = None
                 if row["ai_json"]:
                     try:
@@ -3289,6 +3320,38 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                     "state": row["state"],
                     "ai": ai,
                 })
+        elif kind == "failed":
+            # 两类来源合并：写入失败的暂存行 + 任务步骤失败（封面/归位等）
+            staged_rows = state.conn.execute(
+                "SELECT s.id, s.provider, s.score, l.rel_path, r.name AS root_name "
+                "FROM staged_lyrics s JOIN locations l ON l.id = s.location_id "
+                "JOIN roots r ON r.id = l.root_id "
+                "WHERE s.state = 'failed' ORDER BY s.created_at DESC",
+            ).fetchall()
+            for row in staged_rows:
+                items.append({
+                    "kind": "failed",
+                    "ref": f"staged:{row['id']}",
+                    "root": row["root_name"],
+                    "rel_path": row["rel_path"],
+                    "provider": row["provider"],
+                    "score": row["score"],
+                    "state": "failed",
+                    "source": "写入失败",
+                })
+            for step_row in state.failed_task_steps(limit=500):
+                detail = json.loads(step_row["detail_json"] or "{}")
+                items.append({
+                    "kind": "failed",
+                    "ref": f"step:{step_row['task_id']}:{step_row['seq']}",
+                    "root": step_row.get("root_name") or "",
+                    "rel_path": step_row["rel_path"] or "",
+                    "state": "failed",
+                    "source": f"任务步骤失败（{step_row['kind']}）",
+                    "detail": detail,
+                })
+            total = len(items)
+            items = items[(page - 1) * size : (page - 1) * size + size]
         elif kind == "tags":
             rows = state.conn.execute(
                 "SELECT p.id, p.state, p.source, p.confidence, p.title, p.artists, "
@@ -3322,7 +3385,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                    JOIN roots ro ON ro.id = loc.root_id
                    WHERE obs.id IN (SELECT MAX(id) FROM lyric_observations GROUP BY location_id)
                      AND loc.missing_since IS NULL
-                     AND (obs.issues LIKE '%no_embedded_cover%' OR obs.issues LIKE '%no_cover_artwork%')
+                     AND EXISTS (SELECT 1 FROM json_each(obs.issues)
+                                 WHERE json_each.value IN ('no_embedded_cover','no_cover_artwork'))
                    ORDER BY loc.rel_path LIMIT ? OFFSET ?""",
                 (size, (page - 1) * size),
             ).fetchall()
@@ -3396,17 +3460,25 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 "result": json.loads(task["result_json"]) if task["result_json"] else None,
                 "started_at": task["started_at"], "finished_at": task["finished_at"],
             }
-        steps = list(state.iter_task_steps(task_id))
+        # 分页下沉 SQL：大任务的 steps 上万行，轮询时全量拉取纯属浪费
         start = (max(1, step_page) - 1) * step_size
+        total_steps = int(state.conn.execute(
+            "SELECT COUNT(*) FROM task_steps WHERE task_id=?", (task_id,)
+        ).fetchone()[0])
+        steps = state.conn.execute(
+            "SELECT seq, kind, rel_path, state, detail_json FROM task_steps "
+            "WHERE task_id=? ORDER BY seq, id LIMIT ? OFFSET ?",
+            (task_id, step_size, start),
+        ).fetchall()
         return {
             "task": task_view,
-            "total_steps": len(steps),
+            "total_steps": total_steps,
             "steps": [
                 {
                     "seq": s["seq"], "kind": s["kind"], "rel_path": s["rel_path"],
                     "state": s["state"], "detail": json.loads(s["detail_json"] or "{}"),
                 }
-                for s in steps[start : start + step_size]
+                for s in steps
             ],
         }
 
@@ -3465,13 +3537,16 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                             out.append({"root": root_cfg.name, "processed": 0,
                                         "note": "该目录下没有音频文件"})
                             continue
+                        truncated = len(rels) > 2000
                         result = run_ingest(
                             state, cfg, root_cfg, providers,
                             rel_paths=rels[:2000], progress=progress,
                         )
                         out.append({"root": root_cfg.name, **{
                             k: v for k, v in result.items() if k != "task_id"
-                        }, "task_id": result.get("task_id")})
+                        }, "task_id": result.get("task_id"),
+                           "truncated": truncated,
+                           "total_files": len(rels)})
                 finally:
                     for provider in providers:
                         provider.close()
@@ -3487,7 +3562,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         apply_now = bool(payload.get("apply"))
         if apply_now and not cfg.policy.write_enabled:
             raise HTTPException(
-                status_code=409, detail="配置里写入开关是关的（policy.write_enabled=false）"
+                status_code=409, detail="配置里写入开关已关闭"
             )
         dir_prefix = str(payload.get("dir") or "").strip().strip("/")
         if ".." in dir_prefix.split("/"):
@@ -4392,7 +4467,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         payload = payload or {}
         dry_run = payload.get("dry_run", True)
         if not dry_run and not cfg.policy.write_enabled:
-            raise HTTPException(status_code=409, detail="写入开关是关的")
+            raise HTTPException(status_code=409, detail="写入开关已关闭")
         from .pipeline import clean_orphan_sidecars
 
         root_name = str(payload.get("root") or "")
@@ -4434,7 +4509,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         apply_now = bool(payload.get("apply"))
         min_conf = float(payload.get("min_confidence") or 0.8)
         if apply_now and not cfg.policy.write_enabled:
-            raise HTTPException(status_code=409, detail="写入开关是关的")
+            raise HTTPException(status_code=409, detail="写入开关已关闭")
 
         from .ai import AIError, review_duplicate
         from .audit import find_orphan_sidecars
@@ -4561,7 +4636,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if not cfg.policy.write_enabled:
             raise HTTPException(
                 status_code=409,
-                detail="配置里写入开关是关的（policy.write_enabled=false）",
+                detail="配置里写入开关已关闭",
             )
         if not payload.get("confirm"):
             raise HTTPException(status_code=400, detail="请确认替换（confirm=true）")
@@ -4641,7 +4716,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if not cfg.policy.write_enabled and not payload.get("dry_run"):
             raise HTTPException(
                 status_code=409,
-                detail="配置里写入开关是关的（policy.write_enabled=false）",
+                detail="配置里写入开关已关闭",
             )
         from .pipeline import repair_sidecar_names
 
@@ -4764,6 +4839,16 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         # 标签编辑器需要**全部**字段，而 meta.tags 只是匹配用的白名单子集。
         # 两者都给：tags 供匹配相关展示，all_tags 供编辑。
         all_tags, tags_error = read_all_tags(resolved)
+        # 内嵌歌词原文：没有 .lrc 的曲目也能在详情里预览 / 编辑内嵌歌词
+        embedded_text = ""
+        embedded_text_error = None
+        if meta.embedded.state.value != "absent":
+            try:
+                texts, err = read_embedded_lyrics_texts(resolved)
+                embedded_text = "\n".join(texts)
+                embedded_text_error = err
+            except Exception as exc:  # noqa: BLE001 — 读取失败不阻塞标签预览
+                embedded_text_error = str(exc)
         return {
             "rel_path": path,
             "all_tags": all_tags,
@@ -4778,6 +4863,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             "embedded_state": meta.embedded.state.value,
             "embedded_fields": list(meta.embedded.fields),
             "has_cover": meta.embedded.has_cover,
+            "embedded_text": embedded_text,
+            "embedded_text_error": embedded_text_error,
             "problems": list(meta.embedded.parsed.problems) if meta.embedded.parsed else [],
         }
 

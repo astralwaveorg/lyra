@@ -67,7 +67,8 @@ async function onUpload(event: Event) {
 async function fromDir() {
   await run('dir', async () => {
     const result = await api.coverFromDir(props.root, props.path)
-    ElMessage.success(`已嵌入 ${String((result as { source_file?: string }).source_file ?? '同目录封面')}`)
+const embeddedSource = String((result as { source_file?: string }).source_file ?? '')
+ElMessage.success(embeddedSource ? `已嵌入 ${embeddedSource}` : '已嵌入同目录图片')
   })
 }
 

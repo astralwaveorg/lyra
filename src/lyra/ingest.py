@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -167,13 +168,20 @@ def run_ingest(
                 audit=audit, only_rel_paths=set(rel_paths),
                 progress=progress, should_yield=should_yield,
             )
-            result["fetched"] = fetch_summary.accepted + fetch_summary.ai_accepted
+            # ai_accepted 的曲目 decision 已被替换为 ACCEPT，计在 accepted 里，
+            # 这里再相加会双计
+            result["fetched"] = fetch_summary.accepted
             for rel in rel_paths:
                 step("lyrics", rel, "done", {
                     "accepted": fetch_summary.accepted,
                     "ai_accepted": fetch_summary.ai_accepted,
                     "needs_review": fetch_summary.needs_review,
                     "not_found": fetch_summary.not_found,
+                    "no_synced": fetch_summary.no_synced,
+                    "transient_failed": fetch_summary.transient_failed,
+                    # 网络失败不能只藏在 resolutions 里：明细里看不到，
+                    # 使用者会把「没查成」当成「查过没有」
+                    "errors": fetch_summary.errors[:3],
                 })
         else:
             for rel in rel_paths:
@@ -230,11 +238,13 @@ def _organize_new_files(
     rel_paths: list[str],
     task_id: str,
     root_id: int,
+    seq_start: int = 0,
 ) -> int:
     """对新增文件执行自动归位。冲突（目标存在/字段不足）一律不动、转待办。"""
     base = root.resolved_path
     batch_id = f"ingest-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     moved = 0
+    step_seq = seq_start
     for rel in rel_paths:
         path = base / rel
         if not path.is_file():
@@ -251,10 +261,11 @@ def _organize_new_files(
         target = base / target_rel
         if target.exists():
             store.add_task_step(
-                task_id=task_id, seq=0, kind="organize", rel_path=rel,
+                task_id=task_id, seq=step_seq, kind="organize", rel_path=rel,
                 state="review",
                 detail={"conflict": str(target_rel), "fields": fields},
             )
+            step_seq += 1
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -262,9 +273,10 @@ def _organize_new_files(
             path.rename(target)
         except OSError:
             store.add_task_step(
-                task_id=task_id, seq=0, kind="organize", rel_path=rel,
+                task_id=task_id, seq=step_seq, kind="organize", rel_path=rel,
                 state="failed", detail={"error": "rename 失败", "target": target_rel},
             )
+            step_seq += 1
             continue
         store.record_organize_op(
             root_id=root_id, batch_id=batch_id, op_kind="move",
@@ -285,9 +297,10 @@ def _organize_new_files(
                 )
         moved += 1
         store.add_task_step(
-            task_id=task_id, seq=0, kind="organize", rel_path=rel,
+            task_id=task_id, seq=step_seq, kind="organize", rel_path=rel,
             state="done", detail={"target": target_rel},
         )
+        step_seq += 1
     return moved
 
 
@@ -330,9 +343,17 @@ def run_cover_stage(
             continue
 
         # ---- 同目录图 ----
+        # 红线：只读根 / 全局写关闭时不动任何文件，只出建议。
+        # （此前只挡了 CAA 分支，sibling 分支会击穿只读承诺。）
         if policy.auto_embed_sibling:
             sibling = find_sibling_cover(path)
             if sibling is not None:
+                if not writable:
+                    steps.append((rel, "review", {
+                        "source": "sibling", "file": sibling.name,
+                        "note": "发现同目录图片；当前为只读，待确认后嵌入",
+                    }))
+                    continue
                 outcome = _embed_bytes(path, meta.info.media_format, sibling.read_bytes())
                 if outcome is None:
                     steps.append((rel, "failed", {"error": "同目录图片无法识别"}))
@@ -384,8 +405,13 @@ def _album_cover_block(
     if cached is not None and cached["state"] == "ready":
         cached_path = Path(str(cached["file_path"]))
         if cached_path.is_file():
-            info = detect_image(cached_path.read_bytes())
-            return build_picture_block(info)
+            try:
+                info = detect_image(cached_path.read_bytes())
+            except Exception:  # noqa: BLE001
+                info = None
+            if info is not None:
+                return build_picture_block(info)
+            # 半截文件（并发下载中读到）：当作缓存丢失，走重新下载
         # 缓存文件丢了：落库行作废，重新下载
     if not release_id:
         return None
@@ -402,7 +428,11 @@ def _album_cover_block(
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = cache_dir / f"{digest}{suffix}"
         if not cache_file.exists():
-            cache_file.write_bytes(data)
+            # 临时名 + 原子替换：两个任务同时下载同一专辑时，
+            # 另一个进程可能正在读这个文件，半截数据会让 detect_image 炸掉整批任务
+            tmp_file = cache_file.with_name(f".{cache_file.name}.{uuid.uuid4().hex}.tmp")
+            tmp_file.write_bytes(data)
+            os.replace(tmp_file, cache_file)
         store.upsert_cover_album(
             album_key=album_key, source="caa", image_hash=digest,
             file_path=str(cache_file), mime=info.mime,
@@ -446,7 +476,22 @@ def finish_new_files(
     """
     if not rel_paths:
         return {"covers": 0, "moved": 0}
+    # task_steps 外键指向 tasks 表：必须先落任务行再写步骤。此前不落行，
+    # watch 批次第一条步骤就撞外键约束——每批只归位 1 个文件，其余被
+    # 静默跳过（签名未变，对账不会把它们再排进队列）。
+    watch_task_id = task_id or f"watch-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    store.upsert_task(
+        task_id=watch_task_id, kind="ingest", state="running",
+        progress=f"0/{len(rel_paths)}", started_at=time.time(),
+    )
     cover_result = run_cover_stage(store, cfg, root, rel_paths=rel_paths)
+    seq = 0
+    for rel, state, detail in cover_result.get("steps", []):
+        seq += 1
+        store.add_task_step(
+            task_id=watch_task_id, seq=seq, kind="cover", rel_path=rel,
+            state=state, detail=detail,
+        )
     moved = 0
     if _effective_organize_mode(cfg, root) == "new_files" and _writable(cfg, root):
         root_id = store.upsert_root(
@@ -454,7 +499,16 @@ def finish_new_files(
             enabled=root.enabled, read_only=root.read_only,
         )
         moved = _organize_new_files(
-            store, cfg, root, rel_paths,
-            task_id or f"watch-{time.strftime('%Y%m%d-%H%M%S')}", root_id,
+            store, cfg, root, rel_paths, watch_task_id, root_id, seq,
         )
-    return {"covers": cover_result.get("embedded", 0), "moved": moved}
+    store.upsert_task(
+        task_id=watch_task_id, kind="ingest", state="done",
+        progress=f"{len(rel_paths)}/{len(rel_paths)}",
+        result={"covers": cover_result.get("embedded", 0), "moved": moved},
+        started_at=time.time(), finished_at=time.time(),
+    )
+    return {
+        "covers": cover_result.get("embedded", 0),
+        "moved": moved,
+        "task_id": watch_task_id,
+    }

@@ -1,7 +1,7 @@
 /** 枚举值 → 中文标签。**界面上不允许直接显示英文枚举。** */
 
 export const LYRIC_STATE: Record<string, string> = {
-  synced: '合法歌词',
+  synced: '带时间轴',
   synced_suspicious: '时间轴异常',
   plain_text: '无时间轴',
   placeholder: '纯音乐',
@@ -49,53 +49,9 @@ export function issueLabel(code: string): string {
   return ISSUE_LABEL[code] ?? code
 }
 
-/** 问题 → 补齐它需要的标签字段。空数组表示换一种处理方式（清理、改名等）。 */
-export const ISSUE_FIELDS: Record<string, string[]> = {
-  missing_mbid: ['MUSICBRAINZ_TRACKID', 'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ_RELEASETRACKID'],
-  missing_isrc: ['ISRC'],
-  missing_title: ['TITLE'],
-  missing_artist: ['ARTIST', 'ARTISTS'],
-  missing_album: ['ALBUM', 'ALBUMARTIST', 'DATE'],
-  missing_genre: ['GENRE'],
-  missing_sidecar: ['TITLE', 'ARTIST'],
-  missing_embedded: ['TITLE', 'ARTIST'],
-  no_lyrics: ['TITLE', 'ARTIST'],
-  plain_embedded_lyrics: ['TITLE', 'ARTIST'],
-  suspicious_lyrics: ['TITLE', 'ARTIST'],
-  lyrics_mismatch: ['TITLE', 'ARTIST'],
-  no_embedded_cover: ['ALBUM'],
-  no_cover_artwork: ['ALBUM'],
-}
-
-/** 问题分类：决定点开时优先给哪个动作。 */
-export type FixRoute = 'lyrics' | 'tags' | 'cover' | 'rename' | 'clean'
-
-export const ISSUE_ROUTE: Record<string, FixRoute> = {
-  missing_mbid: 'tags',
-  missing_isrc: 'tags',
-  missing_title: 'tags',
-  missing_artist: 'tags',
-  missing_album: 'tags',
-  missing_genre: 'tags',
-  no_embedded_cover: 'cover',
-  no_cover_artwork: 'cover',
-  missing_sidecar: 'lyrics',
-  missing_embedded: 'lyrics',
-  no_lyrics: 'lyrics',
-  plain_embedded_lyrics: 'lyrics',
-  suspicious_lyrics: 'lyrics',
-  lyrics_mismatch: 'lyrics',
-  sidecar_name_mismatch: 'rename',
-  sidecar_ambiguous: 'rename',
-  empty_sidecar: 'clean',
-  orphan_sidecar: 'clean',
-  duplicate_sidecar: 'clean',
-  sidecar_bom: 'clean',
-  sidecar_unparseable: 'clean',
-}
-
 export const PROVIDER_LABEL: Record<string, string> = {
-  qq: 'QQ 音乐',
+  qq: 'QQ音乐',
+  manual: '手动编辑',
   netease: '网易云音乐',
   lrclib: 'LRCLIB',
   acoustid: 'AcoustID',
@@ -106,18 +62,6 @@ export function providerLabel(name: string): string {
   return PROVIDER_LABEL[name] ?? name
 }
 
-export const ORIGIN_LABEL: Record<string, string> = {
-  auto: '自动匹配',
-  manual: '人工选定',
-  review: '复核采用',
-  aligned: '对齐生成',
-  generated: 'AI 生成',
-}
-
-export function originLabel(origin: string | null | undefined): string {
-  return ORIGIN_LABEL[origin ?? ''] ?? '自动匹配'
-}
-
 export const FILE_KIND_LABEL: Record<string, string> = {
   audio: '音频',
   lyrics: '歌词',
@@ -126,8 +70,8 @@ export const FILE_KIND_LABEL: Record<string, string> = {
 }
 
 export const TASK_KIND_LABEL: Record<string, string> = {
-  fetch: '抓取歌词',
-  apply: '写入歌词',
+  fetch: '歌词抓取',
+  apply: '写入',
   'tags-audit': '标签审计',
   'tags-scan': '标签扫描',
   ingest: '入库流水线',
@@ -143,24 +87,13 @@ export const TASK_STATE_LABEL: Record<string, string> = {
   interrupted: '已中断',
 }
 
-/** 待办六类队列。 */
-export const TODO_KIND_LABEL: Record<string, string> = {
-  lyrics: '歌词',
-  tags: '标签',
-  covers: '封面',
-  organize: '归置',
-  orphans: '孤儿',
-  failed: '失败',
-}
-
 /** 任务步骤的环节名（入库流水线每文件 × 每环节）。 */
 export const STEP_KIND_LABEL: Record<string, string> = {
-  identity: '身份识别',
-  tags: '标签',
+  identity: '身份',
   lyrics: '歌词',
   cover: '封面',
   organize: '归位',
-  verify: '质检',
+  apply: '写入',
 }
 
 export const STEP_STATE_LABEL: Record<string, string> = {
@@ -168,34 +101,6 @@ export const STEP_STATE_LABEL: Record<string, string> = {
   review: '待确认',
   failed: '失败',
   skipped: '跳过',
-}
-
-/** 来源健康计数。 */
-export const HEALTH_FIELD_LABEL: Record<string, string> = {
-  ok: '正常',
-  not_found: '查无结果',
-  blocked: '被风控',
-  schema_error: '结构变更',
-}
-
-/** 匹配建议判定（后端 verdict，含重构新增的 approximate）。 */
-export function decisionLabel(verdict: string): string {
-  if (verdict === 'approximate') return '近似匹配可接受'
-  return DECISION_LABEL[verdict] ?? verdict
-}
-
-/** 归置模式。 */
-export const ORGANIZE_MODE_LABEL: Record<string, string> = {
-  off: '不动文件（只出建议）',
-  new_files: '新文件自动归位',
-  inbox: '收件箱流转',
-}
-
-/** 翻译歌词落盘形态。 */
-export const TRANSLATION_LABEL: Record<string, string> = {
-  off: '不写入翻译',
-  bilingual: '双语文体',
-  field: '暂存保留（不写入）',
 }
 
 export const TXN_STATE_LABEL: Record<string, string> = {

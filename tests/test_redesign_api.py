@@ -568,7 +568,12 @@ def test_finish_new_files只补封面与归位不再抓词(env):
         )
 
     # organize mode 默认 off：只出建议不动文件，所以 moved 为 0
-    assert out == {"covers": 1, "moved": 0}, out
+    assert out["covers"] == 1 and out["moved"] == 0, out
+    # 步骤必须有可查的任务行（外键要求先落 tasks）：watch 批次的封面环节可追溯
+    detail = env.get("/api/v1/runs/watch-half")
+    assert detail.status_code == 200, detail.text
+    steps = detail.json()["steps"]
+    assert any(s["kind"] == "cover" and s["state"] == "done" for s in steps), steps
     meta = read_audio_meta(env.lib / "watch入库" / "后半程.flac", env.lib)
     assert meta.embedded.has_cover
 

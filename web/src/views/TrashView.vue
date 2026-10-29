@@ -40,7 +40,7 @@ async function restore(batch: TrashBatch, relPath: string) {
   busy.value = relPath
   try {
     const result = await api.restoreTrash(batch.batch, relPath, root.value)
-    const extra = result.also_restored.length ? `，同时还原了 ${result.also_restored.length} 个歌词文件` : ''
+    const extra = result.also_restored.length ? `（并一并还原 ${result.also_restored.length} 个歌词文件）` : ''
     ElMessage.success(`已还原${extra}`)
     await load()
   } catch (err) {
@@ -80,7 +80,14 @@ async function restoreBatch(batch: TrashBatch) {
         await api.restoreTrash(batch.batch, item.rel_path, target)
         ok += 1
       } catch (err) {
-        failures.push(`${item.name}：${err instanceof Error ? err.message : '失败'}`)
+        // 还原音频时同名 .lrc 被服务端一并还原，循环走到 .lrc 项时
+        // 它已不在回收站——这是正常路径，不算失败
+        const message = err instanceof Error ? err.message : ''
+        if (item.kind === 'lyrics' && message.includes('找不到')) {
+          ok += 1
+          continue
+        }
+        failures.push(`${item.name}：${message || '失败'}`)
       }
     }
     if (failures.length) {
@@ -182,7 +189,7 @@ onMounted(async () => {
             <span class="path">{{ item.name }}</span>
             <span class="cell-meta ellipsis">{{ splitPath(item.rel_path).dir }}</span>
           </div>
-          <el-tag size="small" type="info">{{ FILE_KIND_LABEL[item.kind] ?? '其它' }}</el-tag>
+          <el-tag size="small" type="info">{{ FILE_KIND_LABEL[item.kind] ?? '其他' }}</el-tag>
           <span class="cell-meta num size">{{ fmtBytes(item.size) }}</span>
           <el-button
             size="small"

@@ -163,7 +163,7 @@ async function saveOrganizePolicy() {
   organizeSaving.value = true
   try {
     organizePolicy.value = (await api.updateOrganizeSettings(organizePolicy.value)).policy
-    ElMessage.success('归置设置已保存，监控进程会在一分钟内应用')
+    ElMessage.success('归位设置已保存，监控进程会在一分钟内应用')
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '保存失败')
   } finally {
@@ -343,7 +343,7 @@ async function loadTokens() {
 
 async function mint() {
   if (!tokenLabel.value.trim()) {
-    ElMessage.warning('给令牌起个名字，方便以后认出来')
+    ElMessage.warning('请填写令牌用途，便于日后识别')
     return
   }
   minting.value = true
@@ -460,7 +460,7 @@ onMounted(async () => {
 
   <section class="card">
     <div class="card-head">
-      <span class="card-title">标签刮削</span>
+      <span class="card-title">标签扫描</span>
       <span class="card-hint">保存后监控进程会在一分钟内应用</span>
     </div>
     <div v-if="tagPolicy" class="card-body col">
@@ -555,7 +555,7 @@ onMounted(async () => {
 
   <section class="card">
     <div class="card-head">
-      <span class="card-title">封面与归置</span>
+      <span class="card-title">封面与归位</span>
       <span class="card-hint">入库流水线的两个自动化开关；移动文件可逐条撤销</span>
     </div>
     <div v-if="coverPolicy && organizePolicy" class="card-body col">
@@ -617,7 +617,7 @@ onMounted(async () => {
       </div>
       <div class="setting-actions">
         <el-button type="primary" :loading="coverSaving || organizeSaving" @click="saveCoverPolicy(); saveOrganizePolicy()">
-          保存封面与归置设置
+          保存封面与归位设置
         </el-button>
         <span class="cell-meta">归位记录在整理日志，可逐条撤销</span>
       </div>
@@ -628,7 +628,7 @@ onMounted(async () => {
   <section class="card">
     <div class="card-head">
       <span class="card-title">歌词输出</span>
-      <span class="card-hint">翻译歌词与逐字歌词的落盘形态</span>
+      <span class="card-hint">翻译歌词与逐字歌词的写入文件后的形态</span>
     </div>
     <div v-if="lyricsSettings" class="card-body col">
       <div class="setting-row">
@@ -642,13 +642,13 @@ onMounted(async () => {
         <el-select v-model="lyricsSettings.translation" style="width: 210px">
           <el-option label="双语文体（推荐）" value="bilingual" />
           <el-option label="不写入翻译" value="off" />
-          <el-option label="暂存保留（不写入）" value="field" />
+          <el-option label="仅暂存（不写入文件）" value="field" />
         </el-select>
       </div>
       <div class="setting-row">
         <div class="setting-text">
           <div class="label">保留逐字歌词原文</div>
-          <div class="cell-meta">QQ 逐字词（QRC）另存为同名 .qrc 文件；默认关</div>
+          <div class="cell-meta">QQ逐字词（QRC）另存为同名 .qrc 文件；默认关闭</div>
         </div>
         <el-switch v-model="lyricsSettings.keep_word_level" />
       </div>
@@ -673,7 +673,7 @@ onMounted(async () => {
         <div class="setting-text">
           <div class="label">启用指纹兜底</div>
           <div class="cell-meta">
-            需要 fpcalc（Chromaprint）与 API key。
+            需要 fpcalc（Chromaprint）与 API 密钥。
             <span v-if="acoustid.source === 'env'">key 来自环境变量，此处只读</span>
             <span v-else-if="acoustid.has_key">已保存：{{ acoustid.masked }}</span>
           </div>
@@ -682,7 +682,7 @@ onMounted(async () => {
       </div>
       <div v-if="acoustid.source !== 'env'" class="setting-row">
         <div class="setting-text">
-          <div class="label">API key</div>
+          <div class="label">API 密钥</div>
           <div class="cell-meta">在 acoustid.org 免费申请；只保存在服务端数据目录</div>
         </div>
         <el-input
@@ -690,7 +690,7 @@ onMounted(async () => {
           type="password"
           show-password
           clearable
-          :placeholder="acoustid.has_key ? '留空不修改' : '粘贴 AcoustID API key'"
+          :placeholder="acoustid.has_key ? '留空表示不修改' : '粘贴 AcoustID API 密钥'"
           style="max-width: 360px"
         />
       </div>
@@ -755,11 +755,11 @@ onMounted(async () => {
       </div>
       <div class="setting-row">
         <div class="setting-text">
-          <div class="label">API Token</div>
+          <div class="label">API 令牌</div>
           <div class="cell-meta">
             <span v-if="ai.api_key_source === 'env'">来自环境变量 LYRA_AI_API_KEY，设置页不能覆盖</span>
             <span v-else-if="ai.api_key_source === 'settings'">已保存在服务端 ai-token 文件，留空表示不修改</span>
-            <span v-else-if="ai.api_key_source === 'config'">来自配置文件，留空表示继续使用</span>
+            <span v-else-if="ai.api_key_source === 'config'">来自配置文件，留空表示不修改</span>
             <span v-else>还没有配置 Token</span>
           </div>
         </div>
@@ -770,7 +770,7 @@ onMounted(async () => {
             show-password
             clearable
             :disabled="clearAIToken || ai.api_key_source === 'env'"
-            :placeholder="ai.has_api_key ? '留空不修改' : '粘贴 API Token'"
+            :placeholder="ai.has_api_key ? '留空表示不修改' : '粘贴 API 令牌'"
             style="max-width: 360px"
           />
           <el-checkbox
@@ -825,14 +825,14 @@ onMounted(async () => {
           <div class="label">智能预审</div>
           <div class="cell-meta">
             对落入待审查的候选调用模型判定「是否同一首歌」，判定结论显示在待办里，
-            高置信时自动采纳（留痕、可撤销）。可大幅减少逐首人工确认。
+            高置信时自动采用（留痕、可撤销）。可大幅减少逐首人工确认。
           </div>
         </div>
         <el-switch v-model="ai.pre_review" />
       </div>
       <div v-if="ai.pre_review" class="setting-row">
         <div class="setting-text">
-          <div class="label">自动采纳阈值</div>
+          <div class="label">自动采用阈值</div>
           <div class="cell-meta">模型置信度达到该值且程序闸门（时长/版本）也通过时才自动写入</div>
         </div>
         <el-input-number
@@ -891,7 +891,7 @@ onMounted(async () => {
   <section class="card">
     <div class="card-head">
       <span class="card-title">网络代理</span>
-      <span class="card-hint">按功能决定谁走代理；国内来源始终直连</span>
+      <span class="card-hint">按功能决定哪些功能走代理；国内来源始终直连</span>
     </div>
     <div v-if="network" class="card-body col">
       <div class="setting-row">
@@ -925,7 +925,7 @@ onMounted(async () => {
       />
       <el-alert
         v-if="network.proxy_status === 'unreachable'"
-        title="代理当前连不上，走代理的功能会失败。可以先关掉对应功能的开关。"
+        title="代理当前不可达，经代理的功能会失败。可先关闭对应功能的开关。"
         type="error"
         :closable="false"
         show-icon
@@ -938,7 +938,7 @@ onMounted(async () => {
         <el-switch v-model="network.use_proxy[feature]" />
       </div>
       <div class="cell-meta">
-        QQ 音乐、网易云音乐等国内来源始终直连，不受这里影响；大模型的开关在大模型设置里。
+        QQ音乐、网易云音乐等国内来源始终直连，不受这里影响；大模型的开关在大模型设置里。
       </div>
       <div class="setting-actions">
         <el-button type="primary" :loading="networkSaving" @click="saveNetworkSettings">
@@ -974,11 +974,11 @@ onMounted(async () => {
   </section>
 
   <section class="card">
-    <div class="card-head"><span class="card-title">修改密码</span></div>
+    <div class="card-head"><span class="card-title">更新密码</span></div>
     <div class="card-body form">
       <el-input v-model="currentPassword" type="password" show-password placeholder="当前密码" autocomplete="current-password" />
-      <el-input v-model="newPassword" type="password" show-password placeholder="新密码，至少 10 位" autocomplete="new-password" />
-      <el-input v-model="confirmPassword" type="password" show-password placeholder="再输一次新密码" autocomplete="new-password" />
+      <el-input v-model="newPassword" type="password" show-password placeholder="新密码，至少 10 个字符" autocomplete="new-password" />
+      <el-input v-model="confirmPassword" type="password" show-password placeholder="再次输入新密码" autocomplete="new-password" />
       <el-button type="primary" :loading="changing" :disabled="!currentPassword || !newPassword" @click="changePassword">
         更新密码
       </el-button>
@@ -1072,7 +1072,7 @@ onMounted(async () => {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 14px;
 }
 

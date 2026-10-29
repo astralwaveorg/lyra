@@ -72,7 +72,9 @@ export const useMeta = defineStore('meta', {
       this.stopPolling()
       this.timer = setInterval(() => {
         // 页面在后台时不轮询：NAS 上这点负载不算什么，但省下来没坏处。
-        if (document.visibilityState === 'visible') void this.refresh()
+        if (document.visibilityState === 'visible') {
+          void this.refresh().catch(() => undefined)
+        }
       }, intervalMs)
     },
     stopPolling() {

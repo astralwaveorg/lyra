@@ -10,8 +10,12 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api/client'
 import type { TagLinkCandidate, TagLinkResult, TagProposal } from '@/api/types'
+import { useNarrow } from '@/composables/useMedia'
 import { tagFieldLabel } from '@/utils/labels'
 import AppIcon from './AppIcon.vue'
+
+/** 窄屏收窄弹窗宽度，避免 760px 固定宽度在手机上横向溢出。 */
+const narrow = useNarrow()
 
 const props = defineProps<{
   modelValue: boolean
@@ -112,7 +116,7 @@ async function apply() {
   <el-dialog
     v-model="visible"
     title="按链接指定条目"
-    width="760px"
+    :width="narrow ? '94%' : '760px'"
     :fullscreen="false"
     class="tag-link-dialog"
     append-to-body
@@ -129,7 +133,7 @@ async function apply() {
       </el-button>
     </div>
     <div class="hint dim">
-      支持 musicbrainz.org 的发行、录音、发行组与艺人链接。查询只读，不会改文件。
+      支持 musicbrainz.org 的发行、录音、发行组与艺术家链接。查询只读，不会改文件。
     </div>
 
     <el-alert
@@ -171,7 +175,7 @@ async function apply() {
     </div>
 
     <div v-else-if="result" class="empty-result dim">
-      链接有效，但没有取到可用的标签字段。换一条条目试试。
+      链接有效，但没有取到可用的标签字段。请更换一条条目后重试。
     </div>
 
     <div v-if="current" class="preview">

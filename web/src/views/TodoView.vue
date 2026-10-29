@@ -2,8 +2,8 @@
 /**
  * 待办 · 统一收件箱。
  *
- * 六类队列按「该先看什么」排序；歌词与孤儿复用完整的审查面板（批量、
- * 对比、来源切换都在），封面/归置/失败是轻量列表——它们的处理动作
+ * 六类队列按「该先看什么」排序；歌词与无音源复用完整的审查面板（批量、
+ * 对比、来源切换都在），封面/归位/失败是轻量列表——它们的处理动作
  * 是「打开详情抽屉」或「跳自动化/整理页」。
  *
  * 页面标题的 count 是六类总数；每个页签再带自己的计数。
@@ -34,8 +34,8 @@ const KINDS: { key: Kind; label: string }[] = [
   { key: 'lyrics', label: '歌词' },
   { key: 'tags', label: '标签' },
   { key: 'covers', label: '封面' },
-  { key: 'organize', label: '归置' },
-  { key: 'orphans', label: '孤儿' },
+  { key: 'organize', label: '归位' },
+  { key: 'orphans', label: '无音源' },
   { key: 'failed', label: '失败' },
 ]
 
@@ -43,11 +43,12 @@ const requested = typeof route.query.kind === 'string' ? route.query.kind : ''
 const kind = ref<Kind>(
   (KINDS.find((k) => k.key === requested)?.key ?? 'lyrics') as Kind,
 )
-/** 歌词面板的内部页签（/orphans 旧地址 deep-link 用）。 */
-const lyricsTab =
-  typeof route.query.tab === 'string'
-    ? (route.query.tab as 'safe' | 'pending' | 'ignored' | 'orphans')
-    : undefined
+/** 歌词面板的内部页签（/orphans 旧地址 deep-link 用 lyrics_tab 键）。 */
+const lyricsTab = computed(() =>
+  typeof route.query.lyrics_tab === 'string'
+    ? (route.query.lyrics_tab as 'safe' | 'pending' | 'ignored' | 'orphans')
+    : undefined,
+)
 
 const items = ref<TodoItem[]>([])
 const loading = ref(false)
@@ -149,7 +150,7 @@ onMounted(() => {
         </span>
       </template>
 
-      <!-- 歌词与孤儿：复用完整的审查面板（批量采用/对比/来源切换/手动刮削） -->
+      <!-- 歌词与无音源：复用完整的审查面板（批量采用/对比/来源切换/手动选词） -->
       <LyricsQueue v-if="kind === 'lyrics'" :initial-tab="lyricsTab" />
       <LyricsQueue v-else-if="kind === 'orphans'" initial-tab="orphans" />
       <TagsQueue v-else-if="kind === 'tags'" />
@@ -158,7 +159,7 @@ onMounted(() => {
       <template v-else-if="kind === 'covers'">
         <div class="pane-tip">
           按目录批量补封面（同目录图片与封面档案站）在「自动化」页；下面的清单
-          可以逐个打开详情手工处理。
+          可以逐个打开详情手动处理。
           <router-link class="tip-link" to="/automation">去自动化页</router-link>
         </div>
         <el-skeleton v-if="loading && !items.length" animated :rows="5" />
@@ -190,16 +191,16 @@ onMounted(() => {
         </div>
       </template>
 
-      <!-- 归置：机器给出的归位建议与冲突 -->
+      <!-- 归位：机器给出的归位建议与冲突 -->
       <template v-else-if="kind === 'organize'">
         <div class="pane-tip">
-          归置模式默认不动任何文件；存量曲库的批量整理在「曲库整理」页预览后执行。
+          归位模式默认不动任何文件；存量曲库的批量整理在「曲库整理」页预览后执行。
           <router-link class="tip-link" to="/organize">去整理页</router-link>
         </div>
         <el-skeleton v-if="loading && !items.length" animated :rows="5" />
         <EmptyState
           v-else-if="!items.length"
-          title="没有待处理的归置项"
+          title="没有待处理的归位项"
           hint="开启自动归位后，新入库文件的处理结果会出现在这里。"
           icon="Sort"
         />

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import shutil
 import sys
 import time
@@ -27,6 +28,9 @@ from .config import (
     Config,
     ConfigError,
     apply_ai_settings_values,
+    apply_cover_policy_values,
+    apply_lyrics_settings_values,
+    apply_organize_policy_values,
     apply_tag_policy_values,
     load_config,
 )
@@ -971,9 +975,38 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             print(f"[watch] 大模型设置读取失败，沿用配置文件：{exc}", flush=True)
 
+    def _apply_saved_pipeline_settings() -> None:
+        """封面 / 归置 / 歌词输出 / 指纹 key 的设置页保存值。
+
+        与标签策略同一条规则：设置页保存的值写进了数据库却不回读，
+        重启后就静默回到配置文件默认——用户开了「自动归位」，重启后
+        归置模式悄悄变回 off，新文件不再归位还看不出原因。
+        """
+        loaders = (
+            ("settings.cover_policy", apply_cover_policy_values, "封面"),
+            ("settings.organize_policy", apply_organize_policy_values, "归置"),
+            ("settings.lyrics_format", apply_lyrics_settings_values, "歌词输出"),
+        )
+        for key, apply_fn, label in loaders:
+            raw = store.get_meta(key)
+            if not raw:
+                continue
+            try:
+                apply_fn(cfg, json.loads(raw))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                print(f"[watch] {label}设置读取失败，沿用配置文件：{exc}", flush=True)
+        saved_key = store.get_meta("settings.acoustid_key")
+        if saved_key and not os.environ.get("LYRA_ACOUSTID_API_KEY"):
+            cfg.providers.acoustid.api_key = saved_key
+        if store.get_meta("settings.acoustid_enabled") is not None:
+            cfg.providers.acoustid.enabled = (
+                store.get_meta("settings.acoustid_enabled") == "1"
+            )
+
     tag_policy_revision = store.get_meta("settings.revision") or ""
     _apply_saved_tag_policy()
     _apply_saved_ai_settings()
+    _apply_saved_pipeline_settings()
 
     def _process_new_files(root, paths, *, lock):  # noqa: ANN001, ANN202
         """对「本轮新出现的文件」走完整流程：先本地补 .lrc，再联网抓取剩下的。
@@ -1168,7 +1201,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
 
     def _provider_probe() -> None:
         """对每个已启用来源发一次最小搜索，把结果记进健康表。"""
-        from .providers.base import ProviderError
+        from .providers.base import ProviderBlockedError, ProviderError
 
         probe = {
             "title": "Lyra",
@@ -1184,8 +1217,13 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 continue
             try:
                 found = provider.search(probe)
-            except ProviderError as exc:
+            except ProviderBlockedError as exc:
                 store.bump_provider_health(name, blocked=True, error=str(exc)[:200])
+                print(f"[watch] 来源 {name} 烟雾探测失败: {exc}", flush=True)
+                continue
+            except ProviderError as exc:
+                # 需要登录 / 配额用尽 / 结构变化：不是「被风控」，别误导切网关
+                store.bump_provider_health(name, schema_error=True, error=str(exc)[:200])
                 print(f"[watch] 来源 {name} 烟雾探测失败: {exc}", flush=True)
                 continue
             except Exception as exc:  # noqa: BLE001 — 探测绝不影响主循环
@@ -1334,6 +1372,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 if revision != tag_policy_revision:
                     tag_policy_revision = revision
                     _apply_saved_tag_policy()
+                    _apply_saved_pipeline_settings()
                     # 间隔变化后按「上次扫描时间」重新计算下一次；
                     # 缩短间隔时不必等完旧的 24 小时。
                     last_scan = float(store.get_meta("tags.last_scan_at") or 0.0)

@@ -146,6 +146,10 @@ class RunSummary:
     与 apply_failed 分开统计很重要：failed 需要人介入，而 deferred_locked
     下一轮批量写入会自动续跑，属于「稍后重试」而不是「出了问题」。
     """
+    transient_failed: int = 0
+    """来源瞬时失败（网络/限流）的查询次数——不是「没有结果」，会自动重试，
+    但要让它可见：入库明细里显示 0 命中 0 未找到却藏着 3 次网络失败，
+    使用者会以为「查过了，没有」。"""
     ai_accepted: int = 0
     """AI 预审判定同曲且高置信后自动采纳的条数（留痕可撤销）。"""
     ai_suggested: int = 0
@@ -754,14 +758,16 @@ def _ai_judge_candidates(
         excerpt = ""
         if (entry.provider, entry.provider_id) == best_key and lyrics is not None:
             excerpt = "\n".join(lyrics.text.splitlines()[:8])
+        # id 带 provider 前缀：不同来源的候选 id 是不透明数字串，可能撞号，
+        # 裸 id 会让「模型选中的候选」与「程序比对的最优候选」错位
         items.append({
-            "id": entry.provider_id,
+            "id": f"{entry.provider}:{entry.provider_id}",
             "provider": entry.provider,
             "title": getattr(cand, "title", "") if cand else "",
             "artists": list(getattr(cand, "artists", ()) or ()) if cand else [],
             "album": getattr(cand, "album", "") if cand else "",
             "duration": getattr(cand, "duration", None) if cand else None,
-            "synced": True,
+            "synced": (entry.provider, entry.provider_id) == best_key,
             "excerpt": excerpt or "（未取词，仅元数据判定）",
         })
     if not items:
@@ -849,10 +855,13 @@ def _fetch_one(
             disabled[name] = f"来源被风控拦截: {exc}"
             store.bump_provider_health(name, blocked=True, error=str(exc)[:200])
             summary.errors.append(f"{target.rel_path} [{name}] 被风控拦截: {exc}")
+            summary.transient_failed += 1
             continue
         except (RateLimitedError, TransientNetworkError) as exc:
             # 来源级失败：本轮停用它，避免对全库逐个重试形成请求风暴
             disabled[name] = f"{type(exc).__name__}: {exc}"
+            summary.transient_failed += 1
+            summary.errors.append(f"{target.rel_path} [{name}] {type(exc).__name__}: {exc}")
             store.record_resolution(
                 resolution_key=resolution_key(target, name),
                 provider=name,
@@ -984,6 +993,13 @@ def _fetch_one(
         )
         if outcome is ResolutionOutcome.NO_SYNCED_LYRICS:
             summary.no_synced += 1
+        else:
+            # 取词失败（限流/网络/结构变化）不是「没有结果」：负缓存会重试，
+            # 但摘要与入库明细必须看得见，否则显示为 0/0/0/0 像是「查过没有」。
+            # 实际案例：QQ 搜索命中 39 条、取词时瞬时失败——界面显示全部为零。
+            summary.transient_failed += 1
+            detail = f"{target.rel_path} [{best.provider}] 取词失败: {lyrics_error}"
+            summary.errors.append(detail)
         return
 
     text = normalize_lrc(lyrics.text)
@@ -1015,7 +1031,8 @@ def _fetch_one(
             adoptable = (
                 cfg.ai.auto_accept
                 and judgement.best is not None
-                and judgement.best == decision.best.provider_id
+                and decision.best is not None
+                and judgement.best == f"{decision.best.provider}:{decision.best.provider_id}"
                 and judgement.confidence >= cfg.ai.pre_review_confidence
                 and (
                     judgement.same_recording

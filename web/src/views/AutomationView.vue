@@ -9,52 +9,24 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watchEffect } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api/client'
-import type { DirNode, LibraryArtist, LibraryDirs, TaskRecord, WatchStatus } from '@/api/types'
+import type {
+  RunStep, DirNode, LibraryArtist, LibraryDirs, TaskRecord, WatchStatus } from '@/api/types'
 import { useMeta } from '@/stores/meta'
 import { fmtAgo, fmtNumber } from '@/utils/format'
-import { TASK_STATE_LABEL } from '@/utils/labels'
+import {
+  TASK_KIND_LABEL,
+  STEP_KIND_LABEL,
+  STEP_STATE_LABEL,
+  PROVIDER_LABEL, TASK_STATE_LABEL } from '@/utils/labels'
 import EmptyState from '@/components/EmptyState.vue'
 import AppIcon from '@/components/AppIcon.vue'
 
 /* ---------------------------------------------------- 新接口的最小请求封装 */
 
 /**
- * client.ts 未导出通用 request；自动化页的两个新接口在组件内按同一套
- * 语义直连：同源凭据、JSON 解析、错误取 detail 的中文说明。
+ * 一次批量任务的逐文件明细：每行是「一个文件 × 一个环节」的结果。
+ * 接口走 client.ts 的 run / providerHealth（同一套错误语义）。
  */
-async function request<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: 'same-origin' })
-  const text = await response.text()
-  let data: unknown = null
-  if (text) {
-    try {
-      data = JSON.parse(text)
-    } catch {
-      data = { detail: text }
-    }
-  }
-  if (!response.ok) {
-    const detail = (data as { detail?: unknown } | null)?.detail
-    throw new Error(typeof detail === 'string' ? detail : `请求失败（HTTP ${response.status}）`)
-  }
-  return data as T
-}
-
-/** 一次批量任务的逐文件明细：每行是「一个文件 × 一个环节」的结果。 */
-type RunStep = {
-  seq: number
-  kind: string
-  rel_path: string | null
-  state: string
-  detail: Record<string, unknown>
-}
-
-type RunDetail = {
-  total_steps: number
-  steps: RunStep[]
-}
-
-/** 来源最近 30 天的健康计数。 */
 type ProviderHealthRow = {
   provider: string
   ok: number
@@ -64,52 +36,11 @@ type ProviderHealthRow = {
   last_error: string | null
 }
 
-/** 明细单次最多取 500 条（服务端上限），超出只提示总数。 */
-const STEP_LIMIT = 500
-
-const runDetail = (id: string) =>
-  request<RunDetail>(`/api/v1/runs/${encodeURIComponent(id)}?step_size=${STEP_LIMIT}`)
-const providerHealth = () => request<{ providers: ProviderHealthRow[] }>('/api/v1/providers/health')
-
 /* ------------------------------------------------------------ 文案映射 */
-
-/** 任务类型中文名。 */
-const KIND_LABEL: Record<string, string> = {
-  ingest: '入库',
-  fetch: '歌词抓取',
-  'tags-scan': '标签扫描',
-  'cover-fetch': '封面抓取',
-  'dedupe-scan': '重复检测',
-  'tags-audit': '标签审计',
-  apply: '写入',
-}
-
-/** 步骤环节中文名。 */
-const STEP_KIND_LABEL: Record<string, string> = {
-  identity: '身份',
-  lyrics: '歌词',
-  cover: '封面',
-  organize: '归位',
-  apply: '写入',
-}
-
-/** 步骤结果中文名。 */
-const STEP_STATE_LABEL: Record<string, string> = {
-  done: '完成',
-  review: '待确认',
-  failed: '失败',
-  skipped: '跳过',
-}
-
-/** 来源显示名。 */
-const PROVIDER_LABEL: Record<string, string> = {
-  qq: 'QQ音乐',
-  netease: '网易云音乐',
-  lrclib: 'LRCLIB',
-}
+// 枚举中文名统一放 utils/labels.ts；这里只保留取值函数。
 
 function taskKindLabel(kind: string): string {
-  return KIND_LABEL[kind] ?? kind
+  return TASK_KIND_LABEL[kind] ?? kind
 }
 
 function stepTagType(state: string): 'success' | 'warning' | 'danger' | 'info' {
@@ -198,7 +129,7 @@ async function loadWatch() {
 async function loadHealth() {
   healthLoading.value = true
   try {
-    health.value = (await providerHealth()).providers
+    health.value = (await api.providerHealth()).providers
     healthError.value = ''
   } catch (err) {
     healthError.value = err instanceof Error ? err.message : '来源健康加载失败'
@@ -227,11 +158,11 @@ async function loadSteps(task: TaskRecord) {
   if (known?.loading || (known && known.total > 0)) return
   stepsState[task.id] = { loading: true, error: '', items: [], total: 0 }
   try {
-    const data = await runDetail(task.id)
+    const data = await api.run(task.id)
     stepsState[task.id] = {
       loading: false,
       error: '',
-      items: data.steps.slice(0, STEP_LIMIT),
+      items: data.steps,
       total: data.total_steps,
     }
   } catch (err) {
@@ -350,6 +281,11 @@ function summaryOf(task: TaskRecord): string {
       if (typeof root.accepted === 'number') parts.push(`命中 ${root.accepted}`)
       if (typeof root.needs_review === 'number') parts.push(`待审查 ${root.needs_review}`)
       if (typeof root.applied === 'number') parts.push(`写入 ${root.applied}`)
+      // 网络失败与「未找到」是两回事：混在零里看，用户会以为「查过没有」
+      const transientCount = (root.errors ?? []).filter((e) =>
+        String(e).includes('取词失败') || String(e).includes('Transient') || String(e).includes('RateLimited'),
+      ).length
+      if (transientCount > 0) parts.push(`网络失败 ${transientCount}`)
       if (root.applied && typeof root.applied === 'object' && root.applied.written) {
         parts.push(`写入 ${root.applied.written}`)
       }
@@ -364,6 +300,25 @@ function summaryOf(task: TaskRecord): string {
 
 const runningCount = computed(() => tasks.value.filter((task) => task.state === 'running').length)
 
+/** 按当前范围批量补封面：沿用范围选择器（全库或指定目录）。 */
+async function startCover() {
+  starting.value = 'cover'
+  error.value = ''
+  try {
+    await api.startCoverFetch({
+      root: selectedDir.value?.root,
+      dir: scopeMode.value === 'dir' ? scopePath.value : undefined,
+      apply: meta.writeEnabled,
+    })
+    ElMessage.success('封面抓取任务已开始，可在「任务历史」查看进度')
+    await loadTasks()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '封面抓取任务发起失败'
+  } finally {
+    starting.value = ''
+  }
+}
+
 onMounted(async () => {
   void loadArtists()
   void loadHealth()
@@ -372,9 +327,10 @@ onMounted(async () => {
   poll = setInterval(() => {
     if (document.visibilityState !== 'visible') return
     if (runningCount.value > 0) {
+      // 只刷任务与心跳：meta.refresh 里的待办计数含全库孤儿扫描，
+      // 每 3 秒一次会让 NAS 磁盘永不休眠；徽标由 45 秒全局轮询负责
       void loadTasks()
       void loadWatch()
-      void meta.refresh().catch(() => undefined)
     }
   }, 3000)
 })
@@ -396,7 +352,7 @@ onUnmounted(() => clearInterval(poll))
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
 
       <section class="card">
-        <div class="card-head"><span class="card-title">刮削</span></div>
+        <div class="card-head"><span class="card-title">歌词抓取</span></div>
         <div class="card-body form">
           <div class="field">
             <span class="field-label">范围</span>
@@ -428,7 +384,7 @@ onUnmounted(() => clearInterval(poll))
                 <span class="cell-meta num">{{ item.node.audio }} 首</span>
                 <span v-if="item.node.missing_lrc" class="cell-meta num miss">缺 {{ item.node.missing_lrc }}</span>
               </button>
-              <EmptyState v-if="!flatDirs.length" title="没有读到目录" icon="FolderOpened" />
+              <EmptyState v-if="!flatDirs.length" title="未能读取目录" icon="FolderOpened" />
             </div>
           </div>
 
@@ -439,7 +395,7 @@ onUnmounted(() => clearInterval(poll))
               class="artist-select"
               filterable
               clearable
-              placeholder="全部艺人"
+              placeholder="全部艺术家"
               :loading="artistsLoading"
             >
               <el-option
@@ -462,16 +418,16 @@ onUnmounted(() => clearInterval(poll))
           <div class="field options">
             <span class="field-label">执行</span>
             <el-input-number v-model="limit" :min="1" :max="10000" :step="50" placeholder="不限数量" controls-position="right" class="limit" />
-            <el-checkbox v-model="applyNow">抓完立即写入</el-checkbox>
+            <el-checkbox v-model="applyNow">抓取完成后立即写入</el-checkbox>
             <el-tooltip
               content="连同已有歌词的曲目一起重新查询，可能替换现有歌词"
               placement="top"
             >
-              <el-checkbox v-model="force">全量刮削</el-checkbox>
+              <el-checkbox v-model="force">全量抓取</el-checkbox>
             </el-tooltip>
             <div class="submit">
               <span v-if="!meta.writeEnabled && applyNow" class="cell-meta">
-                写入开关关闭，取消勾选「立即写入」才能抓取
+                写入开关关闭，取消勾选「抓取完成后立即写入」才能抓取
               </span>
               <el-button
                 type="primary"
@@ -479,7 +435,7 @@ onUnmounted(() => clearInterval(poll))
                 :disabled="!meta.writeEnabled && applyNow"
                 @click="start('fetch')"
               >
-                开始刮削
+                开始抓取
               </el-button>
             </div>
           </div>
@@ -487,7 +443,7 @@ onUnmounted(() => clearInterval(poll))
           <div class="form-note cell-meta">
             {{
               force
-                ? '全量刮削会重新查询全部曲目，包括已有歌词的，可能替换现有歌词。'
+                ? '全量刮削会重新查询全部曲目，包括已有歌词的曲目，可能替换现有歌词。'
                 : '默认只处理缺歌词或没有时间轴的曲目，已合格的会跳过。'
             }}
           </div>
@@ -515,6 +471,28 @@ onUnmounted(() => clearInterval(poll))
             <RouterLink to="/todo?kind=tags">
               <el-button>打开标签待办</el-button>
             </RouterLink>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><span class="card-title">封面</span></div>
+          <div class="card-body">
+            <p class="desc">
+              按目录批量补封面：同目录规范命名图片自动嵌入；有发行 MBID 时从
+              Cover Art Archive 按专辑一次下载。质量不足或无来源的进入待办确认。
+            </p>
+            <div class="cover-actions">
+              <el-button
+                :loading="starting === 'cover'"
+                :disabled="scopeMode === 'dir' && !scopePath"
+                @click="startCover()"
+              >
+                按当前范围补封面
+              </el-button>
+              <RouterLink to="/todo?kind=covers">
+                <el-button text>查看缺封面清单</el-button>
+              </RouterLink>
+            </div>
           </div>
         </section>
       </div>
@@ -730,7 +708,7 @@ onUnmounted(() => clearInterval(poll))
 
 .health-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: 14px;
 }
 
@@ -877,9 +855,17 @@ onUnmounted(() => clearInterval(poll))
 
 .grid-2 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  /* min(360px, 100%)：窄屏上列宽收缩到容器内，避免 minmax 固定下限把网格撑出视口 */
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
   gap: 14px;
   margin-bottom: 14px;
+}
+
+.cover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .watch {

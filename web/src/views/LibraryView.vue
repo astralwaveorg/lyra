@@ -215,13 +215,13 @@ async function afterChange() {
       <el-table-column label="" width="140" align="right">
         <template #default="{ row }">
           <div class="row-actions">
-            <el-button size="small" class="row-btn accent" @click="openScrape(row)">刮削</el-button>
+            <el-button size="small" class="row-btn accent" @click="openScrape(row)">抓取</el-button>
             <el-button size="small" class="row-btn" @click="openFix(row)">详情</el-button>
           </div>
         </template>
       </el-table-column>
       <template #empty>
-        <EmptyState title="没有符合条件的曲目" hint="换个筛选条件，或先在刮削页运行一次扫描。" icon="Headset" />
+        <EmptyState title="没有符合条件的曲目" hint="换个筛选条件，或先在「自动化」页运行一次抓取。" icon="Headset" />
       </template>
     </el-table>
 
@@ -239,7 +239,7 @@ async function afterChange() {
           <IssueChip v-for="code in track.issues.slice(0, 2)" :key="code" :code="code" />
         </div>
         <div class="track-card-actions">
-          <el-button size="small" class="row-btn accent" @click="openScrape(track)">刮削</el-button>
+          <el-button size="small" class="row-btn accent" @click="openScrape(track)">抓取</el-button>
           <el-button size="small" class="row-btn" @click="openFix(track)">详情</el-button>
         </div>
       </div>

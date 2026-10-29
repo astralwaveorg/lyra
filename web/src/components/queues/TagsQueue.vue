@@ -35,7 +35,8 @@ const narrow = useNarrow()
 const route = useRoute()
 const router = useRouter()
 
-const requested = typeof route.query.tab === 'string' ? route.query.tab : ''
+// query 键用 tags_tab：与歌词队列、待办类目互不污染（见 LyricsQueue 说明）
+const requested = typeof route.query.tags_tab === 'string' ? route.query.tags_tab : ''
 const tab = ref<Tab>(
   requested === 'review' ||
     requested === 'unmatched' ||
@@ -162,7 +163,7 @@ const reviewNotice = computed(() => {
   }
   return {
     title: '已忽略',
-    text: `共 ${fmtNumber(counts.value.ignored)} 首，是你自己选择不再看的条目。扫描不会把它们翻回来，随时可以恢复。`,
+    text: `共 ${fmtNumber(counts.value.ignored)} 首，已由你手动忽略。扫描不会将其恢复，随时可以还原。`,
   }
 })
 
@@ -307,6 +308,8 @@ async function load() {
 
 async function refreshAll() {
   await Promise.all([loadSummary(), load()])
+  // 写入/忽略/恢复都会改变待办计数；不同步刷新，侧栏徽标会滞后最多 45 秒
+  await meta.refresh().catch(() => undefined)
 }
 
 function applySearch() {
@@ -327,7 +330,7 @@ function changeTab(value: string | number) {
 
 watch(tab, (value) => {
   page.value = 1
-  void router.replace({ query: { ...route.query, tab: value } })
+  void router.replace({ query: { ...route.query, tags_tab: value } })
   void load()
 })
 
@@ -383,7 +386,7 @@ async function resumeRunningTask() {
 
 async function startScan() {
   if (!source.value?.musicbrainz) {
-    ElMessage.warning('还没有配置 MusicBrainz')
+    ElMessage.warning('尚未配置 MusicBrainz')
     return
   }
   if (autoWrite.value) {
@@ -572,7 +575,7 @@ onUnmounted(() => {
         type="warning"
         :closable="false"
         show-icon
-        title="没有配置 MusicBrainz，标签刮削不可用。"
+        title="尚未配置 MusicBrainz，标签扫描不可用。"
         class="gap"
       />
     </div>
@@ -639,7 +642,7 @@ onUnmounted(() => {
             title="只写补空与目录纠正；冲突请逐条确认"
             @click="applyPageFills"
           >
-            写入本页可补
+            写入本页可补字段
           </el-button>
           <el-button
             type="success"
@@ -658,7 +661,7 @@ onUnmounted(() => {
       <div class="filter-search">
         <el-input
           v-model="q"
-          placeholder="搜索曲目、艺人或专辑"
+          placeholder="搜索曲目、艺术家或专辑"
           clearable
           @keyup.enter="applySearch"
           @clear="resetSearch"
@@ -720,7 +723,7 @@ onUnmounted(() => {
             ? '没有待审查的标签'
             : tab === 'unmatched'
               ? '没有未匹配的曲目'
-              : '还没有忽略任何条目'
+              : '还没有忽略的曲目'
       "
       :hint="
         tab === 'auto'
@@ -729,7 +732,7 @@ onUnmounted(() => {
             ? '冲突字段需要人工确认；没有冲突时会自动写入。'
             : tab === 'unmatched'
               ? '全部曲目都找到了可信的 MusicBrainz 条目。'
-              : '在待审查或未匹配里点「忽略」，条目会移到这里，扫描不会再翻它回来。'
+              : '在待审查或未匹配里点「忽略」，条目会移到这里，扫描不会将其恢复。'
       "
       :icon="
         tab === 'auto'

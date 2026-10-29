@@ -199,7 +199,7 @@ async function removeOne(item: FileItem) {
     <el-button size="small" type="danger" plain :loading="deleting" @click="batchDelete">
       <AppIcon name="Delete" :size="13" style="margin-right: 4px" />移入回收站
     </el-button>
-    <el-button size="small" text @click="selected = []">取消选择</el-button>
+    <el-button size="small" text @click="selected = []">清除选择</el-button>
   </div>
 
   <section class="card">
@@ -240,7 +240,7 @@ async function removeOne(item: FileItem) {
         </template>
       </el-table-column>
       <template #empty>
-        <EmptyState title="没有文件" hint="调整筛选条件试试。" icon="FolderOpened" />
+        <EmptyState title="没有文件" hint="请调整筛选条件。" icon="FolderOpened" />
       </template>
     </el-table>
 
