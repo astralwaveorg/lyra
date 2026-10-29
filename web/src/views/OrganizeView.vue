@@ -54,7 +54,7 @@ const cleanupLoaded = ref(false)
 const kindLabel: Record<string, string> = {
   exact: '音频完全一致',
   recording: '同一录音',
-  similar: '标题/艺人/时长相近',
+  similar: '标题/艺术家/时长相近',
 }
 const kindTip: Record<string, string> = {
   exact: '去掉标签后的音频字节完全相同，几乎可以确定是同一份。',
@@ -326,7 +326,7 @@ async function deleteSelected() {
   const summary = selectedKindSummary()
   const keepNote =
     overridingKeeps.value > 0
-      ? `其中 ${overridingKeeps.value} 份是系统建议保留的，已被手动改选。\n`
+      ? `其中 ${overridingKeeps.value} 份原为系统建议保留，已被改选删除。\n`
       : ''
   try {
     await ElMessageBox.confirm(
@@ -876,7 +876,7 @@ onMounted(async () => {
                 :model-value="(selections[group.id] ?? []).includes(item.rel_path)"
                 @change="toggleItem(group, item.rel_path, Boolean($event))"
               >
-                {{ item.rel_path === group.keep_rel_path ? '改为删除这一份' : '选择删除' }}
+                '删除此份'
               </el-checkbox>
               <el-tag v-if="item.reference" size="small" type="info">其他分类保留</el-tag>
               <el-tag
@@ -897,7 +897,7 @@ onMounted(async () => {
                 size="small"
                 type="warning"
               >
-                手动删除
+                已改选删除
               </el-tag>
               <el-tag
                 v-else-if="
@@ -911,7 +911,7 @@ onMounted(async () => {
                 建议删除
               </el-tag>
               <el-tag v-else-if="item.suggested_delete" size="small" type="info" effect="plain">
-                手动保留
+                已改选保留
               </el-tag>
               <span class="cell-meta">{{ item.format.toUpperCase() }}</span>
               <span class="cell-meta num">{{ fmtDuration(item.duration) }}</span>

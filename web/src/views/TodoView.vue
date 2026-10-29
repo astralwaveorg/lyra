@@ -159,8 +159,8 @@ onMounted(() => {
       <template v-else-if="kind === 'covers'">
         <div class="pane-tip">
           按目录批量补封面（同目录图片与封面档案站）在「自动化」页；下面的清单
-          可以逐个打开详情手动处理。
-          <router-link class="tip-link" to="/automation">去自动化页</router-link>
+          可在详情中逐个处理。
+          <router-link class="tip-link" to="/automation">打开「自动化」</router-link>
         </div>
         <el-skeleton v-if="loading && !items.length" animated :rows="5" />
         <EmptyState
@@ -195,7 +195,7 @@ onMounted(() => {
       <template v-else-if="kind === 'organize'">
         <div class="pane-tip">
           归位模式默认不动任何文件；存量曲库的批量整理在「曲库整理」页预览后执行。
-          <router-link class="tip-link" to="/organize">去整理页</router-link>
+          <router-link class="tip-link" to="/organize">打开「曲库整理」</router-link>
         </div>
         <el-skeleton v-if="loading && !items.length" animated :rows="5" />
         <EmptyState

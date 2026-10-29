@@ -2,6 +2,7 @@
 import {
   ArrowRight,
   Back,
+  Bell,
   CaretRight,
   Check,
   CircleCheck,
@@ -53,6 +54,7 @@ import {
 const registry = {
   ArrowRight,
   Back,
+  Bell,
   CaretRight,
   Check,
   CircleCheck,

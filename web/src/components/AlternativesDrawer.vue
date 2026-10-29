@@ -75,7 +75,7 @@ async function choose(option: AlternativeOption) {
   choosing.value = keyOf(option)
   try {
     await api.chooseAlternative(props.stagedId, option.provider, option.provider_id)
-    ElMessage.success('已改用这一份歌词')
+    ElMessage.success('已改用所选候选')
     emit('chosen')
     visible.value = false
   } catch (err) {
@@ -153,7 +153,7 @@ watch(
                 :loading="choosing === keyOf(option)"
                 @click.stop="choose(option)"
               >
-                采用这一份
+                采用此候选
               </el-button>
             </div>
           </div>
