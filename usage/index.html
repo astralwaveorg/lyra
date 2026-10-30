@@ -1822,8 +1822,12 @@
 <li>封面：同目录规范命名图片（cover.jpg 等）自动嵌入；有发行 MBID 时从
   Cover Art Archive 按专辑一次下载。MP3 / OGG / Opus 均可写封面。</li>
 <li>自动归位默认关闭；<code>policy.organize.mode = "new_files"</code> 后仅对新增文件
-  按模板建目录移动，冲突转待办，全部移动可在「活动」页撤销。存量曲库
-  永远在「曲库整理」页人工预览执行。</li>
+  按模板建目录移动，冲突转待办，全部移动可在「活动」页撤销。<code>"full"</code>
+  则由监控进程每 6 小时把全库（含存量）归位到标准结构，同样可撤销。
+  关闭自动时，存量曲库在「曲库整理」页人工预览执行。</li>
+<li>纯音乐自动落定：标题含伴奏/纯音乐标记、来源也标记为纯音乐且查不到
+  同步歌词时，自动写入「纯音乐，请欣赏」占位（<code>policy.instrumental_placeholder</code>，
+  默认开启）。占位显示为「纯音乐」状态，不再进待办、不再重查。</li>
 <li>任意范围可手动重跑：<code>POST /api/v1/tasks/ingest</code> 或自动化页任务表单。</li>
 </ul>
 <h2 id="_6">概览<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
