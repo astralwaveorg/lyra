@@ -30,9 +30,10 @@ import time
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .ai import AIError, review_candidates
 from .audit import audit_root
 from .config import Config, RootConfig
 from .db import StateStore
@@ -1076,6 +1077,94 @@ def _candidate_summary(candidate) -> dict[str, object]:
     }
 
 
+def _ai_verify_search_match(
+    cfg: Config,
+    snap: TrackSnapshot,
+    match: MatchResult,
+) -> MatchResult | None:
+    """让模型核验「标题搜索找到的候选」是不是本地这一首。
+
+    为什么需要：MusicBrainz 的搜索核验要求标题 ≥0.99、艺人 ≥0.85、时长 ≤3s
+    且专辑证据吻合——华语专辑（大量非英文标题、译名差异）几乎永远达不到，
+    于是全库标签都落进「待审查」，自动化率接近零。
+
+    模型核验的条件与程序核验同口径（同一首、同版本），但它能读懂
+    「曲名译名差异」「艺人名写法差异」「合辑与单曲的取舍」这类规则
+    表达不了的判断。核验通过后按「已核验」处理，可自动写入；不通过
+    或模型不可用时保持原样（仍进待审查），绝不因为模型说了就算。
+    """
+    if not (cfg.ai.enabled and cfg.ai.verify_tags):
+        return None
+    if match.verified or not match.candidates:
+        return None
+    if not cfg.ai.api_key.strip():
+        return None
+
+    candidates = [
+        {
+            "id": f"mb:{item.get('provider_id')}",
+            "provider": "musicbrainz",
+            "title": str(item.get("title") or ""),
+            "artists": list(item.get("artists") or []),
+            "album": str(item.get("album") or ""),
+            "duration": item.get("duration"),
+            "synced": True,
+            "excerpt": "",
+        }
+        for item in match.candidates[:5]
+        if item.get("provider_id")
+    ]
+    if not candidates:
+        return None
+
+    try:
+        judgement = review_candidates(
+            protocol=cfg.ai.protocol,
+            base_url=cfg.ai.base_url,
+            model=cfg.ai.model,
+            api_key=cfg.ai.api_key,
+            timeout=cfg.ai.timeout_seconds,
+            use_proxy=cfg.ai.use_proxy,
+            track={
+                "filename": snap.title,
+                "dir_name": snap.album,
+                "title": snap.title,
+                "artists": list(snap.artists),
+                "album": snap.album,
+                "duration": snap.duration,
+                "notes": "标签核验：判断候选录音是否就是本地这一首",
+            },
+            candidates=candidates,
+            max_delta_seconds=cfg.policy.tags.max_duration_delta_seconds,
+        )
+    except AIError:
+        return None
+    except Exception:  # noqa: BLE001 — 核验失败不影响原有流程
+        return None
+
+    if (
+        not judgement.same_recording
+        or judgement.confidence < cfg.ai.pre_review_confidence
+    ):
+        return None
+
+    notes = list(match.notes)
+    notes.append(
+        f"模型核验为同一首录音（置信 {judgement.confidence:.2f}）：{judgement.reason}"
+    )
+    extra = dict(match.extra)
+    extra["模型核验"] = f"置信 {judgement.confidence:.2f}"
+    return replace(
+        match,
+        verified=True,
+        confidence=round(max(match.confidence, 0.95), 4),
+        content_strength=1.0,
+        verification="模型核验为同一首录音",
+        notes=notes,
+        extra=extra,
+    )
+
+
 def _search_match(
     provider: MusicBrainzProvider,
     snap: TrackSnapshot,
@@ -1676,6 +1765,13 @@ def scan_tags(
             # 4) 标题 + 艺人搜索
             if match is None:
                 match, candidates = _search_match(provider, snap, hints)
+                # 搜索结果证据不足时交给模型核验：华语专辑几乎永远达不到
+                # 「标题≥0.99 + 艺人≥0.85 + 时长≤3s + 专辑吻合」的硬核验线，
+                # 不核验就全库进待审查，自动化率接近零。
+                if match is not None and not match.verified:
+                    verified_match = _ai_verify_search_match(cfg, snap, match)
+                    if verified_match is not None:
+                        match = verified_match
 
             # 5) 指纹兜底（用于确认内容，不用于推翻可信目录）
             if match is None or match.confidence < 0.92:
