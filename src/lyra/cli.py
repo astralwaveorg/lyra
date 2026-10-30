@@ -804,6 +804,41 @@ def _watch_lease(store: object, label: str = "watch"):
         store.release_write_lock(_WRITE_LOCK, _WATCH_OWNER)  # type: ignore[attr-defined]
 
 
+def apply_saved_settings(cfg: Config, store) -> None:
+    """把设置页保存的值应用到配置对象（CLI / 监控 / Web 通用）。
+
+    设置页保存的策略存在数据库的 meta 表里，配置文件只是初始值。此前只有
+    Web 进程与监控进程各读一部分，且 CLI 完全不读——于是「在设置页打开的
+    智能预审 / 标签核验」对 `lyra tags scan` 这类命令行操作完全无效。
+    这里统一成一条路径：谁要用配置，先调用它。
+    """
+    raw_policy = store.get_meta("settings.tags_policy")
+    if raw_policy:
+        with contextlib.suppress(ValueError, TypeError, json.JSONDecodeError):
+            apply_tag_policy_values(cfg, json.loads(raw_policy))
+
+    raw_ai = store.get_meta("settings.ai")
+    if raw_ai:
+        with contextlib.suppress(ValueError, TypeError, json.JSONDecodeError):
+            apply_ai_settings_values(cfg, json.loads(raw_ai))
+    # 令牌保存在数据目录的 ai-token 文件（0600）：CLI 也要能用
+    if not os.environ.get("LYRA_AI_API_KEY"):
+        token = read_ai_token(cfg)
+        if token:
+            cfg.ai.api_key = token
+
+    for meta_key, apply_fn in (
+        ("settings.cover_policy", apply_cover_policy_values),
+        ("settings.organize_policy", apply_organize_policy_values),
+        ("settings.lyrics_format", apply_lyrics_settings_values),
+    ):
+        raw = store.get_meta(meta_key)
+        if not raw:
+            continue
+        with contextlib.suppress(ValueError, TypeError, json.JSONDecodeError):
+            apply_fn(cfg, json.loads(raw))
+
+
 def cmd_tags_scan(args: argparse.Namespace, cfg: Config) -> int:
     """CLI 入口：与网页「开始扫描」走同一套逻辑。"""
     from .fingerprint import AcoustIdClient, FpcalcFingerprinter
@@ -821,10 +856,7 @@ def cmd_tags_scan(args: argparse.Namespace, cfg: Config) -> int:
 
     store = open_store(cfg.storage.resolved_data_dir)
     # 设置页保存的策略优先于配置文件，CLI 与网页/监控保持一致。
-    raw_policy = store.get_meta("settings.tags_policy")
-    if raw_policy:
-        with contextlib.suppress(ValueError, TypeError, json.JSONDecodeError):
-            apply_tag_policy_values(cfg, json.loads(raw_policy))
+    apply_saved_settings(cfg, store)
     provider = MusicBrainzProvider(
         MusicBrainzConfig(
             base_url=mb_cfg.base_url,
@@ -1024,6 +1056,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
             token = read_ai_token(cfg)
             if token:
                 cfg.ai.api_key = token
+
 
     def _apply_saved_pipeline_settings() -> None:
         """封面 / 归置 / 歌词输出 / 指纹 key 的设置页保存值。
