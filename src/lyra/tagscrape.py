@@ -238,6 +238,7 @@ class TagScanSummary:
             "matched_mbid": self.matched_mbid,
             "matched_album": self.matched_album,
             "matched_search": self.matched_search,
+            "matched_lyrics_source": self.matched_lyrics_source,
             "matched_fingerprint": self.matched_fingerprint,
             "unresolved": self.unresolved,
             "satisfied": self.satisfied,
@@ -2037,6 +2038,7 @@ def scan_tags(
                     lyrics_rows = _lyrics_source_rows(snap, lyrics_candidates, cfg)
                 if lyrics_rows:
                     summary.matched_lyrics_source += 1
+                    summary.auto += 1
                     store.upsert_tag_proposal(
                         location_id=snap.location_id,
                         state=STATE_AUTO,
