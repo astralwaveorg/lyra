@@ -525,6 +525,19 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             print(f"[startup] 指纹设置读取失败：{exc}", flush=True)
 
+        # **统计预热**：后台线程每 3 分钟预计算一次曲库统计，
+        # 让概览页总是命中缓存、秒开。数据最多滞后 3 分钟。
+        import threading as _threading
+
+        def _stats_refresher() -> None:
+            while True:
+                with contextlib.suppress(Exception):
+                    _stats(cfg)
+                _threading.Event().wait(180.0)
+
+        _refresher = _threading.Thread(target=_stats_refresher, daemon=True)
+        _refresher.start()
+
         # **崩溃恢复。** `recover_pending` 早就实现了、也有测试，但从来没有
         # 任何生产代码调用它——于是崩溃中断的事务永远停在非终态，
         # 界面上只显示「事务（未完成 N）」而无从处理。
@@ -5439,9 +5452,16 @@ _STATS_CACHE = _TtlCache(ttl_seconds=180.0)
 
 
 def _invalidate_caches() -> None:
-    """写操作后同时让统计与清单失效，避免两个缓存口径不一致。"""
+    """写操作后让文件清单缓存失效。
+
+    统计缓存**不在这里清**：自动化（标签扫描 / AI 预审 / 封面嵌入）每次写入
+    都会调用本函数。如果清掉统计缓存，用户每次进首页都要冷启动重算全库
+    （4500 首 ~30 秒），看到的永远是「正在统计曲库」。
+
+    改用后台预热线程每 3 分钟刷新一次——数据最多滞后 3 分钟，
+    但页面加载始终命中缓存、瞬间呈现。
+    """
     _CACHE.invalidate()
-    _STATS_CACHE.invalidate()
 
 
 def _stats(cfg: Config, *, refresh: bool = False) -> dict[str, Any]:

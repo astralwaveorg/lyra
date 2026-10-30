@@ -29,7 +29,7 @@ services:
     logging: *default-logging
 
   lyra:
-    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-2.2.3}
+    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-2.2.4}
     build:
       context: ..
       dockerfile: Dockerfile
@@ -62,7 +62,7 @@ services:
     logging: *default-logging
 
   lyra-watch:
-    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-2.2.3}
+    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-2.2.4}
     build:
       context: ..
       dockerfile: Dockerfile
