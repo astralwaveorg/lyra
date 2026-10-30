@@ -23,7 +23,7 @@ import hashlib
 import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,7 @@ from .cover import (
     cover_quality_ok,
     detect_image,
     download_cover,
+    qq_album_art_url,
 )
 from .db import StateStore
 from .formats import read_audio_meta
@@ -199,7 +200,10 @@ def run_ingest(
                 step("apply", rel, "skipped", {"why": "只读：只审计与出建议"})
 
         # ---- ④ 封面支线 --------------------------------------------------
-        cover_result = run_cover_stage(store, cfg, root, rel_paths=rel_paths)
+        cover_result = run_cover_stage(
+            store, cfg, root, rel_paths=rel_paths,
+            lyric_providers=list(providers),
+        )
         result["covers"] = cover_result.get("embedded", 0)
         for rel, state, detail in cover_result.get("steps", []):
             step("cover", rel, state, detail)
@@ -310,6 +314,7 @@ def run_cover_stage(
     root: RootConfig,
     *,
     rel_paths: list[str],
+    lyric_providers: Sequence[object] = (),
 ) -> dict[str, Any]:
     """封面支线：同目录图 → Cover Art Archive → 建议。
 
@@ -386,8 +391,27 @@ def run_cover_stage(
                     "source": "caa", "album_key": album_key,
                     "note": "CAA 无合格封面或下载失败",
                 }))
-                continue
-        steps.append((rel, "review", {"note": "缺封面：无自动来源可用"}))
+
+        # ---- 歌词来源兜底：QQ / 网易云对华语专辑覆盖远好于 CAA ----
+        if lyric_providers and writable:
+            block = _lyrics_source_cover_block(
+                store, cfg,
+                title=str(next(iter(meta.tags.get("TITLE") or []), "")),
+                artists=list(meta.tags.get("ARTIST") or []),
+                album=str(next(iter(meta.tags.get("ALBUM") or []), "")),
+                duration=meta.info.duration,
+            )
+            if block is not None:
+                outcome = _embed_block(path, meta.info.media_format, block)
+                if outcome:
+                    embedded += 1
+                    steps.append((rel, "done", {"source": "lyrics_source"}))
+                else:
+                    steps.append((rel, "failed", {"error": "歌词来源封面嵌入失败"}))
+            else:
+                steps.append((rel, "review", {"note": "缺封面：无自动来源可用"}))
+        else:
+            steps.append((rel, "review", {"note": "缺封面：无自动来源可用"}))
 
     return {"embedded": embedded, "steps": steps}
 
@@ -460,6 +484,99 @@ def _embed_bytes(path: Path, media_format, data: bytes) -> bool:
     return _embed_block(path, media_format, build_picture_block(info))
 
 
+def _lyrics_source_cover_block(
+    store: StateStore,
+    cfg: Config,
+    *,
+    title: str,
+    artists: list[str],
+    album: str,
+    duration: float | None,
+) -> bytes | None:
+    """用歌词来源（QQ / 网易云）搜索同名曲目并下载专辑封面。
+
+    MusicBrainz 对华语专辑覆盖有限——实际曲库里大量专辑搜不到任何条目。
+    QQ 音乐对同样的华语专辑覆盖极好，而且搜索结果自带 albummid，
+    可以直接拼出封面 URL（无需额外 API 调用）。
+
+    返回 FLAC PICTURE 块载荷，或 None（来源没有封面 / 下载失败 / 质量不足）。
+    结果会缓存到 cover_albums 表（与 CAA 共用一张表），同一专辑只下载一次。
+    """
+    from .providers.base import TrackQuery
+
+    query = TrackQuery(
+        title=title,
+        artists=tuple(artists),
+        album=album,
+        duration=duration,
+        musicbrainz_trackid="",
+        isrc="",
+    )
+    album_key = f"lyrics:{title}|{album}"
+    # 缓存命中直接返回
+    cached = store.get_cover_album(album_key)
+    if cached is not None and cached["state"] == "ready":
+        cached_path = Path(str(cached["file_path"]))
+        if cached_path.is_file():
+            try:
+                info = detect_image(cached_path.read_bytes())
+            except Exception:  # noqa: BLE001
+                info = None
+            if info is not None:
+                return build_picture_block(info)
+
+    from .providers import create_providers
+
+    providers = create_providers(cfg.providers)
+    data: bytes | None = None
+    info = None
+    try:
+        for provider in providers:
+            try:
+                found = provider.search(query)
+            except Exception:  # noqa: BLE001
+                continue
+            for cand in found[:3]:
+                albummid = str((cand.extra or {}).get("albummid") or "")
+                if not albummid:
+                    continue
+                art_url = qq_album_art_url(albummid)
+                try:
+                    data, info = download_cover(art_url, max_bytes=_MAX_COVER_BYTES)
+                except Exception:  # noqa: BLE001
+                    continue
+                if cover_quality_ok(info, min_pixels=cfg.policy.cover.min_min_pixels):
+                    break
+                data = None
+            if data is not None:
+                break
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        for provider in providers:
+            provider.close()
+
+    if data is None or info is None:
+        return None
+    digest = hashlib.sha256(data).hexdigest()
+    suffix = ".png" if info.mime == "image/png" else ".jpg"
+    cache_dir = cfg.storage.resolved_data_dir / "cover-cache"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{digest}{suffix}"
+        if not cache_file.exists():
+            tmp_file = cache_file.with_name(f".{cache_file.name}.{uuid.uuid4().hex}.tmp")
+            tmp_file.write_bytes(data)
+            os.replace(tmp_file, cache_file)
+        store.upsert_cover_album(
+            album_key=album_key, source="lyrics_source", image_hash=digest,
+            file_path=str(cache_file), mime=info.mime,
+            width=info.width, height=info.height,
+        )
+    except OSError:
+        return None
+    return build_picture_block(info)
+
 
 def finish_new_files(
     store: StateStore,
@@ -468,6 +585,7 @@ def finish_new_files(
     rel_paths: list[str],
     *,
     task_id: str | None = None,
+    lyric_providers: Sequence[object] = (),
 ) -> dict[str, Any]:
     """入库的「后半程」：封面支线 + 归位。
 
@@ -484,7 +602,10 @@ def finish_new_files(
         task_id=watch_task_id, kind="ingest", state="running",
         progress=f"0/{len(rel_paths)}", started_at=time.time(),
     )
-    cover_result = run_cover_stage(store, cfg, root, rel_paths=rel_paths)
+    cover_result = run_cover_stage(
+        store, cfg, root, rel_paths=rel_paths,
+        lyric_providers=lyric_providers,
+    )
     seq = 0
     for rel, state, detail in cover_result.get("steps", []):
         seq += 1

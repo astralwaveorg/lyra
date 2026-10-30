@@ -35,6 +35,7 @@ __all__ = [
     "download_cover",
     "caa_front_url",
     "cover_quality_ok",
+    "qq_album_art_url",
     "PICTURE_TYPE_FRONT_COVER",
 ]
 
@@ -271,6 +272,17 @@ def caa_front_url(release_id: str, *, size: int = 500) -> str:
     if not rid:
         raise CoverDownloadError("缺少 MusicBrainz 发行 ID，无法从 CAA 获取封面")
     return f"https://coverartarchive.org/release/{rid}/front-{int(size)}"
+
+
+def qq_album_art_url(albummid: str, *, size: int = 500) -> str:
+    """QQ 音乐专辑封面直链（按 albummid 拼接，无需额外 API 调用）。
+
+    QQ 的 CDN 对这个 URL 返回 JPEG；HTTP 头里已刻意避开 WebP 协商。
+    """
+    mid = (albummid or "").strip()
+    if not mid:
+        raise CoverDownloadError("缺少 QQ 专辑 mid，无法获取封面")
+    return f"https://y.gtimg.cn/music/photo_new/T002R{size}x{size}M000{mid}.jpg"
 
 
 def cover_quality_ok(info: CoverInfo, *, min_pixels: int = 90000) -> bool:

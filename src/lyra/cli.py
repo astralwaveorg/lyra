@@ -1178,7 +1178,10 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 )
             # 入库后半程：封面支线 + 归位（mode=new_files 时自动归位，全程可撤销）
             try:
-                finished = finish_new_files(store, cfg, root, list(paths))
+                finished = finish_new_files(
+                    store, cfg, root, list(paths),
+                    lyric_providers=providers,
+                )
                 if finished.get("covers") or finished.get("moved"):
                     print(
                         f"[watch] {root.name}: 封面嵌入 {finished.get('covers', 0)}"
