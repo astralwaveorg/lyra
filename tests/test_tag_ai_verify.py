@@ -102,10 +102,10 @@ def test_高置信核验后标记为已核验(tmp_path: Path, monkeypatch):
     )
     result = _ai_verify_search_match(cfg, _snap(tmp_path), _match())
     assert result is not None
-    assert result.verified is True
-    assert result.confidence >= 0.95
-    assert result.content_strength == 1.0
-    assert any("模型核验" in note for note in result.notes)
+    assert result.match.verified is True
+    assert result.match.confidence >= 0.95
+    assert result.match.content_strength == 1.0
+    assert any("模型核验" in note for note in result.match.notes)
 
 
 def test_低置信核验不改变判定(tmp_path: Path, monkeypatch):
@@ -170,3 +170,80 @@ def test_没有密钥时不调用模型(tmp_path: Path, monkeypatch):
     )
     assert _ai_verify_search_match(cfg, _snap(tmp_path), _match()) is None
     assert not calls
+
+
+# ---------------------------------------------------------------------------
+# 字段级判定：消化「不同发行版本」造成的冲突
+# ---------------------------------------------------------------------------
+
+
+def _conflict_rows():
+    """一个典型的冲突：本地是具体再版名，来源是主专辑名；另有发行日期差异。"""
+    return [
+        {"key": "ALBUM", "current": ["Yellow Submarine (MFSL SuperVinyl)"],
+         "suggested": ["The Beatles"], "action": "conflict"},
+        {"key": "DATE", "current": ["1969"], "suggested": ["1988"], "action": "conflict"},
+        {"key": "ARTIST", "current": ["Beatles, The"], "suggested": ["The Beatles"],
+         "action": "conflict"},
+    ]
+
+
+def test_本地更准则保留本地且不算冲突():
+    from lyra.tagscrape import _apply_field_decisions
+
+    rows = _apply_field_decisions(
+        _conflict_rows(), {"ALBUM": "prefer_local", "DATE": "prefer_local"}
+    )
+    by_key = {row["key"]: row for row in rows}
+    assert by_key["ALBUM"]["action"] == "fill"
+    assert by_key["ALBUM"]["suggested"] == ["Yellow Submarine (MFSL SuperVinyl)"]
+    assert by_key["DATE"]["action"] == "fill"
+
+
+def test_来源更准则自动纠正():
+    from lyra.tagscrape import _apply_field_decisions
+
+    rows = _apply_field_decisions(
+        _conflict_rows(), {"ALBUM": "prefer_source", "DATE": "prefer_source"}
+    )
+    by_key = {row["key"]: row for row in rows}
+    assert by_key["ALBUM"]["action"] == "correct"
+    assert by_key["ALBUM"]["suggested"] == ["The Beatles"]
+
+
+def test_等价写法自动纠正():
+    from lyra.tagscrape import _apply_field_decisions
+
+    rows = _apply_field_decisions(_conflict_rows(), {"ALBUM": "equivalent"})
+    by_key = {row["key"]: row for row in rows}
+    assert by_key["ALBUM"]["action"] == "correct"
+
+
+def test_关键字段即使模型说来源更准也留给人工():
+    """曲名/艺人写错的代价远高于多问一次——关键字段只允许「等价」自动处理。"""
+    from lyra.tagscrape import _apply_field_decisions
+
+    rows = _apply_field_decisions(
+        _conflict_rows(), {"ARTIST": "prefer_source", "ALBUM": "prefer_source"}
+    )
+    by_key = {row["key"]: row for row in rows}
+    assert by_key["ARTIST"]["action"] == "conflict", "艺人字段必须留给人工"
+    assert by_key["ALBUM"]["action"] == "correct"
+
+
+def test_判断不了的字段保持冲突():
+    from lyra.tagscrape import _apply_field_decisions
+
+    rows = _apply_field_decisions(
+        _conflict_rows(), {"ALBUM": "uncertain", "DATE": "uncertain"}
+    )
+    by_key = {row["key"]: row for row in rows}
+    assert by_key["ALBUM"]["action"] == "conflict"
+    assert by_key["DATE"]["action"] == "conflict"
+
+
+def test_没有判定的字段不受影响():
+    from lyra.tagscrape import _apply_field_decisions
+
+    rows = _apply_field_decisions(_conflict_rows(), {})
+    assert all(row["action"] == "conflict" for row in rows)

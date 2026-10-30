@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 import httpx
@@ -513,6 +513,17 @@ class CandidateJudgement:
     reason: str
     rejected: tuple[str, ...] = ()
     model: str = ""
+    fields: dict[str, str] = field(default_factory=dict)
+    """字段级判定：标签字段名 → 处置方式。
+
+    处置方式：
+    - ``equivalent`` 两者等价（写法差异），用来源写法即可；
+    - ``prefer_local`` 本地更准确（常见：本地是具体再版名、来源是主专辑名）；
+    - ``prefer_source`` 来源更准确；
+    - ``uncertain`` 判断不了，交给人工。
+
+    这是把「标签冲突」变成可自动决策的关键：只有 ``uncertain`` 才需要人看。
+    """
 
     @property
     def same_recording(self) -> bool:
@@ -531,6 +542,7 @@ class CandidateJudgement:
             "reason": self.reason,
             "rejected": list(self.rejected),
             "model": self.model,
+            "fields": dict(self.fields),
         }
 
 
@@ -546,6 +558,9 @@ _MATCH_PROMPT = """你是音乐库整理助手。一个音频文件在多个歌�
 候选列表（id 供你引用）：
 {candidates}
 
+本地与来源存在分歧的标签字段（逐个判断，不要遗漏）：
+{conflicts}
+
 判断规则（宁缺毋滥）：
 1. relation 三选一：same_recording=同一录音（同一版本）；same_song_diff_version=同一首歌的不同版本
    （现场版/录音室版/重混等——歌词内容基本一致，只是演唱场景或编曲不同）；different=不是同一首。
@@ -558,7 +573,17 @@ _MATCH_PROMPT = """你是音乐库整理助手。一个音频文件在多个歌�
 {{"best": "候选id或null", "confidence": 0.0到1.0,
   "relation": "same_recording或same_song_diff_version或different",
   "reason": "一句话理由",
-  "rejected": ["明确不是同一录音的候选id"]}}"""
+  "rejected": ["明确不是同一录音的候选id"],
+  "fields": {{"字段名": "equivalent或prefer_local或prefer_source或uncertain"}}}}
+
+字段判定的口径：
+- equivalent：同一个值的不同写法（大小写、全半角、空格、标点、倒装写法），
+  用来源的写法没有损失；
+- prefer_local：本地更准确——典型是本地写的是**具体发行版本**（带压制/再版
+  限定），而来源写的是**主发行**；这时保留本地；
+- prefer_source：来源更准确——典型是来源是规范写法而本地是错的；
+- uncertain：判断不了，或涉及曲名/艺人这类关键信息，不要猜。
+只输出上面列出的字段名，不要编造新的。"""
 
 
 def review_candidates(
@@ -570,6 +595,7 @@ def review_candidates(
     timeout: float,
     track: dict,
     candidates: list[dict],
+    conflicts: list[dict] | None = None,
     client: httpx.Client | None = None,
     use_proxy: bool = True,
     max_delta_seconds: float = 5.0,
@@ -602,7 +628,15 @@ def review_candidates(
             f"   内容摘要：{str(cand.get('excerpt') or '')[:300]}"
         )
 
+    conflict_lines = []
+    for item in conflicts or []:
+        local = " / ".join(str(v) for v in (item.get("current") or [])) or "（空）"
+        remote = " / ".join(str(v) for v in (item.get("suggested") or [])) or "（空）"
+        conflict_lines.append(f"- {item.get('key')}：本地「{local}」 vs 来源「{remote}」")
+    conflicts_text = "\n".join(conflict_lines) or "（无）"
+
     prompt = _MATCH_PROMPT.format(
+        conflicts=conflicts_text,
         filename=track.get("filename") or "（未知）",
         dir_name=track.get("dir_name") or "（未知）",
         title=track.get("title") or "（未知）",
@@ -645,6 +679,16 @@ def review_candidates(
         best = None
         confidence = min(confidence, 0.5)
         relation = "different"
+    raw_fields = data.get("fields")
+    field_decisions: dict[str, str] = {}
+    if isinstance(raw_fields, dict):
+        allowed = {"equivalent", "prefer_local", "prefer_source", "uncertain"}
+        known = {str(item.get("key")) for item in (conflicts or [])}
+        for key, value in raw_fields.items():
+            name = str(key)
+            verdict = str(value).strip()
+            if name in known and verdict in allowed:
+                field_decisions[name] = verdict
     return CandidateJudgement(
         best=best,
         confidence=confidence,
@@ -652,4 +696,5 @@ def review_candidates(
         reason=str(data.get("reason") or "")[:160],
         rejected=rejected,
         model=model,
+        fields=field_decisions,
     )

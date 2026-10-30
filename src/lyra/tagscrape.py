@@ -1077,11 +1077,66 @@ def _candidate_summary(candidate) -> dict[str, object]:
     }
 
 
+#: 关键字段：曲名、艺人、标识码这类信息**只允许**「等价写法」自动处理，
+#: 即使模型认为来源更好也要人工确认——写错曲名/艺人比留待审查糟得多。
+AI_SAFE_FIELDS = frozenset({
+    "ALBUM", "ALBUMARTIST", "DATE", "ORIGINALDATE", "ORIGINALYEAR",
+    "LABEL", "CATALOGNUMBER", "BARCODE", "MEDIA", "RELEASECOUNTRY",
+    "RELEASESTATUS", "RELEASETYPE", "TOTALTRACKS", "TRACKTOTAL",
+    "TOTALDISCS", "DISCTOTAL",
+})
+
+
+def _apply_field_decisions(
+    rows: Sequence[Mapping[str, object]],
+    decisions: Mapping[str, str],
+) -> list[dict]:
+    """按模型给出的字段级判定处理冲突行。
+
+    - ``equivalent``：值等价，用来源写法（自动纠正）；
+    - ``prefer_source``：来源更准确，采用来源（自动纠正）；
+    - ``prefer_local``：本地更准确，**保留本地**且该字段不再算冲突——
+      这是消化队列的主力：本地写的是具体再版名、来源写的是主专辑名时，
+      本地往往才是对的，没必要为此打扰人；
+    - ``uncertain`` 或关键字段：保持冲突，等人。
+
+    只处理发行级字段；曲名/艺人等关键字段即使模型说来源更好也留给人工。
+    """
+    out: list[dict] = []
+    for row in rows:
+        item = {
+            "key": str(row["key"]),
+            "current": list(row["current"]),
+            "suggested": list(row["suggested"]),
+            "action": str(row["action"]),
+        }
+        verdict = decisions.get(item["key"])
+        if item["action"] == ACTION_CONFLICT and verdict:
+            if verdict in ("equivalent", "prefer_source") and item["key"] in AI_SAFE_FIELDS:
+                item["action"] = ACTION_CORRECT
+            elif verdict == "prefer_local" and item["key"] in AI_SAFE_FIELDS:
+                # 保留本地：不是「纠正」，只是不再算冲突——标记为一致
+                item["action"] = ACTION_FILL
+                item["suggested"] = list(item["current"])
+                item["current"] = []
+        out.append(item)
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedMatch:
+    """核验通过后的匹配结论与字段级判定。"""
+
+    match: MatchResult
+    field_decisions: dict[str, str] = field(default_factory=dict)
+
+
 def _ai_verify_search_match(
     cfg: Config,
     snap: TrackSnapshot,
     match: MatchResult,
-) -> MatchResult | None:
+    rows: Sequence[Mapping[str, object]] | None = None,
+) -> _VerifiedMatch | None:
     """让模型核验「标题搜索找到的候选」是不是本地这一首。
 
     为什么需要：MusicBrainz 的搜索核验要求标题 ≥0.99、艺人 ≥0.85、时长 ≤3s
@@ -1135,6 +1190,15 @@ def _ai_verify_search_match(
                 "notes": "标签核验：判断候选录音是否就是本地这一首",
             },
             candidates=candidates,
+            conflicts=[
+                {
+                    "key": str(row["key"]),
+                    "current": list(row["current"]),
+                    "suggested": list(row["suggested"]),
+                }
+                for row in (rows or [])
+                if str(row.get("action")) == ACTION_CONFLICT
+            ],
             max_delta_seconds=cfg.policy.tags.max_duration_delta_seconds,
         )
     except AIError:
@@ -1154,7 +1218,11 @@ def _ai_verify_search_match(
     )
     extra = dict(match.extra)
     extra["模型核验"] = f"置信 {judgement.confidence:.2f}"
-    return replace(
+    if judgement.fields:
+        extra["字段判定"] = "、".join(
+            f"{key}:{verdict}" for key, verdict in judgement.fields.items()
+        )
+    verified_match = replace(
         match,
         verified=True,
         confidence=round(max(match.confidence, 0.95), 4),
@@ -1162,6 +1230,9 @@ def _ai_verify_search_match(
         verification="模型核验为同一首录音",
         notes=notes,
         extra=extra,
+    )
+    return _VerifiedMatch(
+        match=verified_match, field_decisions=dict(judgement.fields)
     )
 
 
@@ -1809,6 +1880,20 @@ def scan_tags(
                 rows = compare_fields(snap.tags, match.fields)
             if match.source == SOURCE_SEARCH:
                 rows = _mark_search_corrections(rows, match, snap)
+
+            # 搜索结果证据不足时交给模型核验：华语专辑几乎永远达不到
+            # 「标题≥0.99 + 艺人≥0.85 + 时长≤3s + 专辑吻合」的硬核验线，
+            # 不核验就全库进待审查，自动化率接近零。
+            #
+            # 核验同时给出**字段级判定**：哪些冲突字段本地更准（保留本地、
+            # 不再算冲突）、哪些来源更准（自动纠正）、哪些判断不了（留人工）。
+            # 只有「判断不了」的才需要人处理。
+            if match.source == SOURCE_SEARCH and not match.verified:
+                verified = _ai_verify_search_match(cfg, snap, match, rows)
+                if verified is not None:
+                    match = verified.match
+                    rows = _apply_field_decisions(rows, verified.field_decisions)
+
             rows = _auto_resolve_conflicts(rows, match, snap, cfg)
             state = _decide_state(snap, match, rows, cfg)
             if state == "satisfied":
