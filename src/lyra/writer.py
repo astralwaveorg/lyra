@@ -38,8 +38,8 @@ from .formats import (
     read_all_tags,
     read_audio_meta,
 )
-from .lrc import content_hash, normalize_lrc
-from .models import MediaFormat
+from .lrc import content_hash, normalize_lrc, parse_lrc
+from .models import LyricsState, MediaFormat
 
 __all__ = [
     "WritePlan",
@@ -1170,6 +1170,10 @@ def _verify_result(plan: WritePlan) -> list[str]:
         allowed_states = ("synced", "synced_suspicious")
         if plan.force:
             allowed_states = allowed_states + ("plain_text", "placeholder")
+        # 目标内容本身就是纯音乐占位时，写入后的状态就该是 placeholder：
+        # 这是「按计划落盘」，不是异常（自动占位落定走这条，无需人工 force）
+        if plan.lyrics_text and parse_lrc(plan.lyrics_text).state is LyricsState.PLACEHOLDER:
+            allowed_states = allowed_states + ("placeholder",)
         if meta.embedded.state.value not in allowed_states:
             problems.append(
                 f"写入后内嵌歌词状态异常: {meta.embedded.state.value}"

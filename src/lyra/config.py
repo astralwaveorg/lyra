@@ -389,6 +389,13 @@ class PolicyConfig:
     fill_empty_lrc: bool = True
     skip_if_valid_synced: bool = True
     clear_plain_embedded: bool = True
+    instrumental_placeholder: bool = True
+    """纯音乐自动落定：来源与标题都表明「没有歌词」时，自动写入占位。
+
+    占位（「纯音乐，请欣赏」）不是猜测出来的歌词，是把「这首歌没有词」
+    这个结论显式落盘：状态变成「纯音乐」，不再进任何待办，也不耗配额。
+    关掉后这类曲目回到「每轮重查、直到永远」的旧行为。
+    """
     allow_other_providers: bool = False
     matching: MatchingPolicy = field(default_factory=MatchingPolicy)
     tags: TagPolicy = field(default_factory=TagPolicy)
@@ -885,7 +892,8 @@ _ACOUSTID_KEYS = {
 }
 _POLICY_KEYS = {
     "write_enabled", "write_mode", "write_sidecar_lrc", "embed_lyrics", "fill_empty_lrc",
-    "skip_if_valid_synced", "clear_plain_embedded", "allow_other_providers", "matching",
+    "skip_if_valid_synced", "clear_plain_embedded", "allow_other_providers",
+    "instrumental_placeholder", "matching",
     "tags", "cover", "organize",
 }
 _COVER_KEYS = {
@@ -930,7 +938,7 @@ _TOP_KEYS = {
 _WRITE_MODES = {"auto", "verified_only", "off"}
 _WATCH_BACKENDS = {"auto", "inotify", "fsevents", "poll"}
 _LYRIC_FORMATS = {"line_lrc"}
-_ORGANIZE_MODES = {"off", "new_files", "inbox"}
+_ORGANIZE_MODES = {"off", "new_files", "inbox", "full"}
 _TEMPLATE_FIELD_WHITELIST = frozenset(
     {"artist", "albumartist", "album", "title", "track_no", "disc_no", "year", "ext"}
 )
@@ -1474,6 +1482,12 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                 "policy.allow_other_providers",
                 table.get("allow_other_providers", False),
                 False,
+            ),
+            instrumental_placeholder=_as_bool(
+                problems,
+                "policy.instrumental_placeholder",
+                table.get("instrumental_placeholder", True),
+                True,
             ),
         )
         if "tags" in table:

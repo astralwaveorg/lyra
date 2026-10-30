@@ -56,6 +56,7 @@ export const PROVIDER_LABEL: Record<string, string> = {
   lrclib: 'LRCLIB',
   acoustid: 'AcoustID',
   musicbrainz: 'MusicBrainz',
+  placeholder: '纯音乐占位',
 }
 
 export function providerLabel(name: string): string {

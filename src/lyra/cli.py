@@ -497,6 +497,8 @@ def _print_summary(label: str, s) -> None:  # noqa: ANN001
         print(f"    └ 待审查      {s.needs_review}")
         print(f"  未找到          {s.not_found}")
         print(f"  无同步歌词      {s.no_synced}")
+        if s.instrumental_placeholder:
+            print(f"  纯音乐占位      {s.instrumental_placeholder}")
         print(f"  命中负缓存跳过  {s.skipped_cached}")
         print(f"  已有同步歌词跳过 {s.skipped_satisfied}")
         print(f"  被规则排除      {s.skipped_excluded}")
@@ -551,6 +553,8 @@ def cmd_fetch(args: argparse.Namespace, cfg: Config) -> int:
                     "skipped_cached": summary.skipped_cached,
                     "skipped_satisfied": summary.skipped_satisfied,
                     "skipped_excluded": summary.skipped_excluded,
+                    "ai_accepted": summary.ai_accepted,
+                    "instrumental_placeholder": summary.instrumental_placeholder,
                     "provider_disabled": summary.provider_disabled,
                     "errors": summary.errors,
                 }
@@ -1176,6 +1180,12 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                     f"（判定已留档，写入可撤销）",
                     flush=True,
                 )
+            if fetched.instrumental_placeholder:
+                print(
+                    f"[watch] {root.name}: 纯音乐占位落定 "
+                    f"{fetched.instrumental_placeholder} 首",
+                    flush=True,
+                )
             # 入库后半程：封面支线 + 归位（mode=new_files 时自动归位，全程可撤销）
             try:
                 finished = finish_new_files(
@@ -1287,6 +1297,8 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     # AI 预审批：抓取后的待审查队列交给模型判定，高置信直接转待写入。
     # 独立于抓取预算——抓取时逐首判定会被几千首的扫描量摊薄，队列消不动。
     _AI_PRE_REVIEW_SECONDS = 300.0
+    # full 整理：每 6 小时跑一次，把全库文件移到标准结构
+    _FULL_ORGANIZE_SECONDS = 21600.0
     last_ai_pre_review = 0.0
     last_orphan_clean = 0.0
     last_cover_repair = 0.0
@@ -1295,6 +1307,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     last_policy_check = 0.0
     last_network_check = 0.0
     last_probe = 0.0
+    last_full_organize = 0.0
 
     def _run_ai_pre_review() -> None:
         """对待审查队列做一次模型判定，高置信条目转为待写入。"""
@@ -1333,6 +1346,31 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 print(
                     f"[watch] {root_cfg.name}: AI 预审 判定 {result.judged} 条，"
                     f"自动采纳 {result.adopted} 条",
+                    flush=True,
+                )
+
+    def _run_full_organize() -> None:
+        """full 模式：定期把全库文件归位到标准结构（可撤销）。"""
+        from .ingest import finish_new_files
+
+        for root_cfg in cfg.enabled_roots:
+            if root_cfg.read_only:
+                continue
+            mode = root_cfg.organize_mode or cfg.policy.organize.mode
+            if mode != "full":
+                continue
+            all_rels = [
+                str(r["rel_path"]) for r in store.conn.execute(
+                    "SELECT rel_path FROM locations WHERE root_id=? AND missing_since IS NULL",
+                    (store.get_root_id(root_cfg.name) or -1,),
+                )
+            ]
+            if not all_rels:
+                continue
+            result = finish_new_files(store, cfg, root_cfg, all_rels)
+            if result.get("moved"):
+                print(
+                    f"[watch] {root_cfg.name}: full 整理归位 {result['moved']} 首",
                     flush=True,
                 )
 
@@ -1634,6 +1672,13 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                     _run_ai_pre_review()
                 except Exception as exc:  # noqa: BLE001
                     print(f"[watch] AI 预审失败 {type(exc).__name__}: {exc}", flush=True)
+            # full 整理：每 6 小时一次，把全库文件归位到标准结构
+            if now - last_full_organize >= _FULL_ORGANIZE_SECONDS:
+                last_full_organize = now
+                try:
+                    _run_full_organize()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[watch] full 整理失败 {type(exc).__name__}: {exc}", flush=True)
             # 来源烟雾探测：每天一次，与对账解耦（探测失败不影响任何状态）
             if now - last_probe >= _PROBE_SECONDS:
                 last_probe = now

@@ -3210,6 +3210,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                         "needs_review": s.needs_review, "not_found": s.not_found,
                         "no_synced": s.no_synced, "skipped_cached": s.skipped_cached,
                         "skipped_satisfied": s.skipped_satisfied,
+                        "ai_accepted": s.ai_accepted, "ai_suggested": s.ai_suggested,
+                        "instrumental_placeholder": s.instrumental_placeholder,
                         "provider_disabled": s.provider_disabled,
                         "errors": s.errors[:20],
                     }

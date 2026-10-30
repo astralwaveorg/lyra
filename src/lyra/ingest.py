@@ -614,14 +614,27 @@ def finish_new_files(
             state=state, detail=detail,
         )
     moved = 0
-    if _effective_organize_mode(cfg, root) == "new_files" and _writable(cfg, root):
+    mode = _effective_organize_mode(cfg, root)
+    if mode in ("new_files", "full") and _writable(cfg, root):
         root_id = store.upsert_root(
             name=root.name, role=root.role.value, path=str(root.resolved_path),
             enabled=root.enabled, read_only=root.read_only,
         )
-        moved = _organize_new_files(
-            store, cfg, root, rel_paths, watch_task_id, root_id, seq,
-        )
+        if mode == "full":
+            # full 模式：整理全部文件（含存量），按批次执行
+            all_rels = [
+                str(r["rel_path"]) for r in store.conn.execute(
+                    "SELECT rel_path FROM locations WHERE root_id=? AND missing_since IS NULL",
+                    (root_id,),
+                )
+            ]
+            moved = _organize_new_files(
+                store, cfg, root, all_rels, watch_task_id, root_id, seq,
+            )
+        else:
+            moved = _organize_new_files(
+                store, cfg, root, rel_paths, watch_task_id, root_id, seq,
+            )
     store.upsert_task(
         task_id=watch_task_id, kind="ingest", state="done",
         progress=f"{len(rel_paths)}/{len(rel_paths)}",

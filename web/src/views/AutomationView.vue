@@ -316,7 +316,7 @@ function summaryOf(task: TaskRecord): string {
     return task.error ? `失败：${task.error}` : '失败'
   }
   const result = task.result as
-    | { roots?: { root?: string; scanned?: number; fetched?: number; accepted?: number; needs_review?: number; applied?: number | { written?: number }; errors?: string[]; total?: number; updatable?: number; conflicts?: number }[] }
+    | { roots?: { root?: string; scanned?: number; fetched?: number; accepted?: number; needs_review?: number; ai_accepted?: number; instrumental_placeholder?: number; applied?: number | { written?: number }; errors?: string[]; total?: number; updatable?: number; conflicts?: number }[] }
     | null
   if (!result?.roots?.length) return ''
   return result.roots
@@ -325,6 +325,8 @@ function summaryOf(task: TaskRecord): string {
       if (typeof root.scanned === 'number') parts.push(`扫描 ${root.scanned}`)
       if (typeof root.fetched === 'number') parts.push(`抓取 ${root.fetched}`)
       if (typeof root.accepted === 'number') parts.push(`命中 ${root.accepted}`)
+      if (typeof root.ai_accepted === 'number' && root.ai_accepted > 0) parts.push(`AI 采纳 ${root.ai_accepted}`)
+      if (typeof root.instrumental_placeholder === 'number' && root.instrumental_placeholder > 0) parts.push(`纯音乐 ${root.instrumental_placeholder}`)
       if (typeof root.needs_review === 'number') parts.push(`待审查 ${root.needs_review}`)
       if (typeof root.applied === 'number') parts.push(`写入 ${root.applied}`)
       // 网络失败与「未找到」是两回事：混在零里看，用户会以为「查过没有」

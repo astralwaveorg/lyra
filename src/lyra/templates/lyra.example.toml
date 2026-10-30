@@ -175,6 +175,12 @@ skip_if_valid_synced = true
 # 清理无时间轴的内嵌歌词（精确字段白名单，绝不碰 LYRICIST / TEXT）
 clear_plain_embedded = true
 
+# 纯音乐自动落定：标题含伴奏/纯音乐标记、来源也标记为纯音乐且查不到
+# 同步歌词时，自动写入「纯音乐，请欣赏」占位。占位不是猜测的歌词，
+# 是把「这首歌没有词」这个结论落盘；写入后状态显示为「纯音乐」，
+# 不再进待办，也不再耗来源配额重查
+instrumental_placeholder = true
+
 # 未显式启用的来源绝不使用
 allow_other_providers = false
 
@@ -229,6 +235,8 @@ auto_write = false
 # 目录归置。红线：默认不动任何文件；存量曲库永远走整理页的人工预览+执行。
 #   off       = 只生成归置建议（源路径 → 建议路径），出现在待办里
 #   new_files = 对本进程观察到的新入库文件自动归位（可撤销，冲突转待办）
+#   full      = 定期把全库文件归位到标准结构（含存量；可撤销，冲突转待办）。
+#               监控进程每 6 小时跑一轮，全部移动都有预览记录
 #   inbox     = 额外允许 INBOX 根把处理完的文件流转进 library 根（需配 root.target_root）
 mode = "off"
 # 目标路径模板；字段白名单：artist albumartist album title track_no disc_no year ext

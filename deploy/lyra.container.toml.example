@@ -123,6 +123,8 @@ fill_empty_lrc = true
 # 已有有效同步歌词则跳过（无收益只有风险）
 skip_if_valid_synced = true
 clear_plain_embedded = true
+# 纯音乐自动落定：标题与来源都表明无歌词时，写入占位并停查
+instrumental_placeholder = true
 allow_other_providers = false
 
 [policy.tags]
@@ -159,7 +161,8 @@ min_min_pixels = 90000
 auto_write = false
 
 [policy.organize]
-# 目录归置。默认 off = 只出建议不动文件；new_files 仅对新增文件自动归位
+# 目录归置。默认 off = 只出建议不动文件；new_files 仅对新增文件自动归位；
+# full 定期把全库（含存量）归位到标准结构
 mode = "off"
 template = "{artist}/{album}/{track_no} - {title}"
 

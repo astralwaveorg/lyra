@@ -154,6 +154,8 @@ class RunSummary:
     """AI 预审判定同曲且高置信后自动采纳的条数（留痕可撤销）。"""
     ai_suggested: int = 0
     """AI 预审给出了判定但未达自动采纳标准、进入待办展示的条数。"""
+    instrumental_placeholder: int = 0
+    """纯音乐占位落定的条数：来源与标题都表明没有歌词，写入占位并停查。"""
     yielded: bool = False
     """是否因为「人工在等写入」而提前收手。
 
@@ -669,7 +671,7 @@ def run_fetch(
             summary.skipped_excluded += 1
             continue
 
-        # -- 已有有效同步歌词则跳过（无收益，只有风险）--
+        # -- 已有有效同步歌词（或纯音乐占位）则跳过（无收益，只有风险）--
         if (
             cfg.policy.skip_if_valid_synced
             and not force
@@ -697,6 +699,73 @@ def run_fetch(
     return summary
 
 
+_INSTRUMENTAL_TOKEN = "instrumental"
+
+
+def _title_says_instrumental(title: str) -> bool:
+    """标题（含括号）是否明说这是伴奏/纯音乐/卡拉OK。
+
+    复用匹配层的版本词表：那些词本来就在做「这是另一个录音」的判定，
+    语义已经对齐，不必另立一张表再漂移一次。
+    """
+    from .match import extract_version_tokens
+
+    return _INSTRUMENTAL_TOKEN in extract_version_tokens(title)
+
+
+def _instrumental_evidence(
+    target: TrackTarget, best: CandidateScore, candidates: list[Candidate]
+) -> bool:
+    """「这是纯音乐」的证据：来源明确标记，或标题明说。"""
+    match = next(
+        (
+            c for c in candidates
+            if c.provider == best.provider and c.provider_id == best.provider_id
+        ),
+        None,
+    )
+    if match is not None and str(match.extra.get("instrumental", "")) == "true":
+        return True
+    return _title_says_instrumental(target.context.title)
+
+
+def _stage_instrumental_placeholder(
+    store: StateStore,
+    cfg: Config,
+    target: TrackTarget,
+    summary: RunSummary,
+    *,
+    reason: str,
+) -> None:
+    """纯音乐落定：暂存占位歌词并记录「已解决」结论。
+
+    占位会走正常的暂存→写入链路（内嵌 + sidecar），写入后观测状态变为
+    PLACEHOLDER：统计不挂红灯、界面显示「纯音乐」、下一轮抓取视为已满足。
+    解析结论记 MATCHED（不进负缓存重试）——这不是「没查到」，是查到了
+    答案：这首歌没有词。
+    """
+    text = "纯音乐，请欣赏"
+    digest = content_hash(normalize_lrc(text))
+    store.stage_lyrics(
+        location_id=target.location_id,
+        content_hash=digest,
+        content=text,
+        provider="placeholder",
+        state="staged",
+        origin="auto",
+    )
+    store.record_resolution(
+        resolution_key=resolution_key(target, "placeholder"),
+        provider="placeholder",
+        outcome=ResolutionOutcome.MATCHED,
+        asset_id=target.asset_id,
+        location_id=target.location_id,
+        candidate={"title": "纯音乐占位", "reason": reason},
+        query_log=[],
+    )
+    summary.instrumental_placeholder += 1
+
+
 def _has_valid_synced(store: StateStore, target: TrackTarget) -> bool:
     row = store.conn.execute(
         "SELECT embedded_state, sidecar_state FROM lyric_observations "
@@ -706,7 +775,13 @@ def _has_valid_synced(store: StateStore, target: TrackTarget) -> bool:
     if row is None:
         return False
     states = {row["embedded_state"], row["sidecar_state"]}
-    return LyricsState.SYNCED.value in states
+    # 纯音乐占位与有效同步歌词同等对待：占位是「这首歌本来就没有歌词」
+    # 的显式结论，不是待办。不跳过的话每轮抓取都会重新查一遍所有来源，
+    # 而结论永远不会变——那是在用配额换一个已经知道的结果。
+    return (
+        LyricsState.SYNCED.value in states
+        or LyricsState.PLACEHOLDER.value in states
+    )
 
 
 def _artist_matches(wanted: str, artists: Sequence[str]) -> bool:
@@ -927,6 +1002,16 @@ def _fetch_one(
         _record_negative(store, cfg, target, providers.keys() - disabled.keys(),
                          ResolutionOutcome.NOT_FOUND, now, query_log)
         summary.not_found += 1
+        if cfg.policy.instrumental_placeholder and _title_says_instrumental(
+            target.context.title
+        ):
+            # 标题明说这是伴奏/纯音乐，来源也查不到词——占位是正确结论，
+            # 不是抓取失败。写占位让曲目状态落定为「纯音乐」，
+            # 不再每轮重查、也不再进任何待办。
+            _stage_instrumental_placeholder(
+                store, cfg, target, summary,
+                reason="标题含纯音乐标记，且所有来源均无歌词",
+            )
         return
 
     scores = score_candidates(
@@ -993,6 +1078,15 @@ def _fetch_one(
         )
         if outcome is ResolutionOutcome.NO_SYNCED_LYRICS:
             summary.no_synced += 1
+            if cfg.policy.instrumental_placeholder and _instrumental_evidence(
+                target, best, all_candidates
+            ):
+                # 候选本身来自 lrclib 的 instrumental 标记，或标题明说纯音乐：
+                # 「没有同步歌词」在这里不是失败，是这首歌的准确状态。
+                _stage_instrumental_placeholder(
+                    store, cfg, target, summary,
+                    reason="来源标记为纯音乐/标题含纯音乐标记，且无可同步歌词",
+                )
         else:
             # 取词失败（限流/网络/结构变化）不是「没有结果」：负缓存会重试，
             # 但摘要与入库明细必须看得见，否则显示为 0/0/0/0 像是「查过没有」。
