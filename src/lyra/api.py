@@ -59,6 +59,10 @@ from .config import (
     apply_network_settings_values,
     apply_organize_policy_values,
     apply_tag_policy_values,
+    read_ai_token,
+)
+from .config import (
+    AI_TOKEN_FILENAME as _AI_TOKEN_FILENAME,
 )
 from .cover import (
     CoverDownloadError,
@@ -127,7 +131,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIT_KEEP = 100
 COOKIE_NAME = "lyra_session"
-AI_TOKEN_FILENAME = "ai-token"
+AI_TOKEN_FILENAME = _AI_TOKEN_FILENAME  # 兼容旧引用：常量已迁到 config
 
 
 def _ai_token_path(cfg: Config) -> Path:
@@ -135,11 +139,8 @@ def _ai_token_path(cfg: Config) -> Path:
 
 
 def _read_ai_token(cfg: Config) -> str:
-    path = _ai_token_path(cfg)
-    try:
-        return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-    except OSError:
-        return ""
+    """读取保存的 AI 令牌（实现已迁到 config，Web 与监控共用）。"""
+    return read_ai_token(cfg)
 
 
 def _write_ai_token(cfg: Config, token: str) -> None:

@@ -33,6 +33,7 @@ from .config import (
     apply_organize_policy_values,
     apply_tag_policy_values,
     load_config,
+    read_ai_token,
 )
 from .db import open_store
 from .network import (
@@ -1011,12 +1012,18 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
         「使用网络代理」关掉了，监控这边还在走代理。
         """
         raw = store.get_meta("settings.ai")
-        if not raw:
-            return
-        try:
-            apply_ai_settings_values(cfg, json.loads(raw))
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            print(f"[watch] 大模型设置读取失败，沿用配置文件：{exc}", flush=True)
+        if raw:
+            try:
+                apply_ai_settings_values(cfg, json.loads(raw))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                print(f"[watch] 大模型设置读取失败，沿用配置文件：{exc}", flush=True)
+        # **令牌也要读**：它保存在数据目录的 ai-token 文件里（0600），
+        # 只由 Web 进程读写。此前监控进程从不读它，模型调用必然缺密钥，
+        # 后台的智能预审等于没有开。
+        if not os.environ.get("LYRA_AI_API_KEY"):
+            token = read_ai_token(cfg)
+            if token:
+                cfg.ai.api_key = token
 
     def _apply_saved_pipeline_settings() -> None:
         """封面 / 归置 / 歌词输出 / 指纹 key 的设置页保存值。

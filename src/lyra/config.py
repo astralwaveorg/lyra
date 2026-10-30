@@ -593,6 +593,20 @@ TAG_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
 }
 
 
+#: AI 令牌文件名（数据目录下，0600）。Web 与监控进程都要读它——
+#: 此前只有 Web 进程读，监控进程里的模型调用永远缺密钥，预审形同虚设。
+AI_TOKEN_FILENAME = "ai-token"
+
+
+def read_ai_token(cfg: Config) -> str:
+    """读取数据目录里保存的 AI 令牌（空串表示未配置）。"""
+    path = cfg.storage.resolved_data_dir / AI_TOKEN_FILENAME
+    try:
+        return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    except OSError:
+        return ""
+
+
 def apply_tag_policy_values(cfg: Config, values: Mapping[str, Any]) -> TagPolicy:
     """把设置页/store 里的标签策略写进配置对象。
 
