@@ -834,7 +834,7 @@ onMounted(async () => {
         </div>
         <el-switch v-model="ai.pre_review" />
       </div>
-      <div v-if="ai.pre_review" class="setting-row">
+      <div class="setting-row">
         <div class="setting-text">
           <div class="label">自动采用</div>
           <div class="cell-meta">
