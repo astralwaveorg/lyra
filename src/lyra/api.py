@@ -3136,7 +3136,12 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             }
 
         def job(progress: Callable[[str], None]) -> dict[str, Any]:
-            # 取写租约：与监控进程互斥。人工触发的任务优先——等它让出。
+            # **只在真的要写文件时才申请写租约。**
+            # 纯抓取（apply_now=False）只把歌词暂存进数据库，不碰音乐文件；
+            # 此前它也申请写租约并持有 15 分钟（TTL 900s），把人工写入的
+            # 「开始写入」堵在门外——用户看到的就是「任务已开始，但一直没写入」。
+            if not apply_now:
+                return _fetch_job(progress)
             with _manual_lease(state, wait_seconds=120, label="manual-fetch") as lease:
                 if not lease["acquired"]:
                     raise RuntimeError(
@@ -4344,8 +4349,11 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             # 人工优先：监控看到等待登记会让出（每写完一个文件检查一次）。
             with _manual_lease(state, wait_seconds=120, label="manual-apply") as lease:
                 if not lease["acquired"]:
+                    holder = lease["holder"] or "其它任务"
                     raise RuntimeError(
-                        f"写入任务仍在运行（{lease['holder']}），请稍后重试")
+                        f"没有拿到写入许可：当前有其它任务正在写入（{holder}）。"
+                        "可以稍后重试，或先停止那个任务。"
+                    )
                 for root in roots:
                     s = run_apply(
                         state, cfg, root, limit=int(limit) if limit else None,

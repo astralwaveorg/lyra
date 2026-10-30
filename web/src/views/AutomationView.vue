@@ -256,7 +256,12 @@ async function start(kind: 'fetch' | 'apply') {
         filters,
       })
     } else {
-      await api.startApply({ root: selectedDir.value?.root })
+      const task = await api.startApply({ root: selectedDir.value?.root })
+      ElMessage.success('写入任务已开始，完成后会显示结果')
+      void watchTask(task.id)
+      await loadTasks()
+      await meta.refresh().catch(() => undefined)
+      return
     }
     ElMessage.success('任务已开始')
     await loadTasks()
@@ -268,7 +273,48 @@ async function start(kind: 'fetch' | 'apply') {
   }
 }
 
+/**
+ * 跟踪一个刚提交的任务直到终态：成功给结果，失败给出原因。
+ *
+ * 没有它，用户点「开始写入」后只能看到「任务已开始」——写入被租约挡住、
+ * 或者中途失败时，界面不会有任何提示，看起来就像「一直没写入」。
+ */
+async function watchTask(taskId: string) {
+  for (let i = 0; i < 60; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+    let task: TaskRecord | undefined
+    try {
+      const detail = await api.run(taskId)
+      task = detail.task as unknown as TaskRecord
+      // 任务的 result 字段是结构化的，用它还原摘要
+      task = { ...task, result: detail.task.result }
+    } catch {
+      // 任务记录可能还没落库：退回任务列表
+      const list = await api.tasks(5).catch(() => ({ items: [] as TaskRecord[] }))
+      task = list.items.find((item) => item.id === taskId)
+    }
+    if (!task) continue
+    if (task.state === 'failed') {
+      ElMessage.error(task.error ? `任务失败：${task.error}` : '任务失败')
+      await loadTasks()
+      return
+    }
+    if (task.state === 'done') {
+      const summary = summaryOf(task)
+      ElMessage.success(summary ? `任务完成：${summary}` : '任务完成')
+      await loadTasks()
+      await meta.refresh().catch(() => undefined)
+      return
+    }
+  }
+}
+
 function summaryOf(task: TaskRecord): string {
+  // 失败任务优先显示失败原因——此前一律显示「—」，用户看到的就是
+  // 「点了开始写入，提示任务已开始，但一直没写入」，无从知道被什么卡住。
+  if (task.state === 'failed') {
+    return task.error ? `失败：${task.error}` : '失败'
+  }
   const result = task.result as
     | { roots?: { root?: string; scanned?: number; fetched?: number; accepted?: number; needs_review?: number; applied?: number | { written?: number }; errors?: string[]; total?: number; updatable?: number; conflicts?: number }[] }
     | null
