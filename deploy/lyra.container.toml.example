@@ -73,7 +73,7 @@ max_inline_retry_wait_seconds = 5
 [providers.netease]
 # 网易云音乐。歌词为毫秒精度 [00:00.000]。
 # 与 QQ 的曲库覆盖并不重合，多一个来源多一次命中机会。
-minimum_request_interval_seconds = 1.5
+minimum_request_interval_seconds = 3.0
 query_limit_per_round = 3
 candidates_per_query = 20
 detail_and_lyric_limit_per_round = 6

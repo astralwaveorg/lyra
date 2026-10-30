@@ -532,7 +532,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         def _stats_refresher() -> None:
             while True:
                 with contextlib.suppress(Exception):
-                    _stats(cfg)
+                    _stats(cfg, refresh=True)
                 _threading.Event().wait(180.0)
 
         _refresher = _threading.Thread(target=_stats_refresher, daemon=True)
@@ -5448,7 +5448,7 @@ _CACHE = _TtlCache(ttl_seconds=30.0)
 #: 30 秒就过期意味着**每半分钟就可能有人等到一次全库扫描**——页面看起来
 #: 像是「有时快有时卡」。而覆盖率这类数字半分钟内不会有意义地变化。
 #: 「重新统计」按钮走 refresh=True，需要立刻刷新时仍然可以强制。
-_STATS_CACHE = _TtlCache(ttl_seconds=180.0)
+_STATS_CACHE = _TtlCache(ttl_seconds=600.0)
 
 
 def _invalidate_caches() -> None:

@@ -202,7 +202,9 @@ class NetEaseProviderConfig:
     同步歌词，因此值得作为第三个来源。
     """
 
-    minimum_request_interval_seconds: float = 1.5
+    minimum_request_interval_seconds: float = 3.0
+    """网易（含自建代理）在连续请求时会返回 405「操作频繁」。
+    间隔太短会大面积触发限流，反而拖慢整体速度。"""
     query_limit_per_round: int = 3
     candidates_per_query: int = 20
     detail_and_lyric_limit_per_round: int = 6

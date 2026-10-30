@@ -372,8 +372,9 @@ class CircuitBreaker:
 # 503 必须归入限流：LRCLIB 实际在全局过载时返回 **503 ServerOverloaded**
 # （带 `Retry-After: 1`），而不是 429。两者都是「等一会儿可能自愈」，
 # 若把 503 当作「没有歌词」，整个负缓存就废了。
-_RATE_LIMITED_STATUS: frozenset[int] = frozenset({429, 503})
+_RATE_LIMITED_STATUS: frozenset[int] = frozenset({429, 503, 405})
 
+# 405 = 网易云（含自建代理）用非标准状态码表示「操作频繁」。
 # 412 = 风控前置条件拦截（anti-bot 常用），与普通失败区别对待
 _BLOCKED_STATUS = 412
 
