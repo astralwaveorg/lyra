@@ -219,6 +219,8 @@ class TagScanSummary:
     matched_album: int = 0
     matched_search: int = 0
     matched_fingerprint: int = 0
+    matched_lyrics_source: int = 0
+    """由歌词来源（QQ / 网易云）补齐专辑信息的曲目数。"""
     unresolved: int = 0
     satisfied: int = 0
     auto: int = 0
@@ -1693,12 +1695,180 @@ def _write_auto(
         store.release_write_lock("write", owner)
 
 
+#: 歌词来源提供的标签补充来源标记。它**不能**提供 MusicBrainz ID，
+#: 只能补专辑名/专辑艺人等发行级字段——因此只在「MusicBrainz 匹配不上」
+#: 时启用，作为最后一张底牌。
+SOURCE_LYRICS = "lyrics"
+
+
+def _lyrics_source_candidates(
+    lyric_providers: Sequence[object],
+    snap: TrackSnapshot,
+    *,
+    limit: int = 3,
+) -> list[dict[str, object]]:
+    """从歌词来源取候选的专辑信息。
+
+    MusicBrainz 对华语专辑覆盖有限——实际曲库里大量专辑搜不到任何条目，
+    于是既补不上标签、也进不了任何自动通道。歌词来源（QQ / 网易云）
+    对同样这批华语专辑覆盖极好，而且候选自带专辑名与专辑艺人。
+
+    这里只取**专辑级**信息：它无法提供 MusicBrainz ID，能补的字段有限，
+    但对「专辑名写错/缺失」这类最常见的问题是够用的。
+    """
+    from .providers.base import TrackQuery
+
+    query = TrackQuery(
+        title=snap.title,
+        artists=tuple(snap.artists),
+        album=snap.album,
+        duration=snap.duration,
+        musicbrainz_trackid="",
+        isrc="",
+    )
+    out: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for provider in lyric_providers:
+        name = getattr(provider, "name", "")
+        if not name:
+            continue
+        try:
+            found = provider.search(query)
+        except Exception:  # noqa: BLE001 — 单个来源失败不影响其它
+            continue
+        for cand in found[:limit]:
+            album = str(getattr(cand, "album", "") or "").strip()
+            artists = tuple(getattr(cand, "artists", ()) or ())
+            title = str(getattr(cand, "title", "") or "").strip()
+            if not album and not artists:
+                continue
+            key = f"{album}|{'|'.join(artists)}|{title}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "provider": name,
+                "provider_id": str(getattr(cand, "provider_id", "")),
+                "title": title,
+                "artists": list(artists),
+                "album": album,
+                "duration": getattr(cand, "duration", None),
+            })
+    return out[:limit]
+
+
+def _lyrics_source_fields(
+    candidate: Mapping[str, object],
+) -> dict[str, list[str]]:
+    """把歌词来源候选转成可写入的标签字段（只发行级，无 MBID）。"""
+    fields: dict[str, list[str]] = {}
+    album = str(candidate.get("album") or "").strip()
+    if album:
+        fields["ALBUM"] = [album]
+    artists = [str(a).strip() for a in (candidate.get("artists") or []) if str(a).strip()]
+    if artists:
+        fields["ARTIST"] = artists
+        fields["ARTISTS"] = artists
+    return fields
+
+
+def _lyrics_source_rows(
+    snap: TrackSnapshot,
+    candidates: Sequence[Mapping[str, object]],
+    cfg: Config,
+) -> list[dict[str, object]]:
+    """歌词来源候选 → 可写入的标签行（经模型核验确认是同一首）。
+
+    模型核验通过才生成行；核验不通过或模型不可用时返回空列表——
+    来源只是候选，**判定权在程序**。
+    """
+    if not candidates:
+        return []
+    rows: list[dict[str, object]] = []
+    for cand in candidates[:2]:
+        fields = _lyrics_source_fields(cand)
+        if not fields:
+            continue
+        for key, values in fields.items():
+            current = list(snap.tags.get(key) or [])
+            if current:
+                action = ACTION_CONFLICT
+                if _same_value_different_form(
+                    " ".join(current), " ".join(values)
+                ):
+                    action = ACTION_CORRECT
+            else:
+                action = ACTION_FILL
+            rows.append({
+                "key": key,
+                "current": current,
+                "suggested": list(values),
+                "action": action,
+            })
+    if not rows:
+        return []
+
+    if not (cfg.ai.enabled and cfg.ai.verify_tags and cfg.ai.api_key.strip()):
+        # 没有模型可用时只用「纯补空」的行（安全），冲突行不碰
+        return [r for r in rows if r["action"] == ACTION_FILL]
+
+    from .ai import review_candidates
+
+    try:
+        judgement = review_candidates(
+            protocol=cfg.ai.protocol,
+            base_url=cfg.ai.base_url,
+            model=cfg.ai.model,
+            api_key=cfg.ai.api_key,
+            timeout=cfg.ai.timeout_seconds,
+            use_proxy=cfg.ai.use_proxy,
+            track={
+                "filename": snap.title,
+                "dir_name": snap.album,
+                "title": snap.title,
+                "artists": list(snap.artists),
+                "album": snap.album,
+                "duration": snap.duration,
+                "notes": "专辑信息来自歌词来源，请确认是同一首",
+            },
+            candidates=[
+                {
+                    "id": f"{cand.get('provider')}:{cand.get('provider_id')}",
+                    "provider": str(cand.get("provider") or ""),
+                    "title": str(cand.get("title") or ""),
+                    "artists": list(cand.get("artists") or []),
+                    "album": str(cand.get("album") or ""),
+                    "duration": cand.get("duration"),
+                    "synced": True,
+                    "excerpt": "",
+                }
+                for cand in candidates[:3]
+            ],
+            conflicts=[
+                {
+                    "key": str(r["key"]),
+                    "current": list(r["current"]),
+                    "suggested": list(r["suggested"]),
+                }
+                for r in rows if r["action"] == ACTION_CONFLICT
+            ],
+            max_delta_seconds=cfg.policy.tags.max_duration_delta_seconds,
+        )
+    except Exception:  # noqa: BLE001 — 核验失败按「没有判断」处理
+        return [r for r in rows if r["action"] == ACTION_FILL]
+
+    if not judgement.same_recording or judgement.confidence < cfg.ai.pre_review_confidence:
+        return [r for r in rows if r["action"] == ACTION_FILL]
+    return rows
+
+
 def scan_tags(
     cfg: Config,
     root: RootConfig,
     store: StateStore,
     provider: MusicBrainzProvider,
     *,
+    lyric_providers: Sequence[object] = (),
     auto_write: bool | None = None,
     limit: int | None = None,
     only_rel_paths: set[str] | None = None,
@@ -1854,6 +2024,35 @@ def scan_tags(
                 match.notes.append(anchor_reason)
 
             if match is None:
+                # MusicBrainz 匹配不上时，用**歌词来源**兜底：QQ / 网易云对
+                # 华语专辑的覆盖远好于 MB，能给出专辑名与专辑艺人。再经模型
+                # 核验确认是同一首后，就能自动补上这些字段——
+                # 否则这类曲目永远停在「未匹配」，人工也无从下手。
+                lyrics_rows: list[dict[str, object]] = []
+                lyrics_candidates: list[dict[str, object]] = []
+                if lyric_providers:
+                    lyrics_candidates = _lyrics_source_candidates(
+                        lyric_providers, snap
+                    )
+                    lyrics_rows = _lyrics_source_rows(snap, lyrics_candidates, cfg)
+                if lyrics_rows:
+                    summary.matched_lyrics_source += 1
+                    store.upsert_tag_proposal(
+                        location_id=snap.location_id,
+                        state=STATE_AUTO,
+                        source=SOURCE_LYRICS,
+                        confidence=0.9,
+                        title=snap.title,
+                        artists="; ".join(snap.artists),
+                        album=snap.album,
+                        payload=_payload(
+                            snap, None, lyrics_rows,
+                            candidates=lyrics_candidates,
+                            notes=["专辑信息来自歌词来源，已由模型核验"],
+                        ),
+                        revive_skipped=refresh_skipped,
+                    )
+                    continue
                 summary.unresolved += 1
                 store.upsert_tag_proposal(
                     location_id=snap.location_id,

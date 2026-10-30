@@ -247,3 +247,83 @@ def test_没有判定的字段不受影响():
 
     rows = _apply_field_decisions(_conflict_rows(), {})
     assert all(row["action"] == "conflict" for row in rows)
+
+
+# ---------------------------------------------------------------------------
+# 歌词来源兜底：MusicBrainz 覆盖不到时用 QQ / 网易云提供专辑候选
+# ---------------------------------------------------------------------------
+
+
+def test_歌词来源候选转成可写入字段():
+    from lyra.tagscrape import _lyrics_source_fields
+
+    fields = _lyrics_source_fields({
+        "provider": "qq", "provider_id": "x",
+        "title": "快乐崇拜", "artists": ["张韶涵"], "album": "欧若拉",
+    })
+    assert fields["ALBUM"] == ["欧若拉"]
+    assert fields["ARTIST"] == ["张韶涵"]
+
+
+def test_歌词来源核验通过才生成冲突行(tmp_path: Path, monkeypatch):
+    """模型确认是同一首，才允许按来源改写专辑名。"""
+    from lyra.tagscrape import _lyrics_source_rows
+
+    cfg = _cfg(tmp_path)
+    snap = _snap(tmp_path)
+    candidates = [{
+        "provider": "qq", "provider_id": "c1", "title": "快乐崇拜",
+        "artists": ["张韶涵"], "album": "欧若拉 (2004 再版)", "duration": 240.0,
+    }]
+    monkeypatch.setattr(
+        "lyra.tagscrape.review_candidates",
+        lambda **kw: CandidateJudgement(
+            best="qq:c1", confidence=0.93, relation="same_recording",
+            reason="曲名与艺人一致",
+        ),
+    )
+    rows = _lyrics_source_rows(snap, candidates, cfg)
+    by_key = {r["key"]: r for r in rows}
+    assert "ALBUM" in by_key
+    assert by_key["ALBUM"]["suggested"] == ["欧若拉 (2004 再版)"]
+
+
+def test_歌词来源核验不通过只补空(tmp_path: Path, monkeypatch):
+    """模型说不是同一首 → 只保留「纯补空」的行，冲突不碰。"""
+    from lyra.tagscrape import _lyrics_source_rows
+
+    cfg = _cfg(tmp_path)
+    snap = _snap(tmp_path)
+    candidates = [{
+        "provider": "qq", "provider_id": "c1", "title": "快乐崇拜",
+        "artists": ["张韶涵"], "album": "别的专辑", "duration": 240.0,
+    }]
+    monkeypatch.setattr(
+        "lyra.tagscrape.review_candidates",
+        lambda **kw: CandidateJudgement(
+            best=None, confidence=0.2, relation="different", reason="不是同一首",
+        ),
+    )
+    rows = _lyrics_source_rows(snap, candidates, cfg)
+    # 本地已有 ALBUM=欧若拉，与「别的专辑」冲突 → 冲突行不生成
+    assert all(r["action"] != "conflict" for r in rows)
+
+
+def test_没有模型时歌词来源只补空(tmp_path: Path, monkeypatch):
+    """模型不可用时不能改写已有值，只补空。"""
+    from lyra.tagscrape import _lyrics_source_rows
+
+    cfg = _cfg(tmp_path)
+    cfg.ai.api_key = ""
+    snap = _snap(tmp_path)
+    candidates = [{
+        "provider": "qq", "provider_id": "c1", "title": "快乐崇拜",
+        "artists": ["张韶涵"], "album": "别的专辑", "duration": 240.0,
+    }]
+    calls: list = []
+    monkeypatch.setattr(
+        "lyra.tagscrape.review_candidates", lambda **kw: calls.append(kw) or None
+    )
+    rows = _lyrics_source_rows(snap, candidates, cfg)
+    assert not calls
+    assert all(r["action"] != "conflict" for r in rows)

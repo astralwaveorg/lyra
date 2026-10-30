@@ -857,6 +857,10 @@ def cmd_tags_scan(args: argparse.Namespace, cfg: Config) -> int:
     store = open_store(cfg.storage.resolved_data_dir)
     # 设置页保存的策略优先于配置文件，CLI 与网页/监控保持一致。
     apply_saved_settings(cfg, store)
+    # 歌词来源：MusicBrainz 覆盖不到时用来兜底提供专辑候选
+    from .providers import create_providers
+
+    lyric_providers = create_providers(cfg.providers)
     provider = MusicBrainzProvider(
         MusicBrainzConfig(
             base_url=mb_cfg.base_url,
@@ -887,6 +891,9 @@ def cmd_tags_scan(args: argparse.Namespace, cfg: Config) -> int:
                 root,
                 store,
                 provider,
+                # 歌词来源作为标签兜底：MusicBrainz 覆盖不到的华语专辑，
+                # 由 QQ / 网易云提供专辑候选，再经模型核验
+                lyric_providers=lyric_providers,
                 auto_write=not args.dry_run and cfg.policy.tags.auto_write,
                 limit=args.limit,
                 progress=lambda message: print(f"[tags] {message}", flush=True),
@@ -1389,6 +1396,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                     root,
                     store,
                     provider,
+                    lyric_providers=list(providers),
                     auto_write=cfg.policy.tags.auto_write and write_enabled,
                     progress=lambda message: print(
                         f"[watch] {message}", flush=True

@@ -3859,7 +3859,11 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         from .tagscrape import scan_tags
 
         def job(progress: Callable[[str], None]) -> dict[str, Any]:
+            from .providers import create_providers
+
             provider = _make_mb_provider(cfg)
+            # 歌词来源作为标签兜底（MusicBrainz 覆盖不到的华语专辑）
+            lyric_providers = create_providers(cfg.providers)
             fingerprinter = FpcalcFingerprinter() if use_fingerprint else None
             acoustid = (
                 AcoustIdClient(cfg.providers.acoustid)
@@ -3875,6 +3879,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                         root,
                         state,
                         provider,
+                        lyric_providers=lyric_providers,
                         auto_write=auto_write,
                         limit=limit_value,
                         progress=progress,
