@@ -1828,6 +1828,25 @@ class StateStore:
             "UPDATE staged_lyrics SET state=? WHERE id=?", (state, staged_id)
         )
 
+    def mark_ai_reviewed(
+        self, staged_id: int, *, ai_json: str, adopt: bool
+    ) -> None:
+        """记录模型判定结果；`adopt=True` 时把条目转为待写入（origin='ai'）。
+
+        origin 记成 ai：写入时走**完整备份**（人工确认过的才免备份，
+        模型判定的留个后路），且写入记录可撤销。
+        """
+        if adopt:
+            self.conn.execute(
+                "UPDATE staged_lyrics SET state='staged', origin='ai', ai_json=? "
+                "WHERE id=?",
+                (ai_json, staged_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE staged_lyrics SET ai_json=? WHERE id=?", (ai_json, staged_id)
+            )
+
     def discard_stale_staged(self, *, keep_days: int = 30) -> int:
         cutoff = time.time() - keep_days * 86400
         cur = self.conn.execute(

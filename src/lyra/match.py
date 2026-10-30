@@ -485,7 +485,7 @@ def _content_evidence_ok(
 ) -> tuple[bool, list[str]]:
     """标题与艺人两项证据是否达标。返回 (是否达标, 未达标说明)。"""
     missing: list[str] = []
-    if best.title_score < policy.auto_accept_min_title_score:
+    if best.title_score < policy.auto_accept_loose_title_score:
         missing.append(
             f"标题相似度 {best.title_score:.2f} 低于 {policy.auto_accept_min_title_score}"
         )
@@ -687,7 +687,7 @@ def recommend(
             "inspect",
             f"艺人相似度 {best.artist_score:.2f}，可能是翻唱或合唱版本。",
         )
-    if best.title_score < policy.auto_accept_min_title_score:
+    if best.title_score < policy.auto_accept_loose_title_score:
         return Recommendation(
             "adopt",
             f"标题相似度 {best.title_score:.2f} 略低于阈值，"
@@ -847,6 +847,30 @@ def _decide_core(
                 and best.duration_delta is not None
                 and best.duration_delta <= policy.max_duration_delta_seconds
             )
+            # 近似匹配的**确定性自动采用**（用户明确授权：Live 版拿到录音室词
+            # 可以接受，目标是减少人工干预）。门槛刻意从严，四条同时满足：
+            #   标题核心 ≥0.95（几乎逐字一致）+ 艺人证据成立 + 时长差不超过
+            #   放松档（3s）+ 明显优于次优。任何一条不满足都回人工。
+            # 写入留痕、可撤销；严格版本一致的问题另行走常规自动采用。
+            if (
+                approximate
+                and best.duration_delta is not None
+                and best.duration_delta <= policy.auto_accept_relaxed_seconds
+                and best.title_score >= policy.approximate_auto_min_title
+                and (runner is None or best.score - runner.score >= policy.min_score_margin)
+            ):
+                return MatchDecision(
+                    decision=Decision.ACCEPT,
+                    reason=(
+                        f"近似匹配：同一首歌的不同版本（时长差 "
+                        f"{best.duration_delta:.2f}s，标题与艺术家一致），自动采用"
+                    ),
+                    best=best,
+                    runner_up=runner,
+                    scored=scored,
+                    rejected=rejected,
+                    approximate=True,
+                )
             reason = "; ".join(best.details) or "版本证据不一致"
             if approximate:
                 reason = (
@@ -1007,6 +1031,7 @@ def _decide_core(
         #     那不是「候选接近」，而是「根本没匹配上」。
         if (
             best.version_ok
+            and content_ok
             and best.duration_delta is not None
             and best.duration_delta <= policy.auto_accept_within_seconds
         ):
@@ -1016,7 +1041,8 @@ def _decide_core(
                     f"时长差 {best.duration_delta:.2f}s ≤ "
                     f"{policy.auto_accept_within_seconds}s，"
                     f"按策略直接接受（最优 {best.score:.3f} 与次优 "
-                    f"{runner.score:.3f} 接近，但版本证据一致且时长吻合）"
+                    f"{runner.score:.3f} 接近，但版本证据一致、标题与艺术家"
+                    "证据成立且时长吻合）"
                 ),
                 best=best,
                 runner_up=runner,
@@ -1030,6 +1056,24 @@ def _decide_core(
                 f"候选接近（最优 {best.score:.3f} 与次优 {runner.score:.3f} "
                 f"差 {best.score - runner.score:.3f} < {policy.min_score_margin}），"
                 "且时长差超出自动接受范围"
+            ),
+            best=best,
+            runner_up=runner,
+            scored=scored,
+            rejected=rejected,
+        )
+
+    # 兜底自动采用也必须有**标题证据下限**。
+    # 这是「毫不相关歌词被自动写入」的真正根源（存量缺陷）：一首标题相似度
+    # 只有 0.5 的候选，靠时长凑巧 + 总分过线就能走到这里被无条件写入。
+    # 分数由时长主导（权重 0.40），Δt=0 就能拿满——只看总分必然误配。
+    if best.title_score < policy.auto_accept_loose_title_score:
+        return MatchDecision(
+            decision=Decision.NEEDS_REVIEW,
+            reason=(
+                f"总分 {best.score:.3f} 达标，但标题相似度 "
+                f"{best.title_score:.2f} 低于 {policy.auto_accept_loose_title_score}——"
+                "时长凑巧不构成同一首歌的证据，需人工确认"
             ),
             best=best,
             runner_up=runner,

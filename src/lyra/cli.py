@@ -1234,6 +1234,10 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     # 结果进 provider_health，自动化页健康卡展示——「来源被风控了」不该
     # 等到用户发现歌词抓不到才知道。
     _PROBE_SECONDS = 86400.0
+    # AI 预审批：抓取后的待审查队列交给模型判定，高置信直接转待写入。
+    # 独立于抓取预算——抓取时逐首判定会被几千首的扫描量摊薄，队列消不动。
+    _AI_PRE_REVIEW_SECONDS = 1800.0
+    last_ai_pre_review = 0.0
     last_orphan_clean = 0.0
     last_cover_repair = 0.0
     last_name_repair = 0.0
@@ -1241,6 +1245,46 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     last_policy_check = 0.0
     last_network_check = 0.0
     last_probe = 0.0
+
+    def _run_ai_pre_review() -> None:
+        """对待审查队列做一次模型判定，高置信条目转为待写入。"""
+        from .audit import audit_root
+        from .match import build_context
+        from .pipeline import sync_state
+        from .pre_review import run_ai_pre_review
+
+        if not (cfg.ai.enabled and cfg.ai.pre_review):
+            return
+        for root_cfg in cfg.enabled_roots:
+            if root_cfg.read_only:
+                continue
+            audit = audit_root(root_cfg)
+            sync_state(store, cfg, root_cfg, audit, full_scan=False)
+            contexts = {}
+            for track in audit.tracks:
+                location_id = store.location_by_rel_path(
+                    store.get_root_id(root_cfg.name) or -1, str(track.audio.rel_path)
+                )
+                if location_id is None:
+                    continue
+                ctx = build_context(track.tags, track.audio.duration)
+                contexts[int(location_id["id"])] = (ctx, "")
+            if not contexts:
+                continue
+            provider_map = {p.name: p for p in providers}
+            root_label = root_cfg.name
+            result = run_ai_pre_review(
+                store, cfg, root_cfg, provider_map, contexts,
+                progress=lambda message, label=root_label: print(
+                    f"[watch] {label}: {message}", flush=True
+                ),
+            )
+            if result.judged or result.adopted:
+                print(
+                    f"[watch] {root_cfg.name}: AI 预审 判定 {result.judged} 条，"
+                    f"自动采纳 {result.adopted} 条",
+                    flush=True,
+                )
 
     def _provider_probe() -> None:
         probe_providers(store, providers)
@@ -1529,6 +1573,13 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 except Exception as exc:  # noqa: BLE001 — 对账失败不能停掉监控
                     print(f"[watch] {root.name}: 状态对账失败 {type(exc).__name__}: {exc}",
                           flush=True)
+            # AI 预审批：每 30 分钟消化一次待审查队列
+            if now - last_ai_pre_review >= _AI_PRE_REVIEW_SECONDS:
+                last_ai_pre_review = now
+                try:
+                    _run_ai_pre_review()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[watch] AI 预审失败 {type(exc).__name__}: {exc}", flush=True)
             # 来源烟雾探测：每天一次，与对账解耦（探测失败不影响任何状态）
             if now - last_probe >= _PROBE_SECONDS:
                 last_probe = now

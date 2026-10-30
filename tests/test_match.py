@@ -69,21 +69,26 @@ def test_时长差恰好等于容差时通过():
 
 
 def test_本地现场版对候选录音室版必须复核():
-    """实际：两者的时长**完全相同**，靠时长无法区分，必须靠版本标记。
+    """本地现场版、候选录音室版、时长完全相同：2.0.4 起按近似匹配自动采用。
 
-    若这里放行，就会把录音室歌词写进现场版文件。
+    政策变更（用户明确授权）：Live 版拿到录音室词可以接受，目标是把人工
+    干预压到最低。旧政策（一律送复核）被此条取代；护栏是标题核心 ≥0.95、
+    时长差在放松档内、明显优于次优，且写入留痕可撤销。
     """
     ctx = build_context({"TITLE": ["喜欢你 (Live)"], "ARTIST": ["G.E.M. 鄧紫棋"]}, 262.0)
     result = run(ctx, [cand("喜欢你", "G.E.M.邓紫棋", 262.0)])
-    assert result.decision is Decision.NEEDS_REVIEW
-    assert "版本" in result.reason
+    assert result.decision is Decision.ACCEPT
+    assert result.approximate is True
+    assert "近似匹配" in result.reason
 
 
 def test_本地无标记对候选现场版必须复核():
-    """反向同理：候选标了 Live 而本地没有，也不能算确认。"""
+    """反向同理：候选标了 Live 而本地没有——时长完全相同、标题核心一致，
+    同样按近似匹配自动采用（政策与上一条一致）。"""
     ctx = build_context({"TITLE": ["天下"], "ARTIST": ["张杰"]}, 248.0)
     result = run(ctx, [cand("天下 (Live)", "张杰", 248.0)])
-    assert result.decision is Decision.NEEDS_REVIEW
+    assert result.decision is Decision.ACCEPT
+    assert result.approximate is True
 
 
 def test_版本标记一致时接受():
@@ -184,12 +189,22 @@ def test_分数极低时仍然复核():
     assert result.decision is Decision.NEEDS_REVIEW
 
 
-def test_自动接受不能绕过版本校验():
-    """时长完全相同也不能救版本冲突——这是最容易写错歌词的路径。"""
+def test_近似自动采用有边界_时长差过大不采纳():
+    """近似匹配的自动采用只有时长差在放松档（≤3s）内才放行；
+    现场版通常时长不同，超出即回人工。"""
     ctx = build_context({"TITLE": ["喜欢你 (Live)"], "ARTIST": ["G.E.M. 鄧紫棋"]}, 262.0)
-    result = run(ctx, [cand("喜欢你", "G.E.M.邓紫棋", 262.0)])
+    result = run(ctx, [cand("喜欢你", "G.E.M.邓紫棋", 268.0)])
+    # 时长差 6s 已越过硬闸门（容差 5s），候选在进入近似判定前就被否决
+    assert result.decision is Decision.NO_MATCH
+    assert result.decision is not Decision.ACCEPT
+
+
+def test_近似自动采用有边界_标题核心不足不采纳():
+    """标题核心 <0.95 就是另一首歌，无论时长多近都不进入自动采用。"""
+    ctx = build_context({"TITLE": ["突然之间"], "ARTIST": ["G.E.M. 鄧紫棋"]}, 202.7)
+    result = run(ctx, [cand("刹那之间", "G.E.M.邓紫棋", 202.8)])
     assert result.decision is Decision.NEEDS_REVIEW
-    assert "版本" in result.reason
+    assert result.approximate is False
 
 
 def test_有版本一致的备选时不打扰人工():

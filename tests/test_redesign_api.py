@@ -615,21 +615,19 @@ def _run_match(tags: dict, duration: float, candidates: list):
                   _MATCHING_POLICY)
 
 
-def test_版本冲突时给近似匹配分级():
+def test_版本冲突时按近似匹配自动采用():
     """本地「喜欢你 (Live)」配到录音室版「喜欢你」：同一首歌的不同版本。
 
-    决策仍是 needs_review（版本闸门未过，绝不自动写），但分级为
-    approximate——歌词内容大概率适用，人工确认即可采用。
+    2.0.4 政策（用户明确授权自动化）：时长吻合 + 标题核心一致时按近似匹配
+    自动采用，歌词内容适用，写入留痕可撤销；差异过大或标题对不上仍回人工。
     """
     result = _run_match(
         {"TITLE": ["喜欢你 (Live)"], "ARTIST": ["G.E.M. 鄧紫棋"]},
         262.0,
         [_cand("喜欢你", "G.E.M.邓紫棋", 262.0)],
     )
-    assert result.decision.value == "needs_review"
+    assert result.decision.value == "accept"
     assert result.approximate is True
-    assert result.recommendation is not None
-    assert result.recommendation.verdict == "approximate"
 
 
 def test_另一首歌绝不进近似匹配():

@@ -227,6 +227,10 @@ function aiPayload() {
     timeout_seconds: ai.value.timeout_seconds,
     max_requests_per_run: ai.value.max_requests_per_run,
     auto_clean_duplicates: ai.value.auto_clean_duplicates,
+    pre_review: ai.value.pre_review,
+    pre_review_confidence: ai.value.pre_review_confidence,
+    auto_accept: ai.value.auto_accept,
+    verify_tags: ai.value.verify_tags,
     use_proxy: ai.value.use_proxy,
   }
   if (clearAIToken.value) return { ...payload, clear_api_key: true }
@@ -538,7 +542,7 @@ onMounted(async () => {
           保存标签设置
         </el-button>
         <span class="cell-meta">
-          自动扫描间隔会同步显示在「标签刮削」页的扫描状态里
+          自动扫描间隔会同步显示在「待办 · 标签」页的扫描状态里
         </span>
       </div>
     </div>
@@ -829,6 +833,16 @@ onMounted(async () => {
           </div>
         </div>
         <el-switch v-model="ai.pre_review" />
+      </div>
+      <div v-if="ai.pre_review" class="setting-row">
+        <div class="setting-text">
+          <div class="label">自动采用</div>
+          <div class="cell-meta">
+            模型判定为同一首歌且置信度达标时自动写入歌词（写入留痕、可撤销）。
+            关闭后模型只给建议，仍需人工确认。
+          </div>
+        </div>
+        <el-switch v-model="ai.auto_accept" />
       </div>
       <div v-if="ai.pre_review" class="setting-row">
         <div class="setting-text">

@@ -63,22 +63,18 @@ def test_时长与艺人吻合但标题差一点时建议采用():
     assert result.recommendation.verdict in ("adopt", "inspect", "approximate")
 
 
-def test_版本冲突必须给出人工判断而非采纳():
-    """本地是现场版、候选是录音室版：同一首歌的不同版本 → 近似匹配。
-
-    决策仍是 needs_review（版本闸门未过，绝不直接自动写）；
-    建议给「approximate」——歌词内容大概率适用，AI 确认同曲异版后
-    可自动采用，或人工对比后确认。
-    """
+def test_版本冲突按近似匹配自动采用():
+    """本地是现场版、候选是录音室版、时长相同：2.0.4 起按用户授权
+    自动采用（近似匹配政策）。approximate 标记保留用于追溯，
+    版本闸门仍如实记录「未通过」。"""
     ctx, result = run(
         {"TITLE": ["喜欢你 (Live)"], "ARTIST": ["G.E.M. 鄧紫棋"]},
         262.0,
         [cand("喜欢你", "G.E.M.邓紫棋", 262.0)],
     )
-    assert result.decision.value == "needs_review"
+    assert result.decision.value == "accept"
     assert result.approximate is True
-    assert result.recommendation is not None
-    assert result.recommendation.verdict == "approximate"
+    assert "近似匹配" in result.reason
     version = next(c for c in result.checks if c.key == "version")
     assert not version.passed
 

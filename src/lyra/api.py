@@ -2988,6 +2988,10 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             "timeout_seconds": cfg.ai.timeout_seconds,
             "max_requests_per_run": cfg.ai.max_requests_per_run,
             "auto_clean_duplicates": cfg.ai.auto_clean_duplicates,
+            "pre_review": cfg.ai.pre_review,
+            "pre_review_confidence": cfg.ai.pre_review_confidence,
+            "auto_accept": cfg.ai.auto_accept,
+            "verify_tags": cfg.ai.verify_tags,
             "use_proxy": cfg.ai.use_proxy,
             "has_api_key": bool(cfg.ai.api_key.strip()),
             "api_key_source": source,
@@ -3228,7 +3232,9 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         ).fetchone()[0])
         tags = int(state.conn.execute(
             "SELECT COUNT(*) FROM tag_proposals "
-            "WHERE state IN ('auto','review','unmatched') AND dismissed_at IS NULL"
+            # unmatched 不计入待办：MusicBrainz 匹配不上（如华语专辑覆盖有限），
+            # 人工也无从处理（除手动链接指定），留在列表里只是刷屏。
+            "WHERE state IN ('auto','review') AND dismissed_at IS NULL"
         ).fetchone()[0])
         covers = int(state.conn.execute(
             """SELECT COUNT(*) FROM lyric_observations obs
@@ -3358,7 +3364,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 "p.album, l.rel_path, r.name AS root_name "
                 "FROM tag_proposals p JOIN locations l ON l.id = p.location_id "
                 "JOIN roots r ON r.id = l.root_id "
-                "WHERE p.state IN ('auto','review','unmatched') "
+                "WHERE p.state IN ('auto','review') "
                 "AND p.dismissed_at IS NULL "
                 "ORDER BY p.updated_at DESC LIMIT ? OFFSET ?",
                 (size, (page - 1) * size),
@@ -3553,6 +3559,64 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 return {"roots": out}
 
         return runner.start("ingest", job).to_dict()
+
+    @app.post("/api/v1/tasks/ai-pre-review", dependencies=[Depends(require_auth)])
+    def start_ai_pre_review(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """对待审查队列做一次模型判定，高置信条目转为待写入。
+
+        这是「减少人工干预」的主通道：抓取时逐首判定会被大批量扫描摊薄，
+        这里对**已在队列里的**条目集中判定，预算用完为止。
+        """
+        payload = payload or {}
+        root_name = payload.get("root")
+        limit = int(payload.get("limit") or 200)
+        roots = [r for r in cfg.enabled_roots if not root_name or r.name == root_name]
+        if not roots:
+            raise HTTPException(status_code=400, detail="没有匹配的受管根")
+        if not cfg.ai.enabled:
+            raise HTTPException(status_code=409, detail="大模型功能未启用")
+        if not cfg.ai.pre_review:
+            raise HTTPException(status_code=409, detail="智能预审未启用")
+
+        from .audit import audit_root
+        from .match import build_context
+        from .pipeline import sync_state
+        from .pre_review import run_ai_pre_review
+        from .providers import create_providers
+
+        def job(progress: Callable[[str], None]) -> dict[str, Any]:
+            providers = create_providers(cfg.providers)
+            out: list[dict[str, Any]] = []
+            try:
+                for root_cfg in roots:
+                    if root_cfg.read_only:
+                        continue
+                    audit = audit_root(root_cfg)
+                    sync_state(state, cfg, root_cfg, audit, full_scan=False)
+                    root_id = state.get_root_id(root_cfg.name) or -1
+                    contexts: dict[int, tuple[Any, str]] = {}
+                    for track in audit.tracks:
+                        loc = state.location_by_rel_path(
+                            root_id, str(track.audio.rel_path)
+                        )
+                        if loc is None:
+                            continue
+                        ctx = build_context(track.tags, track.audio.duration)
+                        contexts[int(loc["id"])] = (ctx, "")
+                    if not contexts:
+                        continue
+                    provider_map = {p.name: p for p in providers}
+                    result = run_ai_pre_review(
+                        state, cfg, root_cfg, provider_map, contexts,
+                        limit=limit, progress=progress,
+                    )
+                    out.append({"root": root_cfg.name, **result.to_dict()})
+                return {"roots": out}
+            finally:
+                for provider in providers:
+                    provider.close()
+
+        return runner.start("ai-pre-review", job).to_dict()
 
     @app.post("/api/v1/tasks/cover-fetch", dependencies=[Depends(require_auth)])
     def start_cover_fetch(payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -3865,7 +3929,9 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 # 已忽略不算待办，单列出来给人看「我忽略过什么」。
                 "ignored": counts.get("ignored", 0),
             },
-            "total": sum(queue.values()),
+            # 待办总数只算需要人决策的（auto 待写 + review 待确认）；
+            # unmatched 是「来源匹配不上」，人工同样无从下手，不占待办
+            "total": queue["auto"] + queue["review"],
             "last_scan_at": float(last_at) if last_at else None,
             "last_scan": last_scan,
             "write_enabled": cfg.policy.write_enabled,

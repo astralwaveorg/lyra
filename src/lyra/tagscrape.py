@@ -872,6 +872,17 @@ def _is_script_switch(local: str, suggested: str) -> bool:
     return (ascii_a and has_cjk(b)) or (has_cjk(a) and ascii_b)
 
 
+def _same_value_different_form(current: str, suggested: str) -> bool:
+    """两个值规范化后相同、字面写法不同（全半角/大小写/空格/标点/繁简）。
+
+    这类「冲突」不是真冲突：值语义一致，只是写法不同。用来源的写法替换
+    没有风险，属于应当自动消化的低风险纠正。
+    """
+    if not current or not suggested or current == suggested:
+        return False
+    return normalize_text(current) == normalize_text(suggested)
+
+
 def _auto_resolve_conflicts(
     rows: Sequence[Mapping[str, object]],
     match: MatchResult,
@@ -976,6 +987,16 @@ def _auto_resolve_conflicts(
                 cfg is not None
                 and cfg.policy.tags.low_risk_auto_correct
                 and _is_script_switch(current_title, suggested_title)
+            )
+        elif key in CORRECTABLE_FIELDS and (
+            cfg is not None and cfg.policy.tags.low_risk_auto_correct
+        ):
+            # **同值不同写法**的零风险纠正：本地与来源的字面不同但规范化后
+            # 相同（全角/半角、大小写、空格、标点、繁简），语义完全一致，
+            # 用来源的写法没有风险——这类冲突占待审查的很大比例，全部人工
+            # 确认纯属浪费。规范化后仍不同的一律留给人工。
+            adopt = _same_value_different_form(
+                " ".join(item["current"]), " ".join(item["suggested"])
             )
         elif key in ("ARTIST", "ARTISTS"):
             adopt = artist_rule

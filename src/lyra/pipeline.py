@@ -84,7 +84,7 @@ __all__ = [
     "compute_revision_hash",
 ]
 
-POLICY_VERSION = "match-v1"
+POLICY_VERSION = "match-v2"
 
 ProgressFn = Callable[[str], None]
 

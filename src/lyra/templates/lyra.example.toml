@@ -192,6 +192,11 @@ min_confidence = 0.75
 #   A.I.N.Y. 的重生版差 0.20s，而正确的原版差 0.80s）。
 # 设为 0 即关闭这条规则，恢复「同分即复核」。
 auto_accept_within_seconds = 1.0
+# 兜底自动采用的标题相似度下限：挡住「突然之间 / 刹那之间」这类
+# 完全不同的词被时长凑巧骗过（异体字如 漂向北方/飘向北方 有 0.75，不受此限）
+auto_accept_loose_title_score = 0.65
+# 近似匹配（现场版拿到录音室词）自动采用的标题核心下限
+approximate_auto_min_title = 0.95
 # 近似匹配：现场版可拿录音室词（AI 高置信判定同曲异版时自动采用）
 allow_approximate = true
 

@@ -300,8 +300,19 @@ class MatchingPolicy:
     #: 标题配上正确时长也能得到 0.679 分——只按总分放行就会写错歌词。
     #: 这两个下限把「时长凑巧相同但根本不是同一首歌」挡在门外。
     auto_accept_min_title_score: float = 0.85
+    auto_accept_loose_title_score: float = 0.65
+    """兜底自动采用的标题下限（比上面那条宽松）。
+
+    为什么要两条：0.85 挡住的是「标题明显不是同一首」；但异体字
+    （漂向北方 / 飘向北方）只有 0.75，历史上靠时长闸门兜底——一刀切 0.85
+    会把这类正确匹配也拒掉。0.65 的作用是挡住「突然之间 / 刹那之间」
+    这类完全不同的词（相似度 0.50）被时长凑巧骗过。"""
+
     auto_accept_min_artist_score: float = 0.50
     allow_approximate: bool = True
+    approximate_auto_min_title: float = 0.95
+    """近似匹配自动采纳的标题核心下限。达到且时长差不超过
+    auto_accept_relaxed_seconds 时直接自动采用，不进待审查。"""
     """近似匹配：版本不一致（现场版拿到录音室词）但标题核心与艺人一致、
     时长在硬闸门内的候选，经 AI 高置信判定后自动采用；无 AI 时进待办的
     「近似可接受」组。标题核心不匹配的候选绝不因此放行。"""
@@ -871,8 +882,9 @@ _MATCHING_KEYS = {
     "auto_accept_within_seconds", "auto_accept_min_confidence",
     "auto_accept_relaxed_seconds", "auto_accept_relaxed_confidence",
     "auto_accept_wide_confidence",
-    "auto_accept_min_title_score", "auto_accept_min_artist_score",
-    "allow_approximate",
+    "auto_accept_min_title_score", "auto_accept_loose_title_score",
+    "auto_accept_min_artist_score",
+    "allow_approximate", "approximate_auto_min_title",
 }
 _RETRY_KEYS = {"not_found_intervals_days", "no_synced_intervals_days", "transient_backoff_seconds"}
 _LYRICS_KEYS = {
@@ -1539,6 +1551,12 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                             dm.auto_accept_min_title_score),
                     dm.auto_accept_min_title_score,
                 ),
+                auto_accept_loose_title_score=_as_float(
+                    problems, "policy.matching.auto_accept_loose_title_score",
+                    m_t.get("auto_accept_loose_title_score",
+                            dm.auto_accept_loose_title_score),
+                    dm.auto_accept_loose_title_score,
+                ),
                 auto_accept_min_artist_score=_as_float(
                     problems, "policy.matching.auto_accept_min_artist_score",
                     m_t.get("auto_accept_min_artist_score",
@@ -1549,6 +1567,12 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                     problems, "policy.matching.allow_approximate",
                     m_t.get("allow_approximate", dm.allow_approximate),
                     dm.allow_approximate,
+                ),
+                approximate_auto_min_title=_as_float(
+                    problems, "policy.matching.approximate_auto_min_title",
+                    m_t.get("approximate_auto_min_title",
+                            dm.approximate_auto_min_title),
+                    dm.approximate_auto_min_title,
                 ),
             )
         if "cover" in table:
