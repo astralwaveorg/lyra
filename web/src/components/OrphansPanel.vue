@@ -46,7 +46,9 @@ const aiItems = ref<
 >([])
 const aiError = ref('')
 
-const roots = computed(() => meta.summary?.roots.map((root) => root.name) ?? [])
+const roots = computed(() =>
+  (meta.summary?.roots ?? []).map((item) => ({ name: item.name, label: item.label || item.name })),
+)
 const visible = computed(() =>
   rootFilter.value ? items.value.filter((item) => item.root === rootFilter.value) : items.value,
 )
@@ -270,7 +272,7 @@ defineExpose({ reload: load })
     </span>
     <span class="grow" />
     <el-select v-if="roots.length > 1" v-model="rootFilter" class="sel" placeholder="全部目录" clearable>
-      <el-option v-for="name in roots" :key="name" :label="name" :value="name" />
+      <el-option v-for="item in roots" :key="item.name" :label="item.label" :value="item.name" />
     </el-select>
     <el-button :disabled="!visible.length || allChecked" @click="selectAll">全选</el-button>
     <el-button :disabled="!selectedCount" @click="clearSelection">取消全选</el-button>

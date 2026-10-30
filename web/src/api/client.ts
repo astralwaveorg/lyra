@@ -568,6 +568,12 @@ export const api = {
     request<{ ok: boolean; policy: OrganizePolicySettings }>(
       '/api/v1/settings/organize', json(policy),
     ),
+  rootLabels: () =>
+    request<{ labels: Record<string, string> }>('/api/v1/settings/roots'),
+  updateRootLabels: (labels: Record<string, string>) =>
+    request<{ ok: boolean; labels: Record<string, string> }>(
+      '/api/v1/settings/roots', json({ labels }),
+    ),
   lyricsSettings: () =>
     request<{ settings: LyricsSettings; revision: string }>('/api/v1/settings/lyrics'),
   updateLyricsSettings: (settings: Partial<LyricsSettings>) =>

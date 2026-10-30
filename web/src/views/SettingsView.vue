@@ -334,6 +334,32 @@ async function testNetworkProxy() {
   }
 }
 
+/** 受管根显示名：根内部名 → 界面显示名（空 = 回到默认「实际目录名」）。 */
+const rootLabels = ref<Record<string, string>>({})
+const rootLabelsDirty = ref(false)
+const rootLabelsSaving = ref(false)
+
+function loadRootLabels() {
+  rootLabels.value = Object.fromEntries(
+    (meta.summary?.roots ?? []).map((root) => [root.name, root.label && root.label !== root.name ? root.label : '']),
+  )
+  rootLabelsDirty.value = false
+}
+
+async function saveRootLabels() {
+  rootLabelsSaving.value = true
+  try {
+    await api.updateRootLabels(rootLabels.value)
+    await meta.refresh()
+    loadRootLabels()
+    ElMessage.success('显示名已保存')
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '显示名保存失败')
+  } finally {
+    rootLabelsSaving.value = false
+  }
+}
+
 async function loadTokens() {
   tokensLoading.value = true
   try {
@@ -419,6 +445,7 @@ async function copyToken() {
 
 onMounted(async () => {
   if (!meta.summary) await meta.refresh().catch(() => undefined)
+  loadRootLabels()
   await Promise.all([
     loadTokens(),
     loadTagPolicy(),
@@ -1065,11 +1092,30 @@ onMounted(async () => {
       <div class="info-row">
         <span class="label">受管目录</span>
         <div class="roots">
+          <span v-if="!summary?.roots.length" class="dim">没有配置受管目录</span>
           <div v-for="root in summary?.roots ?? []" :key="root.name" class="root">
             <el-tag size="small" type="info">{{ root.name }}</el-tag>
             <span class="mono cell-meta">{{ root.path }}</span>
+            <el-input
+              v-model="rootLabels[root.name]"
+              class="root-label-input"
+              size="small"
+              :placeholder="`显示名（默认 ${root.path.split('/').filter(Boolean).pop() || root.name}）`"
+              maxlength="60"
+              clearable
+              @input="rootLabelsDirty = true"
+            />
           </div>
-          <span v-if="!summary?.roots.length" class="dim">没有配置受管目录</span>
+          <div v-if="summary?.roots.length" class="row">
+            <el-button
+              size="small"
+              type="primary"
+              :disabled="!rootLabelsDirty"
+              :loading="rootLabelsSaving"
+              @click="saveRootLabels"
+            >保存显示名</el-button>
+            <span class="dim">显示名只影响界面，例如「默认曲库--Library」；留空则显示实际目录名</span>
+          </div>
         </div>
       </div>
     </div>
@@ -1253,8 +1299,13 @@ onMounted(async () => {
 .roots {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 8px;
+  width: 100%;
   min-width: 0;
+}
+
+.root-label-input {
+  width: 220px;
 }
 
 .root {

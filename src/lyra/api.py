@@ -24,9 +24,9 @@ import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import httpx
@@ -3737,6 +3737,42 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         _invalidate_caches()
         return {"ok": True, "policy": asdict(cfg.policy.organize), "revision": revision}
 
+    @app.get("/api/v1/settings/roots", dependencies=[Depends(require_auth)])
+    def root_labels_view() -> dict[str, Any]:
+        """受管根的显示名映射（根内部名 → 界面显示名）。"""
+        return {"labels": _root_labels(state)}
+
+    @app.put("/api/v1/settings/roots", dependencies=[Depends(require_auth)])
+    def update_root_labels(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """保存受管根的显示名映射。
+
+        根的内部名是 API 标识符不动；显示名只影响界面。值为空字符串
+        表示清除自定义、回到「显示实际目录名」的默认行为。
+        """
+        if not isinstance(payload, dict) or not isinstance(payload.get("labels"), dict):
+            raise HTTPException(status_code=400, detail="labels 必须是对象")
+        known = {r.name for r in cfg.roots}
+        cleaned: dict[str, str] = {}
+        for name, label in payload["labels"].items():
+            if not isinstance(name, str) or not isinstance(label, str):
+                raise HTTPException(status_code=400, detail="显示名映射必须是字符串到字符串")
+            if name not in known:
+                raise HTTPException(status_code=400, detail=f"没有名为 {name} 的受管根")
+            text = label.strip()
+            if not text:
+                continue  # 空值 = 清除自定义，回默认
+            if len(text) > 60:
+                raise HTTPException(status_code=400, detail="显示名过长（最多 60 字）")
+            cleaned[name] = text
+        state.set_meta(
+            "settings.root_labels",
+            json.dumps(cleaned, ensure_ascii=False) if cleaned else "",
+        )
+        revision = str(time.time_ns())
+        state.set_meta("settings.revision", revision)
+        _invalidate_caches()
+        return {"ok": True, "labels": cleaned, "revision": revision}
+
     def _lyrics_settings_view() -> dict[str, Any]:
         return {
             "settings": asdict(cfg.lyrics),
@@ -5616,6 +5652,49 @@ def _list_files(
 # ---------------------------------------------------------------------------
 
 
+def _root_labels(store: StateStore) -> dict[str, str]:
+    """受管根的**自定义显示名**（后台设置）。
+
+    根的内部名（lyra.toml 里的 name）是 API 标识符，未必与实际目录同名
+    （`library` vs 磁盘上的 `Library`）。显示名让界面能与目录对上：
+    默认取目录名，用户在设置里取名后以用户为准。
+    """
+    raw = store.get_meta("settings.root_labels")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(k): str(v).strip()
+        for k, v in data.items()
+        if isinstance(k, str) and isinstance(v, str) and v.strip()
+    }
+
+
+def _root_label(
+    row: Mapping[str, Any], custom: Mapping[str, str]
+) -> str:
+    """一个根的显示名：自定义 > 实际目录名 > 内部名。
+
+    默认显示**实际目录名**而不是内部名——内部名写的是 `library`、
+    磁盘上是 `Library` 时，选择器里两个名字对不上，整理时会怀疑
+    选错了目录。
+    """
+    label = custom.get(str(row["name"]))
+    if label:
+        return label
+    path = str(row["path"] or "").strip()
+    if path:
+        base = PurePosixPath(path.replace("\\", "/")).name
+        if base:
+            return base
+    return str(row["name"])
+
+
 def _summary(cfg: Config, store: StateStore, runner: Runner) -> dict[str, Any]:
     def scalar(sql: str, params: tuple[Any, ...] = ()) -> int:
         row = store.conn.execute(sql, params).fetchone()
@@ -5686,6 +5765,7 @@ def _summary(cfg: Config, store: StateStore, runner: Runner) -> dict[str, Any]:
              "written_today": daily[day]["applied"]}
         )
 
+    root_labels = _root_labels(store)
     return {
         "version": __version__,
         "schema_version": store.current_schema_version(),
@@ -5694,7 +5774,10 @@ def _summary(cfg: Config, store: StateStore, runner: Runner) -> dict[str, Any]:
         "lyrics_by_provider": by_provider,
         "coverage_history": history,
         "roots": [
-            {"name": r["name"], "role": r["role"], "path": r["path"], "health": r["health"]}
+            {
+                "name": r["name"], "role": r["role"], "path": r["path"],
+                "health": r["health"], "label": _root_label(r, root_labels),
+            }
             for r in store.conn.execute("SELECT * FROM roots ORDER BY name")
         ],
         "counts": {

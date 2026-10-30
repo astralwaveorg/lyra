@@ -26,7 +26,9 @@ const excludedPaths = ref<string[]>([])
 const dirs = ref<DirNode[]>([])
 const loadingDirs = ref(false)
 
-const roots = computed(() => meta.summary?.roots.map((item) => item.name) ?? [])
+const roots = computed(() =>
+  (meta.summary?.roots ?? []).map((item) => ({ name: item.name, label: item.label || item.name })),
+)
 const rootDirs = computed(() => dirs.value.filter((item) => item.path !== ''))
 
 const plan = ref<OrganizePlan | null>(null)
@@ -539,7 +541,7 @@ watch([subpaths, excludedPaths], () => {
 
 onMounted(async () => {
   if (!meta.summary) await meta.refresh().catch(() => undefined)
-  root.value = roots.value[0] ?? ''
+  root.value = roots.value[0]?.name ?? ''
   await loadDirs()
   await loadDupes()
 })
@@ -560,7 +562,7 @@ onMounted(async () => {
 
   <div class="scope-bar">
     <el-select v-model="root" class="root-sel" placeholder="曲库">
-      <el-option v-for="name in roots" :key="name" :label="name" :value="name" />
+      <el-option v-for="item in roots" :key="item.name" :label="item.label" :value="item.name" />
     </el-select>
     <el-select
       v-model="subpaths"

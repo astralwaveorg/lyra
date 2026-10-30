@@ -10,6 +10,8 @@ export type Root = {
   role: string
   path: string
   health: string | null
+  /** 界面显示名：后台自定义 > 实际目录名 > 内部名 */
+  label?: string
 }
 
 export type Summary = {

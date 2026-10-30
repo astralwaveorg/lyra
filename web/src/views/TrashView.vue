@@ -17,14 +17,16 @@ const error = ref('')
 const root = ref('')
 const busy = ref('')
 
-const roots = computed(() => meta.summary?.roots.map((item) => item.name) ?? [])
+const roots = computed(() =>
+  (meta.summary?.roots ?? []).map((item) => ({ name: item.name, label: item.label || item.name })),
+)
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
     data.value = await api.trash()
-    if (!root.value && roots.value.length) root.value = roots.value[0]
+    if (!root.value && roots.value.length) root.value = roots.value[0].name
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败'
   } finally {
@@ -52,7 +54,7 @@ async function restore(batch: TrashBatch, relPath: string) {
 
 /** 还原目标：把选择挪到动作里，不再依赖页头那个容易漏选的下拉。 */
 function pickRoot(): string | null {
-  if (roots.value.length === 1) return roots.value[0]
+  if (roots.value.length === 1) return roots.value[0].name
   if (root.value) return root.value
   ElMessage.warning('先选择要还原到哪个受管目录（右上角）')
   return null
@@ -139,7 +141,7 @@ onMounted(async () => {
 <template>
   <PageHead :count="data?.total">
     <el-select v-if="roots.length > 1" v-model="root" class="root-sel">
-      <el-option v-for="name in roots" :key="name" :label="`还原到 ${name}`" :value="name" />
+      <el-option v-for="item in roots" :key="item.name" :label="`还原到 ${item.label}`" :value="item.name" />
     </el-select>
     <el-button :loading="loading" @click="load">
       <AppIcon name="Refresh" :size="14" style="margin-right: 5px" />刷新

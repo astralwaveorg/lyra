@@ -49,9 +49,13 @@ from .tagsources import (
     ACTION_CONFLICT,
     ACTION_CORRECT,
     ACTION_FILL,
+    ACTION_SAME,
     EntityLink,
     MusicBrainzProvider,
+    _album_edition_matches,
     _artist_tokens,
+    _fold_value,
+    _human_name_fields,
     build_release_candidate,
     compare_fields,
     locate_release_track,
@@ -876,14 +880,27 @@ def _is_script_switch(local: str, suggested: str) -> bool:
     return (ascii_a and has_cjk(b)) or (has_cjk(a) and ascii_b)
 
 
-def _same_value_different_form(current: str, suggested: str) -> bool:
+#: 强证据下「写法等价就写来源规范形」的字段：人名类（艺人/作曲/作词/
+#: 制作等）与标题。用户明确要求：简繁（周杰伦↔周杰倫）、空格
+#: （G.E.M.鄧紫棋↔G.E.M. 鄧紫棋）、冠词倒置（Beatles, The↔The Beatles）
+#: 这类同一署名的写法差异直接归一，不需要人工。专辑名不在其中——
+#: 本地的版本括号（Red (Taylor's Version)）是版次痕迹，必须保留。
+_CANONICAL_WRITE_FIELDS = _human_name_fields | {"TITLE"}
+
+
+def _same_value_different_form(
+    current: str, suggested: str, field: str = ""
+) -> bool:
     """两个值规范化后相同、字面写法不同（全半角/大小写/空格/标点/繁简）。
 
     这类「冲突」不是真冲突：值语义一致，只是写法不同。用来源的写法替换
-    没有风险，属于应当自动消化的低风险纠正。
+    没有风险，属于应当自动消化的低风险纠正。`field` 传字段名时按
+    字段语义折叠（人名字段额外归一冠词倒置与空白差异）。
     """
     if not current or not suggested or current == suggested:
         return False
+    if field:
+        return _fold_value(field, current) == _fold_value(field, suggested)
     return normalize_text(current) == normalize_text(suggested)
 
 
@@ -895,12 +912,16 @@ def _auto_resolve_conflicts(
 ) -> list[dict]:
     """对已确认同一录音的冲突，按「远程更权威」自动采纳。
 
-    只处理三类可以确定的差异：
+    逐字段规则（完整矩阵见 tests/test_tag_field_matrix.py）：
 
     - 发行级字段：MBID 精确时远程就是该文件所属发行；
     - 标题：只差标点/空格，版本标记相同；
+    - 人名类字段（艺人/作曲/作词/制作等）：简繁、空格、冠词倒置这类
+      同一署名的写法差异，写来源规范形（整库归一）；
     - 艺人：同一艺人 ID、别名、只缺成员，或本地把作曲家误写成艺术家。
 
+    「语义相同、写法不同」的行在对比层已判 SAME，这里还会在强证据下
+    把它们升级为 CORRECT——不只是「不冲突」，而是顺手归一。
     人数不同、名字明显不同、版本不同的仍然留在复核。
     """
     if not _strong_evidence(match):
@@ -970,6 +991,26 @@ def _auto_resolve_conflicts(
             "suggested": list(row["suggested"]),
             "action": str(row["action"]),
         }
+        if item["action"] == ACTION_SAME and item["key"] in _CANONICAL_WRITE_FIELDS:
+            # 同一署名/标题的不同写法（简繁、空格、冠词、全半角）：
+            # 强证据下这不是「两边都对不用动」，而是「顺手归一」的机会——
+            # 写入来源规范形，整库署名一致。字面完全相同的不动（避免无谓写入）。
+            current_text = " ".join(item["current"])
+            suggested_text = " ".join(item["suggested"])
+            if (
+                current_text
+                and suggested_text
+                and current_text != suggested_text
+                and not (
+                    item["key"] == "ALBUM"
+                    and _album_edition_matches(item["current"], item["suggested"])
+                )
+                and _same_value_different_form(current_text, suggested_text, item["key"])
+            ):
+                item["action"] = ACTION_CORRECT
+                adopted += 1
+            out.append(item)
+            continue
         if item["action"] != ACTION_CONFLICT:
             out.append(item)
             continue
@@ -1000,8 +1041,16 @@ def _auto_resolve_conflicts(
             # 用来源的写法没有风险——这类冲突占待审查的很大比例，全部人工
             # 确认纯属浪费。规范化后仍不同的一律留给人工。
             adopt = _same_value_different_form(
-                " ".join(item["current"]), " ".join(item["suggested"])
+                " ".join(item["current"]), " ".join(item["suggested"]), key
             )
+        elif key in _human_name_fields and _same_value_different_form(
+            " ".join(item["current"]), " ".join(item["suggested"]), key
+        ):
+            # 人名类字段（艺人/作曲/作词/制作人等）的写法差异：简繁
+            # （周杰伦 ↔ 周杰倫）、空格（G.E.M.鄧紫棋 ↔ G.E.M. 鄧紫棋）、
+            # 冠词倒置（Beatles, The ↔ The Beatles）。同一个署名，写法
+            # 取来源规范形，整库归一。
+            adopt = True
         elif key in ("ARTIST", "ARTISTS"):
             adopt = artist_rule
         elif key == "ARTISTSORT":

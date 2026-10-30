@@ -741,6 +741,130 @@ _NUMERIC_FIELDS = frozenset({
 
 _DATE_FIELDS = frozenset({"DATE", "ORIGINALDATE"})
 
+#: 「人名类」字段：写的是**同一个人/同一组人**，只是写法不同时，
+#: 不算冲突（简繁、全半角空格、「Beatles, The」vs「The Beatles」）。
+_HUMAN_NAME_FIELDS = frozenset({
+    "ARTIST", "ARTISTS", "ALBUMARTIST", "ALBUMARTISTS",
+    "ARTISTSORT", "ALBUMARTISTSORT",
+    "COMPOSER", "LYRICIST", "PRODUCER", "ARRANGER",
+    "ENGINEER", "MIXER", "CONDUCTOR", "REMIXER",
+})
+
+#: 冠词倒置写法：「Beatles, The」与「The Beatles」是同一个艺人。
+_INVERTIBLE_ARTICLE = re.compile(
+    r"^(.+)\s*,\s*(the|a|an|los|las|le|la|les|el)\s*$", re.IGNORECASE
+)
+
+#: 专辑「版本括号」里的词：括号内容含这些词时，括号是**版本说明**
+#: （再版/豪华/介质/限量），不是标题本身的一部分。
+_EDITION_WORDS = re.compile(
+    r"edition|version|ver\.|deluxe|remaster|reissue|expanded|anniversary|"
+    r"deluxe\s+edition|special|limited|collector|target\s+exclusive|"
+    r"cd\s*\d|disc\s*\d|bonus|explicit|clean|mono|stereo|"
+    r"hi-?res|24\s*bit|96\s*khz|dsd|mfsl|vinyl|shm|sacd|super\s?vinyl|"
+    r"版|豪华|特別|特别|紀念|纪念|限量|再版|復刻|复刻|預購|预购|首刷|盤|盘",
+    re.IGNORECASE,
+)
+
+_EDITION_SUFFIX = re.compile(r"[\s]*[([\uFF08\u3010\u300C]([^)\]\uFF09\u3011\u300D]*)[)\]\uFF09\u3011\u300D]\s*$")
+
+#: 专辑名的**裸碟后缀**（无括号）：`Red CD1`、`范特西 Disc 2`——
+#: 分碟文件常把碟号写进专辑名，与基础名是同一张专辑。
+_DISC_SUFFIX = re.compile(r"\s+(?:CD|Disc|Disk|碟)\s*\d{1,2}$", re.IGNORECASE)
+
+#: 本地专辑/艺人字段的**占位值**：不是人工整理的痕迹，是「没填」。
+_PLACEHOLDER_VALUES = frozenset({
+    "[unknown]", "(unknown)", "unknown", "unknown album", "unknown artist",
+    "未知专辑", "未知艺人", "未知", "未命名", "new album", "<unknown>",
+})
+
+#: 完整日期之间**一天的差**视为同一发行（时区/地区发行日不同）。
+_DATE_FULL = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _parse_date(text: str):
+    from datetime import date
+
+    try:
+        parts = [int(x) for x in text.split("-")]
+        if len(parts) == 3:
+            return date(parts[0], parts[1], parts[2])
+    except ValueError:
+        return None
+    return None
+
+
+def _strip_edition(title: str) -> str:
+    """去掉专辑名尾部的「版本括号」，返回基础名；无版本括号时原样返回。
+
+    只剥**尾部**括号、且括号内容必须是版本词——`Red (Taylor's Version)`
+    和 `Midnights [Jade Green Edition]` 是同一张专辑的具体版次，
+    与来源的 `Red` / `Midnights` 是同一专辑，不该算冲突。
+    括号里是「Live」「Deluxe」之外的内容（伴奏标记、别名）不动。
+    """
+    text = (title or "").strip()
+    while True:
+        m = _EDITION_SUFFIX.search(text)
+        if m and _EDITION_WORDS.search(m.group(1)):
+            text = text[: m.start()].strip()
+            continue
+        m = _DISC_SUFFIX.search(text)
+        if m:
+            text = text[: m.start()].strip()
+            continue
+        break
+    return text
+
+
+_ZH_NUMERALS = "零一二三四五六七八九"
+
+
+def _zh_numeral_to_arabic(text: str) -> str:
+    """中文数字（≤99 的常见形态）→ 阿拉伯数字，只用于比较。
+
+    `十一月的蕭邦` 与 `11月的蕭邦` 是同一张专辑（数字写法不同）；
+    折叠后仍不同会留成永远解决不了的冲突。只处理「十」「十一」
+    「二十」「二十一」这类简单形态——复杂的（万、亿、两）不碰。
+    """
+    def repl(m: re.Match[str]) -> str:
+        raw = m.group(0)
+        if raw == "十":
+            return "10"
+        if "十" not in raw:
+            return raw  # 一~九：单独出现时常是词的一部分，不动
+        tens, ones = raw.split("十", 1)
+        tens_n = _ZH_NUMERALS.index(tens) if tens else 1
+        ones_n = _ZH_NUMERALS.index(ones) if ones else 0
+        return str(tens_n * 10 + ones_n)
+
+    return re.sub(
+        r"[零一二三四五六七八九十]{1,3}(?=世纪|[月日年第张首辑号纪代])", repl, text
+    )
+
+
+def _article_canonical(text: str) -> str:
+    """「beatles, the」→「the beatles」：冠词倒置归一（**只用于比较**）。"""
+    m = _INVERTIBLE_ARTICLE.match(text.strip())
+    if m:
+        return f"{m.group(2)} {m.group(1)}"
+    return text
+
+
+def _fold_value(field: str, value: str) -> str:
+    """字段的「比较形」：全半角/引号/简繁/大小写折叠；人名字段再
+    归一冠词倒置并去掉全部空白（`G.E.M.鄧紫棋` 与 `G.E.M. 鄧紫棋`
+    是同一个署名，只是少了个空格）。
+
+    只用于**比较**，绝不写回文件。
+    """
+    from ..match import normalize_text
+
+    text = normalize_text(value)
+    text = _zh_numeral_to_arabic(text)
+    if field in _HUMAN_NAME_FIELDS:
+        text = re.sub(r"\s+", "", _article_canonical(text))
+    return text
+
 
 _ARTIST_SPLIT = re.compile(
     r"\s*(?:[、,，;；]|&|＋|\+|·|×|/|\bwith\b|\bfeat(?:uring)?\.?|\bft\.?)\s*",
@@ -764,7 +888,12 @@ def _split_values(field: str, values: Sequence[str]) -> list[str]:
         if field == "GENRE":
             parts = re.split(r"\s*[;／/,]\s*", text) if len(text) < 200 else [text]
         elif field in ("ARTIST", "ALBUMARTIST", "ARTISTS", "ALBUMARTISTS"):
-            parts = _ARTIST_SPLIT.split(text) if len(text) < 200 else [text]
+            if _INVERTIBLE_ARTICLE.match(text):
+                # 「Beatles, The」是冠词倒置的**一个**艺人，不是「Beatles」
+                # 和「The」两个人——先于逗号拆分识别。
+                parts = [text]
+            else:
+                parts = _ARTIST_SPLIT.split(text) if len(text) < 200 else [text]
         elif field in _ORDER_FREE:
             parts = re.split(r"\s*[;]\s*", text)
         else:
@@ -775,14 +904,13 @@ def _split_values(field: str, values: Sequence[str]) -> list[str]:
 
 
 def _norm_values(field: str, values: Sequence[str]) -> list[str]:
-    normalized = [v.strip().casefold() for v in _split_values(field, values)]
     if field in _NUMERIC_FIELDS:
         fixed = []
-        for value in normalized:
-            digits = value.lstrip("0")
+        for value in values:
+            digits = str(value or "").strip().lstrip("0")
             fixed.append(digits or "0")
         return fixed
-    return normalized
+    return [_fold_value(field, v) for v in _split_values(field, values)]
 
 
 _SORT_SEPARATORS = re.compile(
@@ -845,7 +973,21 @@ def _is_extension(field: str, now: Sequence[str], want: Sequence[str]) -> bool:
         return False
     local = _artist_tokens(field, now)
     remote = _artist_tokens(field, want)
-    return bool(local) and bool(remote) and local < remote
+    if bool(local) and bool(remote) and local < remote:
+        return True
+    if field in _HUMAN_NAME_FIELDS:
+        # 「G.E.M.」→「G.E.M. 鄧紫棋」：本地只有主艺人，来源补全了整组
+        # 署名。去空白折叠后本地是来源的**前缀**（且不少于 3 个字符，
+        # 排除单字截断）也算补齐——`_artist_tokens` 不拆空格，这种
+        # 连写形式它看不见。
+        local_join = "".join(_fold_value(field, v) for v in now)
+        remote_join = "".join(_fold_value(field, v) for v in want)
+        return (
+            len(local_join) >= 3
+            and bool(remote_join)
+            and remote_join.startswith(local_join)
+        )
+    return False
 
 
 def _same_value(field: str, now: Sequence[str], want: Sequence[str]) -> bool:
@@ -882,11 +1024,99 @@ def _same_value(field: str, now: Sequence[str], want: Sequence[str]) -> bool:
                     or right.startswith(left + "-")
                 ):
                     return True
-    left = sorted(_norm_values(field, now))
-    right = sorted(_norm_values(field, want))
+                # 完整日期只差一天：时区或地区发行日不同，是同一发行。
+                da, db = _parse_date(left), _parse_date(right)
+                if da is not None and db is not None and abs((da - db).days) <= 1:
+                    return True
     if field in _ORDER_FREE or field in _NUMERIC_FIELDS:
-        return left == right
-    return [v.casefold() for v in now] == [v.casefold() for v in want]
+        return sorted(_norm_values(field, now)) == sorted(_norm_values(field, want))
+    # 单值字段（标题/专辑/日期等）同样走折叠比较：简繁、全半角、
+    # 冠词倒置、人名空格差异都不算冲突。
+    return _norm_values(field, now) == _norm_values(field, want)
+
+
+def _album_edition_matches(
+    now: Sequence[str], want: Sequence[str]
+) -> bool:
+    """本地专辑名是来源基础名的**更具体写法**，不算冲突。
+
+    三种形态（都只认「本地更具体」这一个方向，反方向可能是另一个
+    版次，仍进人工）：
+
+    - 尾部版本括号：`Red (Taylor's Version)` / `Midnights [Jade Green
+      Edition]`——剥掉后与来源一致；
+    - 尾部双语注释/并排双名：`最偉大的作品 (Greatest Works of Art)`、
+      `啓示錄 REVELATION`——基础名一致或来源是本地的尾部后缀；
+    - 裸碟后缀：`Red CD1`——分碟文件的碟号写进了专辑名。
+    """
+    joined_now = " ".join(str(v) for v in now if str(v).strip())
+    joined_want = " ".join(str(v) for v in want if str(v).strip())
+    if not joined_now or not joined_want or joined_now == joined_want:
+        return False
+    base = _strip_edition(joined_now)
+    if base != joined_now and _fold_value("ALBUM", base) == _fold_value(
+        "ALBUM", joined_want
+    ):
+        return True
+    # 尾部任意括号（双语注释等）：`最偉大的作品 (Greatest Works of Art)`
+    # 剥掉后与来源一致——括号内容是注释，本地更全。
+    bare = _EDITION_SUFFIX.sub("", joined_now).strip()
+    if bare != joined_now and _fold_value("ALBUM", bare) == _fold_value(
+        "ALBUM", joined_want
+    ):
+        return True
+    # 双语名：来源（基础名）是本地名的尾部后缀，且来源本身够长
+    # （≥5 个字符，避免「Love」撞上「Love Me Do」这类真不同）。
+    fold_now = _fold_value("ALBUM", joined_now).replace(" ", "")
+    fold_want = _fold_value("ALBUM", joined_want).replace(" ", "")
+    return (
+        len(fold_want) >= 5
+        and fold_now.endswith(fold_want)
+        and fold_now != fold_want
+    )
+
+
+def _is_placeholder_value(values: Sequence[str]) -> bool:
+    """本地值是不是「没填」的占位（[unknown] 之类）。"""
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if _fold_value("ALBUM", text).replace(" ", "") in _PLACEHOLDER_VALUES:
+            return True
+    return False
+
+
+def _date_lineage(
+    now: Sequence[str],
+    want: Sequence[str],
+    suggested: Mapping[str, Sequence[str]],
+) -> bool:
+    """本地 DATE 与来源的**原始发行日**（ORIGINALDATE/ORIGINALYEAR）同谱系。
+
+    实际案例：本地 `2012`，来源 DATE `2021-09-02`、ORIGINALDATE
+    `2012-05-07`——本地记的是专辑最初发行年份，来源记的是这个版次的
+    发行日，两者不矛盾。把这条判成冲突会让全库的再版专辑都进人工。
+    """
+    originals = [
+        str(v).strip()
+        for v in (suggested.get("ORIGINALDATE") or []) + (suggested.get("ORIGINALYEAR") or [])
+        if str(v).strip()
+    ]
+    if not originals:
+        return False
+    for local in now:
+        local = str(local).strip()
+        if len(local) != 4 or not local.isdigit():
+            continue  # 只处理「本地是纯年份」的形态
+        for origin in originals:
+            if origin.startswith(local):
+                return True
+    return False
+
+
+#: 人名类字段集合的公开别名（供消解层引用，语义见上）。
+_human_name_fields = _HUMAN_NAME_FIELDS
 
 
 def compare_fields(
@@ -938,6 +1168,18 @@ def compare_fields(
                 action = ACTION_SAME
             else:
                 action = ACTION_FILL
+        elif key in ("ALBUM", "ARTIST", "ALBUMARTIST") and _is_placeholder_value(now):
+            # 本地是占位值（[unknown] 之类）＝「没填」，不是人工痕迹：
+            # 来源值直接按补齐处理。
+            action = ACTION_FILL
+        elif key == "ALBUM" and _album_edition_matches(now, want):
+            # 本地是同一张专辑的**具体版次**（尾部版本括号），来源是基础名：
+            # 本地更具体、且是人工整理过的痕迹，保留本地，不算冲突。
+            action = ACTION_SAME
+        elif key == "DATE" and _date_lineage(now, want, suggested):
+            # 本地年份与来源的**原始发行日**同谱系：来源日期是该版次的发行日，
+            # 本地记的是原始发行——两者都对，不算冲突。
+            action = ACTION_SAME
         elif _same_value(key, now, want) or any(
             current.get(alias)
             and _same_value(key, current.get(alias) or [], want)
