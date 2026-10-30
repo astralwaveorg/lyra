@@ -396,8 +396,12 @@ class PolicyConfig:
 
 @dataclass(slots=True)
 class RetryConfig:
-    not_found_intervals_days: list[int] = field(default_factory=lambda: [7, 30, 90])
-    no_synced_intervals_days: list[int] = field(default_factory=lambda: [30, 90, 180])
+    not_found_intervals_days: list[int] = field(default_factory=lambda: [1, 3, 7, 14, 30])
+    """「查无结果」的重试计划。旧值 [7, 30, 90] 太保守：来源会新增内容，
+    标题搜索的查询词也会因身份解析改进而变化，等 7 天才第一次重试太慢。
+    5 次用尽后停等人工（或策略版本变更触发全量重算）。"""
+    no_synced_intervals_days: list[int] = field(default_factory=lambda: [3, 7, 14, 30, 60])
+    """有候选但没有同步歌词：歌词来源会随时间补充新词。"""
     transient_backoff_seconds: list[int] = field(
         default_factory=lambda: [60, 300, 1800, 7200, 21600]
     )

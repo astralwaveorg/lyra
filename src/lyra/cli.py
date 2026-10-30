@@ -1269,24 +1269,24 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     # 处理流程，所以**删除和移走的文件永远进不了那个列表**——库里于是不知道
     # 它们没了。实际用户移动/删除了文件，界面要等到第二天全量核对才变。
     # 204 首的审计约 1 秒，30 秒一次可以接受。
-    _STATE_SYNC_SECONDS = 30.0
+    _STATE_SYNC_SECONDS = 60.0
     _OBSERVATION_PRUNE_SECONDS = 86400.0
     # 异名 .lrc 的自动改名：播放器只找 <音频同名>.lrc，Late 一天就等于
     # 这首歌「没有歌词」。扫描 3568 个文件约 1 秒，5 分钟一次足够。
-    _SIDECAR_NAME_REPAIR_SECONDS = 300.0
+    _SIDECAR_NAME_REPAIR_SECONDS = 600.0
     # 孤儿歌词清理：半小时一次足够。只在配置显式打开时才动文件，
     # 而且动作是移入回收站（可还原）。
-    _ORPHAN_CLEAN_SECONDS = 1800.0
+    _ORPHAN_CLEAN_SECONDS = 3600.0
     # 封面文件名统一小写：几乎不用做第二次，但启动后的第一轮要做一次，
     # 之后每小时扫一遍足够（新拷进来的专辑可能带 Cover.JPG）。
-    _COVER_NAME_REPAIR_SECONDS = 3600.0
+    _COVER_NAME_REPAIR_SECONDS = 7200.0
     # 来源烟雾探测：每天一次最小搜索请求，探测非官方来源是否仍可用。
     # 结果进 provider_health，自动化页健康卡展示——「来源被风控了」不该
     # 等到用户发现歌词抓不到才知道。
     _PROBE_SECONDS = 86400.0
     # AI 预审批：抓取后的待审查队列交给模型判定，高置信直接转待写入。
     # 独立于抓取预算——抓取时逐首判定会被几千首的扫描量摊薄，队列消不动。
-    _AI_PRE_REVIEW_SECONDS = 600.0
+    _AI_PRE_REVIEW_SECONDS = 300.0
     last_ai_pre_review = 0.0
     last_orphan_clean = 0.0
     last_cover_repair = 0.0
