@@ -308,22 +308,40 @@ class MusicBrainzProvider:
         cache[key] = data
         return data
 
-    def health_check(self) -> bool:
+    def health_check(self, *, retries: int = 3, backoff_seconds: float = 3.0) -> bool:
         """确认来源真的能应答，而不只是配置了地址。
 
         扫描前用它挡一次：镜像挂了/网络断了时，逐首查询会全部失败，
         整个库会被误标成「未匹配」，把上一轮的复核队列覆盖掉。
+
+        **限流要退避重试，不能直接放弃。** 公共 MusicBrainz 限流是每秒
+        一次请求，长扫描中随机 503 是常态（实测连续 5 次请求就有 1 次 503）。
+        一次 503 就放弃整轮扫描，等于标签自动化随机停摆——这正是「自动化
+        时好时坏」的来源之一。这里对 429/503 做有界退避重试；只有真正的
+        连接错误才判定为不可用。
         """
         if not self.available:
             return False
-        try:
-            self._get(
-                "/ws/2/recording",
-                {"query": "recording:*", "fmt": "json", "limit": "1"},
-            )
-            return True
-        except Exception:  # noqa: BLE001
-            return False
+        last_error: Exception | None = None
+        for attempt in range(max(1, retries)):
+            try:
+                self._get(
+                    "/ws/2/recording",
+                    {"query": "recording:*", "fmt": "json", "limit": "1"},
+                )
+                return True
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status = exc.response.status_code
+                if status not in (429, 503):
+                    break
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                break
+            # 限流/过载：退避后重试（等待时间逐次加倍）
+            self._sleep(backoff_seconds * (attempt + 1))
+        _ = last_error
+        return False
 
     def release_detail(self, release_id: str) -> dict | None:
         """取一张发行的完整内容（含曲目、厂牌、发行组）。
