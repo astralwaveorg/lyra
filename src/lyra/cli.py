@@ -1236,7 +1236,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     _PROBE_SECONDS = 86400.0
     # AI 预审批：抓取后的待审查队列交给模型判定，高置信直接转待写入。
     # 独立于抓取预算——抓取时逐首判定会被几千首的扫描量摊薄，队列消不动。
-    _AI_PRE_REVIEW_SECONDS = 1800.0
+    _AI_PRE_REVIEW_SECONDS = 600.0
     last_ai_pre_review = 0.0
     last_orphan_clean = 0.0
     last_cover_repair = 0.0
@@ -1427,6 +1427,9 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                     tag_policy_revision = revision
                     _apply_saved_tag_policy()
                     _apply_saved_pipeline_settings()
+                    # AI 设置也要热加载：否则在设置页打开「智能预审」后，
+                    # 监控进程要重启才生效——而它恰恰是为了减少人工干预而开的
+                    _apply_saved_ai_settings()
                     # 间隔变化后按「上次扫描时间」重新计算下一次；
                     # 缩短间隔时不必等完旧的 24 小时。
                     last_scan = float(store.get_meta("tags.last_scan_at") or 0.0)
