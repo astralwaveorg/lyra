@@ -1836,14 +1836,6 @@ def scan_tags(
             # 4) 标题 + 艺人搜索
             if match is None:
                 match, candidates = _search_match(provider, snap, hints)
-                # 搜索结果证据不足时交给模型核验：华语专辑几乎永远达不到
-                # 「标题≥0.99 + 艺人≥0.85 + 时长≤3s + 专辑吻合」的硬核验线，
-                # 不核验就全库进待审查，自动化率接近零。
-                if match is not None and not match.verified:
-                    verified_match = _ai_verify_search_match(cfg, snap, match)
-                    if verified_match is not None:
-                        match = verified_match
-
             # 5) 指纹兜底（用于确认内容，不用于推翻可信目录）
             if match is None or match.confidence < 0.92:
                 fingerprinted = _fingerprint_match(
