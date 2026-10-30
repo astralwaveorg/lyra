@@ -546,6 +546,16 @@ class CandidateJudgement:
         }
 
 
+#: 发行级字段：涉及专辑归属与发行信息的字段，模型判定「哪个更准」时
+#: 优先送这些（曲名/艺人等关键字段不在此列）。
+_RELEASE_LEVEL_KEYS = frozenset({
+    "ALBUM", "ALBUMARTIST", "DATE", "ORIGINALDATE", "ORIGINALYEAR",
+    "LABEL", "CATALOGNUMBER", "BARCODE", "MEDIA", "RELEASECOUNTRY",
+    "RELEASESTATUS", "RELEASETYPE", "TOTALTRACKS", "TRACKTOTAL",
+    "TOTALDISCS", "DISCTOTAL",
+})
+
+
 _MATCH_PROMPT = """你是音乐库整理助手。一个音频文件在多个歌词/元数据来源里找到了若干候选，
 请判断哪个候选与这个音频文件是**同一录音**（同一首歌的同一个版本）。
 
@@ -628,8 +638,13 @@ def review_candidates(
             f"   内容摘要：{str(cand.get('excerpt') or '')[:300]}"
         )
 
+    # 冲突字段限量：一张专辑常有十几个字段冲突，全送会让模型既慢又容易
+    # 输出过长被截断。只送最关键的若干个（发行级优先）。
+    conflict_items = list(conflicts or [])
+    conflict_items.sort(key=lambda item: 0 if str(item.get("key")) in _RELEASE_LEVEL_KEYS else 1)
+    conflict_items = conflict_items[:6]
     conflict_lines = []
-    for item in conflicts or []:
+    for item in conflict_items:
         local = " / ".join(str(v) for v in (item.get("current") or [])) or "（空）"
         remote = " / ".join(str(v) for v in (item.get("suggested") or [])) or "（空）"
         conflict_lines.append(f"- {item.get('key')}：本地「{local}」 vs 来源「{remote}」")
@@ -654,7 +669,9 @@ def review_candidates(
         api_key=api_key,
         timeout=timeout,
         prompt=prompt,
-        max_tokens=400,
+        # 输出要包含逐字段判定：候选 6 条 + 冲突字段若干，400 token 会把
+        # JSON 截断，解析直接失败（实际出现过「AI 返回结构不符合预期」）
+        max_tokens=1500,
         client=client,
         use_proxy=use_proxy,
     )
