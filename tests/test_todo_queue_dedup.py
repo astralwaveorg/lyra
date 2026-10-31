@@ -124,15 +124,15 @@ def test_任务明细滚动清理(tmp_path: Path):
     store.close()
 
 
-def test_未完成的明细不被清理(tmp_path: Path):
-    """review/failed 还是待办队列的来源，删了待办会凭空少条目。"""
+def test_待处理明细按文件去重(tmp_path: Path):
+    """同一个文件的同一条待办反复写入，只留最新一条。"""
     client, store = _client(tmp_path)
     store.conn.execute(
         "INSERT INTO tasks(id, kind, state, started_at) VALUES('t1','ingest','done',1.0)"
     )
     for index in range(10):
         store.add_task_step(
-            task_id="t1", seq=index, kind="organize", rel_path=f"歌{index}.flac",
+            task_id="t1", seq=index, kind="organize", rel_path="歌.flac",
             state="review", detail={"conflict": "x", "fields": {}},
         )
     store.conn.commit()
@@ -140,5 +140,25 @@ def test_未完成的明细不被清理(tmp_path: Path):
     left = store.conn.execute(
         "SELECT COUNT(*) n FROM task_steps WHERE state='review'"
     ).fetchone()["n"]
-    assert left == 10, "未完成的明细要留着"
+    assert left == 1, f"同一文件只留最新一条，实际 {left}"
+    store.close()
+
+
+def test_失败明细不被清理(tmp_path: Path):
+    """failed 是要人看的，不能悄悄清掉。"""
+    client, store = _client(tmp_path)
+    store.conn.execute(
+        "INSERT INTO tasks(id, kind, state, started_at) VALUES('t1','ingest','done',1.0)"
+    )
+    for index in range(10):
+        store.add_task_step(
+            task_id="t1", seq=index, kind="cover", rel_path=f"歌{index}.flac",
+            state="failed", detail={"error": "x"},
+        )
+    store.conn.commit()
+    store.prune_task_steps(keep=2)
+    left = store.conn.execute(
+        "SELECT COUNT(*) n FROM task_steps WHERE state='failed'"
+    ).fetchone()["n"]
+    assert left == 10, "失败明细要留着"
     store.close()

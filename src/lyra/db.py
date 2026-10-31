@@ -1395,14 +1395,22 @@ class StateStore:
         几个月后就是十几万行（生产实测 7 万）。它只用于回溯「这轮任务
         对每个文件做了什么」，保留最近几千条足够。
 
-        删的都是**已完成**的明细；未完成的（review/failed）留着——
-        它们还是待办队列的来源，删了会让待办凭空少条目。
+        已完成的明细按数量裁剪；**待处理的按文件去重**——同一个文件的
+        同一条待办反复写入时只留最新那条（生产实测同一个冲突记了 205 条），
+        既让待办反映当前状态，也让表不至于长到几万行。
+
+        `failed` 不动：失败是要人看的，不能悄悄清掉。
         """
         with self.transaction() as tx:
             removed = tx.execute(
                 "DELETE FROM task_steps WHERE state IN ('done', 'skipped') AND id NOT IN ("
                 "  SELECT id FROM task_steps ORDER BY id DESC LIMIT ?)",
                 (max(0, keep),),
+            ).rowcount
+            removed += tx.execute(
+                "DELETE FROM task_steps WHERE state='review' AND id NOT IN ("
+                "  SELECT MAX(id) FROM task_steps WHERE state='review' "
+                "  GROUP BY kind, COALESCE(rel_path, ''))",
             ).rowcount
         return int(removed)
 
