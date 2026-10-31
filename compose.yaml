@@ -19,7 +19,7 @@ x-logging: &default-logging
 
 services:
   lyra:
-    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-2.2.29}
+    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-2.2.30}
     build:
       context: .
       dockerfile: Dockerfile
@@ -32,6 +32,14 @@ services:
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
+    ulimits:
+      # 默认 1024 太紧：SQLite 每个连接占 db + wal 两个句柄，Web 框架的
+      # worker 线程池又会随并发扩容——一旦有别的泄漏，服务会先报
+      # "Too many open files" 而不是别的问题。给足余量，让真正的泄漏
+      # 有机会被监控发现，而不是直接让服务不可用。
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
       LYRA_CONFIG: /config/lyra.toml
@@ -53,7 +61,7 @@ services:
     logging: *default-logging
 
   lyra-watch:
-    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-2.2.29}
+    image: ghcr.io/astralwaveorg/lyra:${LYRA_VERSION:-2.2.30}
     build:
       context: .
       dockerfile: Dockerfile
@@ -66,6 +74,14 @@ services:
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
+    ulimits:
+      # 默认 1024 太紧：SQLite 每个连接占 db + wal 两个句柄，Web 框架的
+      # worker 线程池又会随并发扩容——一旦有别的泄漏，服务会先报
+      # "Too many open files" 而不是别的问题。给足余量，让真正的泄漏
+      # 有机会被监控发现，而不是直接让服务不可用。
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
       LYRA_CONFIG: /config/lyra.toml

@@ -725,10 +725,35 @@ class StateStore:
 
     path: Path
     _local: threading.local = field(default_factory=threading.local)
-    _all: list[sqlite3.Connection] = field(default_factory=list)
+    _all: list[tuple[Any, sqlite3.Connection]] = field(default_factory=list)
+    """(创建它的线程, 连接)。线程退役时要连连接一起回收。"""
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     # -- 生命周期 ---------------------------------------------------------
+
+    def _reap_dead_threads(self) -> int:
+        """关掉**已退出线程**持有的连接。
+
+        为什么必须回收：连接按线程惰性创建，而 Web 框架的 worker 线程
+        池会随并发**扩容再缩容**——退役线程的连接若留着，就是纯粹的
+        句柄泄漏。线上实测：进程只剩 7 个线程，却持有 505 个数据库连接
+        （每个连接占 db + wal 两个句柄），把容器的 `ulimit -n 1024`
+        耗尽，所有新请求都报 `Too many open files`——服务实际不可用。
+
+        连接数因此稳定在「存活线程数」量级，而不是「历史线程总数」。
+        """
+        reaped = 0
+        with self._lock:
+            alive: list[tuple[Any, sqlite3.Connection]] = []
+            for thread, conn in self._all:
+                if thread.is_alive():
+                    alive.append((thread, conn))
+                    continue
+                with suppress(sqlite3.Error):
+                    conn.close()
+                reaped += 1
+            self._all = alive
+        return reaped
 
     def _new_connection(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -745,8 +770,10 @@ class StateStore:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=180000")
+        # 先回收退役线程的连接，再登记新的——否则连接数只增不减。
+        self._reap_dead_threads()
         with self._lock:
-            self._all.append(conn)
+            self._all.append((threading.current_thread(), conn))
         return conn
 
     @property
@@ -763,7 +790,7 @@ class StateStore:
 
     def close(self) -> None:
         with self._lock:
-            for conn in self._all:
+            for _thread, conn in self._all:
                 with suppress(sqlite3.Error):
                     conn.close()
             self._all.clear()
