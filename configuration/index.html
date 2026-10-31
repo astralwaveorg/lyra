@@ -760,6 +760,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#policydedupe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        重复文件 [policy.dedupe]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#policymatching" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1774,6 +1785,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#policydedupe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        重复文件 [policy.dedupe]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#policymatching" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2300,6 +2322,36 @@
 </tr>
 </tbody>
 </table>
+<h3 id="policydedupe">重复文件 <code>[policy.dedupe]</code><a class="headerlink" href="#policydedupe" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>键</th>
+<th>默认</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto_scan</code></td>
+<td><code>true</code></td>
+<td>监控进程定期扫描重复文件</td>
+</tr>
+<tr>
+<td><code>scan_interval_hours</code></td>
+<td><code>24</code></td>
+<td>扫描间隔（小时）</td>
+</tr>
+<tr>
+<td><code>auto_clean_exact</code></td>
+<td><code>true</code></td>
+<td>自动清理「完全一样」的副本：保留一份，其余进回收站</td>
+</tr>
+</tbody>
+</table>
+<p>「完全一样」要求音频数据、时长、标题、艺人、专辑<strong>全部相同</strong>。
+同一首歌的不同专辑（精选集 vs 原专辑、限定版 vs 普通版）或不同版本
+不满足条件，仍留在重复检测面板由人判断。</p>
 <h3 id="policymatching">匹配 <code>[policy.matching]</code><a class="headerlink" href="#policymatching" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
