@@ -60,8 +60,11 @@ def test_设置显示名后生效且空值清除(tmp_path: Path):
     assert r.status_code == 200
     assert client.get("/api/v1/summary").json()["roots"][0]["label"] == "Library"
 
-    # GET 与 PUT 读到同一份
-    assert client.get("/api/v1/settings/roots").json() == {"labels": {}}
+    # GET 与 PUT 读到同一份（2.2.17 起 GET 额外返回逐根的显示配置）
+    data = client.get("/api/v1/settings/roots").json()
+    assert data["labels"] == {}
+    assert data["roots"][0]["display_name"] == ""
+    assert data["roots"][0]["label"] == "Library"
 
 
 def test_未知根名拒绝(tmp_path: Path):

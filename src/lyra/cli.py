@@ -36,7 +36,7 @@ from .config import (
     load_config,
     read_ai_token,
 )
-from .db import open_store
+from .db import open_store, sync_root_profiles
 from .network import (
     active_network,
     environment_proxy,
@@ -992,6 +992,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
 
     load_network_settings(cfg)
     store = open_store(cfg.storage.resolved_data_dir)
+    sync_root_profiles(store, cfg.roots)
     providers = create_providers(cfg.providers)
     stop = threading.Event()
     lock = threading.Lock()

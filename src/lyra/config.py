@@ -85,6 +85,8 @@ class RootConfig:
     role: RootRole = RootRole.LIBRARY
     path: str = ""
     host_path: str = ""
+    display_name: str = ""
+    """界面显示名。留空则用宿主机目录名（再退到容器内目录名）。"""
     read_only: bool = False
     enabled: bool = True
     # 忽略的目录名（任意层级）

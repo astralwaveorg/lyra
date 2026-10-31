@@ -73,7 +73,12 @@ from .cover import (
     download_cover,
     parse_picture_block,
 )
-from .db import StateStore, open_store
+from .db import (
+    StateStore,
+    open_store,
+    runtime_roots_as_configs,
+    sync_root_profiles,
+)
 from .fileops import move_to_trash
 from .formats import (
     read_all_tags,
@@ -456,6 +461,10 @@ class _ImmutableStatic(StaticFiles):
 def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
     owned_store = store is None
     state = store or open_store(cfg.storage.resolved_data_dir)
+    # 受管根登记 + 宿主机路径同步：界面要显示用户认的目录名与位置
+    sync_root_profiles(state, cfg.roots)
+    # 设置页新增的曲库（不在配置文件里的）也要参与扫描与监听
+    _merge_runtime_roots(cfg, state)
     runner = Runner(state)
     web_dir = Path(__file__).resolve().parent / "web"
 
@@ -3740,31 +3749,93 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
 
     @app.get("/api/v1/settings/roots", dependencies=[Depends(require_auth)])
     def root_labels_view() -> dict[str, Any]:
-        """受管根的显示名映射（根内部名 → 界面显示名）。"""
-        return {"labels": _root_labels(state)}
+        """受管根的显示配置：显示名、宿主机路径、界面路径。"""
+        legacy = _root_labels(state)
+        out: list[dict[str, Any]] = []
+        for row in state.conn.execute(
+            "SELECT * FROM roots ORDER BY name"
+        ):
+            out.append({
+                "name": row["name"],
+                "role": row["role"],
+                "path": row["path"],
+                "display_name": row["display_name"] or legacy.get(str(row["name"]), ""),
+                "host_path": row["host_path"],
+                "label": _root_label(row, legacy),
+                "display_path": _root_display_path(row, legacy),
+            })
+        return {"roots": out, "labels": legacy}
 
     @app.put("/api/v1/settings/roots", dependencies=[Depends(require_auth)])
     def update_root_labels(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        """保存受管根的显示名映射。
+        """保存受管根的显示名与宿主机路径。
 
-        根的内部名是 API 标识符不动；显示名只影响界面。值为空字符串
-        表示清除自定义、回到「显示实际目录名」的默认行为。
+        根的**内部名与容器内路径不动**（它们是 API 标识符与挂载点），
+        这里只改两样影响界面的东西：
+
+        - `display_name`：显示名（留空 = 用宿主机目录名，如「Library」）；
+        - `host_path`：宿主机上的真实路径（如
+          `/vol2/1000/Music/Library`）——界面显示它，用户才能找到文件。
+
+        旧写法（`{"labels": {...}}`）继续支持。
         """
-        if not isinstance(payload, dict) or not isinstance(payload.get("labels"), dict):
-            raise HTTPException(status_code=400, detail="labels 必须是对象")
-        known = {r.name for r in cfg.roots}
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        known = {r.name: r for r in cfg.roots}
+
+        # 新写法：roots 列表，逐个设置
+        entries = payload.get("roots")
+        if isinstance(entries, list):
+            for item in entries:
+                if not isinstance(item, dict):
+                    raise HTTPException(status_code=400, detail="roots 必须是对象数组")
+                name = str(item.get("name") or "")
+                if name not in known:
+                    raise HTTPException(status_code=400, detail=f"没有名为 {name} 的受管根")
+                display = item.get("display_name", "")
+                host = item.get("host_path", "")
+                if not isinstance(display, str) or not isinstance(host, str):
+                    raise HTTPException(status_code=400, detail="显示名与路径必须是字符串")
+                display = display.strip()
+                host = host.strip()
+                if len(display) > 60:
+                    raise HTTPException(status_code=400, detail="显示名过长（最多 60 字）")
+                if host and not host.startswith("/"):
+                    raise HTTPException(status_code=400, detail="宿主机路径必须是绝对路径")
+                root_id = state.get_root_id(name)
+                if root_id is None:
+                    continue
+                state.set_root_display(
+                    int(root_id), display_name=display, host_path=host
+                )
+            revision = str(time.time_ns())
+            state.set_meta("settings.revision", revision)
+            _invalidate_caches()
+            return {"ok": True, "revision": revision}
+
+        # 旧写法：只改显示名映射
+        labels = payload.get("labels")
+        if not isinstance(labels, dict):
+            raise HTTPException(status_code=400, detail="缺少 labels 或 roots")
         cleaned: dict[str, str] = {}
-        for name, label in payload["labels"].items():
+        for name, label in labels.items():
             if not isinstance(name, str) or not isinstance(label, str):
                 raise HTTPException(status_code=400, detail="显示名映射必须是字符串到字符串")
             if name not in known:
                 raise HTTPException(status_code=400, detail=f"没有名为 {name} 的受管根")
             text = label.strip()
             if not text:
-                continue  # 空值 = 清除自定义，回默认
+                # 空值 = 清除自定义，回默认（宿主机目录名）
+                root_id = state.get_root_id(name)
+                if root_id is not None:
+                    state.set_root_display(int(root_id), display_name="")
+                continue
             if len(text) > 60:
                 raise HTTPException(status_code=400, detail="显示名过长（最多 60 字）")
             cleaned[name] = text
+            root_id = state.get_root_id(name)
+            if root_id is not None:
+                state.set_root_display(int(root_id), display_name=text)
         state.set_meta(
             "settings.root_labels",
             json.dumps(cleaned, ensure_ascii=False) if cleaned else "",
@@ -3773,6 +3844,87 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         state.set_meta("settings.revision", revision)
         _invalidate_caches()
         return {"ok": True, "labels": cleaned, "revision": revision}
+
+    @app.post("/api/v1/settings/roots", dependencies=[Depends(require_auth)])
+    def add_root(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """新增一个受管曲库（运行时根）。
+
+        限制与说明：
+        - **路径必须在容器内已存在**。曲库目录由 compose 的 volume 挂进
+          容器，Web 端加不了挂载——新增指向宿主机新目录的曲库，要先在
+          compose 里加一条映射再重启。指向**已有挂载点的子目录**则可以
+          直接用（最常见的「主库 + 收件箱」）。
+        - 内部名是 API 标识符，不能与现有根重名。
+        - 路径不能是系统目录根，也不能与现有根互相包含（避免重复扫描）。
+        """
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        name = str(payload.get("name") or "").strip()
+        path = str(payload.get("path") or "").strip()
+        host_path = str(payload.get("host_path") or "").strip()
+        display_name = str(payload.get("display_name") or "").strip()
+        role = str(payload.get("role") or "library").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="缺少曲库名称")
+        if not path:
+            raise HTTPException(status_code=400, detail="缺少曲库路径")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name):
+            raise HTTPException(
+                status_code=400, detail="曲库名称只能用字母、数字、下划线和连字符"
+            )
+        if role not in ("library", "inbox"):
+            raise HTTPException(status_code=400, detail="曲库类型只能是 library 或 inbox")
+        if any(r.name == name for r in cfg.roots):
+            raise HTTPException(status_code=409, detail=f"已有名为 {name} 的曲库")
+        target = Path(path)
+        if not target.is_absolute():
+            raise HTTPException(status_code=400, detail="曲库路径必须是绝对路径")
+        if str(target) in ("/", "/etc", "/usr", "/var", "/bin", "/sbin", "/lib"):
+            raise HTTPException(status_code=400, detail="不能把系统目录设为曲库")
+        if not target.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"路径 {path} 在容器内不存在；新增指向宿主机新目录的曲库，"
+                "需要先在 compose 里挂载该目录",
+            )
+        base = target.resolve()
+        # 子目录作为独立曲库是常见用法（「主库 + 主库里的收件箱」）。
+        # 允许它，但把该子目录加入父库的忽略列表——否则同一批文件会被
+        # 两个根各扫一遍，既重复处理又互相打架。
+        parent_rel: str | None = None
+        for existing in cfg.roots:
+            other = existing.resolved_path.resolve()
+            if other == base:
+                raise HTTPException(status_code=409, detail="该路径已是现有曲库")
+            if other in base.parents:
+                parent_rel = str(base.relative_to(other))
+                break
+            if base in other.parents:
+                raise HTTPException(
+                    status_code=400,
+                    detail="不能把包含现有曲库的目录设为新曲库（会重复扫描）",
+                )
+        if host_path and not host_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="宿主机路径必须是绝对路径")
+        if len(display_name) > 60:
+            raise HTTPException(status_code=400, detail="显示名过长（最多 60 字）")
+        state.upsert_root(
+            name=name, role=role, path=str(target),
+            enabled=True, read_only=False,
+            display_name=display_name, host_path=host_path, runtime=True,
+        )
+        if parent_rel:
+            # 父库跳过这个子目录（运行时生效，不改配置文件）
+            for existing in cfg.roots:
+                if existing.resolved_path.resolve() in base.parents:
+                    if parent_rel not in existing.ignore_dirs:
+                        existing.ignore_dirs.append(parent_rel)
+                    break
+        _merge_runtime_roots(cfg, state)
+        revision = str(time.time_ns())
+        state.set_meta("settings.revision", revision)
+        _invalidate_caches()
+        return {"ok": True, "name": name, "revision": revision}
 
     @app.get("/api/v1/settings/dedupe", dependencies=[Depends(require_auth)])
     def dedupe_settings_view() -> dict[str, Any]:
@@ -5675,12 +5827,26 @@ def _list_files(
 # ---------------------------------------------------------------------------
 
 
-def _root_labels(store: StateStore) -> dict[str, str]:
-    """受管根的**自定义显示名**（后台设置）。
+def _merge_runtime_roots(cfg: Config, store: StateStore) -> None:
+    """把设置页新增的曲库合并进配置对象。
 
-    根的内部名（lyra.toml 里的 name）是 API 标识符，未必与实际目录同名
-    （`library` vs 磁盘上的 `Library`）。显示名让界面能与目录对上：
-    默认取目录名，用户在设置里取名后以用户为准。
+    没有这一步的话，运行时新增的根只在数据库里，扫描与监听都看不到
+    它——界面上能选、能显示，但一个文件也不会被处理。
+    """
+    known = {r.name for r in cfg.roots}
+    for root_cfg in runtime_roots_as_configs(store):
+        if root_cfg.name in known:
+            continue
+        cfg.roots.append(root_cfg)
+        known.add(root_cfg.name)
+
+
+def _root_labels(store: StateStore) -> dict[str, str]:
+    """受管根的**自定义显示名**（旧设置项，兼容读取）。
+
+    2.2.8 起显示名存在 `roots.display_name` 列里（能连同宿主机路径一起
+    在设置页编辑）。这里仍读旧的 `settings.root_labels`，让升级前的
+    取名不丢。
     """
     raw = store.get_meta("settings.root_labels")
     if not raw:
@@ -5698,24 +5864,50 @@ def _root_labels(store: StateStore) -> dict[str, str]:
     }
 
 
+def _root_dir_name(path: str) -> str:
+    """路径的最后一段（目录名）。"""
+    text = str(path or "").strip().replace("\\", "/").rstrip("/")
+    if not text:
+        return ""
+    return PurePosixPath(text).name
+
+
 def _root_label(
     row: Mapping[str, Any], custom: Mapping[str, str]
 ) -> str:
-    """一个根的显示名：自定义 > 实际目录名 > 内部名。
+    """一个根的显示名。
 
-    默认显示**实际目录名**而不是内部名——内部名写的是 `library`、
-    磁盘上是 `Library` 时，选择器里两个名字对不上，整理时会怀疑
-    选错了目录。
+    顺序：**自定义显示名 > 宿主机目录名 > 容器内目录名 > 内部名**。
+
+    为什么宿主机路径优先：容器里挂载点是 `/library`（全小写），磁盘上
+    真实目录是 `/vol2/1000/Music/Library`。用户认的是磁盘上那个名字，
+    按容器内路径推导会显示成「library」，与实际目录对不上——这正是
+    「曲库选择下拉显示 library、实际目录是 Library」的来源。
     """
-    label = custom.get(str(row["name"]))
+    label = str(row["display_name"] or "").strip()
     if label:
         return label
-    path = str(row["path"] or "").strip()
-    if path:
-        base = PurePosixPath(path.replace("\\", "/")).name
-        if base:
-            return base
+    label = custom.get(str(row["name"]), "")
+    if label:
+        return label
+    host_base = _root_dir_name(str(row["host_path"] or ""))
+    if host_base:
+        return host_base
+    path_base = _root_dir_name(str(row["path"] or ""))
+    if path_base:
+        return path_base
     return str(row["name"])
+
+
+def _root_display_path(
+    row: Mapping[str, Any], custom: Mapping[str, str]
+) -> str:
+    """根在界面上的路径：宿主机路径优先（那才是用户能打开的位置）。"""
+    for key in ("host_path", "path"):
+        text = str(row[key] or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _summary(cfg: Config, store: StateStore, runner: Runner) -> dict[str, Any]:
@@ -5800,6 +5992,9 @@ def _summary(cfg: Config, store: StateStore, runner: Runner) -> dict[str, Any]:
             {
                 "name": r["name"], "role": r["role"], "path": r["path"],
                 "health": r["health"], "label": _root_label(r, root_labels),
+                "host_path": r["host_path"], "display_path": _root_display_path(
+                    r, root_labels
+                ),
             }
             for r in store.conn.execute("SELECT * FROM roots ORDER BY name")
         ],

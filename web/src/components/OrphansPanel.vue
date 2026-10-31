@@ -47,7 +47,11 @@ const aiItems = ref<
 const aiError = ref('')
 
 const roots = computed(() =>
-  (meta.summary?.roots ?? []).map((item) => ({ name: item.name, label: item.label || item.name })),
+  (meta.summary?.roots ?? []).map((item) => ({
+    name: item.name,
+    label: item.label || item.name,
+    path: item.display_path || item.host_path || item.path,
+  })),
 )
 const visible = computed(() =>
   rootFilter.value ? items.value.filter((item) => item.root === rootFilter.value) : items.value,
@@ -272,7 +276,17 @@ defineExpose({ reload: load })
     </span>
     <span class="grow" />
     <el-select v-if="roots.length > 1" v-model="rootFilter" class="sel" placeholder="全部目录" clearable>
-      <el-option v-for="item in roots" :key="item.name" :label="item.label" :value="item.name" />
+      <el-option
+        v-for="item in roots"
+        :key="item.name"
+        :label="item.label"
+        :value="item.name"
+      >
+        <div class="root-option">
+          <span>{{ item.label }}</span>
+          <span class="dim mono">{{ item.path }}</span>
+        </div>
+      </el-option>
     </el-select>
     <el-button :disabled="!visible.length || allChecked" @click="selectAll">全选</el-button>
     <el-button :disabled="!selectedCount" @click="clearSelection">取消全选</el-button>
@@ -492,5 +506,20 @@ defineExpose({ reload: load })
 .ai-note {
   margin-top: 10px;
   font-size: 12px;
+}
+
+.root-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.root-option .mono {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

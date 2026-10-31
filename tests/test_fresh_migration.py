@@ -34,6 +34,8 @@ _MIGRATED_COLUMNS = [
     ("watch_log", "counters_json"),     # 迁移 9
     ("dedupe_groups", "dismissed_at"),  # 迁移 13
     ("tag_proposals", "dismissed_at"),  # 迁移 14
+    ("roots", "display_name"),           # 迁移 20
+    ("roots", "host_path"),              # 迁移 20
 ]
 
 

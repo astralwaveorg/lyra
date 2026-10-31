@@ -6,6 +6,7 @@ import type {
   DedupePolicySettings,
   OrganizePolicySettings,
   ProviderHealth,
+  RootDisplay,
   RunDetail,
   TodoPage,
   AISettings,
@@ -576,10 +577,22 @@ export const api = {
       '/api/v1/settings/organize', json(policy),
     ),
   rootLabels: () =>
-    request<{ labels: Record<string, string> }>('/api/v1/settings/roots'),
+    request<{ roots: RootDisplay[]; labels: Record<string, string> }>(
+      '/api/v1/settings/roots',
+    ),
   updateRootLabels: (labels: Record<string, string>) =>
     request<{ ok: boolean; labels: Record<string, string> }>(
       '/api/v1/settings/roots', json({ labels }),
+    ),
+  updateRootDisplay: (roots: { name: string; display_name: string; host_path: string }[]) =>
+    request<{ ok: boolean; revision: string }>(
+      '/api/v1/settings/roots', json({ roots }),
+    ),
+  addRoot: (root: {
+    name: string; path: string; host_path?: string; display_name?: string; role?: string
+  }) =>
+    request<{ ok: boolean; name: string; revision: string }>(
+      '/api/v1/settings/roots', json(root),
     ),
   lyricsSettings: () =>
     request<{ settings: LyricsSettings; revision: string }>('/api/v1/settings/lyrics'),

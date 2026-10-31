@@ -18,7 +18,11 @@ const root = ref('')
 const busy = ref('')
 
 const roots = computed(() =>
-  (meta.summary?.roots ?? []).map((item) => ({ name: item.name, label: item.label || item.name })),
+  (meta.summary?.roots ?? []).map((item) => ({
+    name: item.name,
+    label: item.label || item.name,
+    path: item.display_path || item.host_path || item.path,
+  })),
 )
 
 async function load() {
@@ -141,7 +145,17 @@ onMounted(async () => {
 <template>
   <PageHead :count="data?.total">
     <el-select v-if="roots.length > 1" v-model="root" class="root-sel">
-      <el-option v-for="item in roots" :key="item.name" :label="`还原到 ${item.label}`" :value="item.name" />
+      <el-option
+        v-for="item in roots"
+        :key="item.name"
+        :label="`还原到 ${item.label}`"
+        :value="item.name"
+      >
+        <div class="root-option">
+          <span>还原到 {{ item.label }}</span>
+          <span class="dim mono">{{ item.path }}</span>
+        </div>
+      </el-option>
     </el-select>
     <el-button :loading="loading" @click="load">
       <AppIcon name="Refresh" :size="14" style="margin-right: 5px" />刷新
@@ -263,5 +277,20 @@ onMounted(async () => {
   .item-main {
     flex-basis: 100%;
   }
+}
+
+.root-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.root-option .mono {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

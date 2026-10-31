@@ -10,8 +10,23 @@ export type Root = {
   role: string
   path: string
   health: string | null
-  /** 界面显示名：后台自定义 > 实际目录名 > 内部名 */
+  /** 界面显示名：后台自定义 > 宿主机目录名 > 容器内目录名 > 内部名 */
   label?: string
+  /** 宿主机上的真实路径（用户能打开的位置） */
+  host_path?: string
+  /** 界面上展示的路径：宿主机路径优先 */
+  display_path?: string
+}
+
+/** 受管根的显示配置（设置页可编辑） */
+export type RootDisplay = {
+  name: string
+  role: string
+  path: string
+  display_name: string
+  host_path: string
+  label: string
+  display_path: string
 }
 
 export type Summary = {

@@ -27,7 +27,11 @@ const dirs = ref<DirNode[]>([])
 const loadingDirs = ref(false)
 
 const roots = computed(() =>
-  (meta.summary?.roots ?? []).map((item) => ({ name: item.name, label: item.label || item.name })),
+  (meta.summary?.roots ?? []).map((item) => ({
+    name: item.name,
+    label: item.label || item.name,
+    path: item.display_path || item.host_path || item.path,
+  })),
 )
 const rootDirs = computed(() => dirs.value.filter((item) => item.path !== ''))
 
@@ -562,7 +566,17 @@ onMounted(async () => {
 
   <div class="scope-bar">
     <el-select v-model="root" class="root-sel" placeholder="曲库">
-      <el-option v-for="item in roots" :key="item.name" :label="item.label" :value="item.name" />
+      <el-option
+        v-for="item in roots"
+        :key="item.name"
+        :label="item.label"
+        :value="item.name"
+      >
+        <div class="root-option">
+          <span>{{ item.label }}</span>
+          <span class="dim mono">{{ item.path }}</span>
+        </div>
+      </el-option>
     </el-select>
     <el-select
       v-model="subpaths"
@@ -1379,5 +1393,20 @@ onMounted(async () => {
     flex-direction: column;
     align-items: stretch;
   }
+}
+
+.root-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.root-option .mono {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

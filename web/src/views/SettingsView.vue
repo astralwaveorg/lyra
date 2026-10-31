@@ -12,6 +12,7 @@ import type {
   NetworkSettings,
   OrganizePolicySettings,
   ProxyFeature,
+  RootDisplay,
   TagPolicy,
   TokenRow,
 } from '@/api/types'
@@ -351,27 +352,66 @@ async function testNetworkProxy() {
   }
 }
 
-/** 受管根显示名：根内部名 → 界面显示名（空 = 回到默认「实际目录名」）。 */
-const rootLabels = ref<Record<string, string>>({})
+/**
+ * 受管根的显示配置：显示名 + 宿主机路径。
+ *
+ * 显示名留空 = 用宿主机目录名（如 `Library`）。宿主机路径是用户能
+ * 打开的位置（容器里挂载点是 `/library`，磁盘上是
+ * `/vol2/1000/Music/Library`）——两者不一致时，按容器内路径取名字
+ * 会得到「library」，与磁盘上的真实目录对不上。
+ */
+const rootDisplays = ref<RootDisplay[]>([])
 const rootLabelsDirty = ref(false)
 const rootLabelsSaving = ref(false)
 
-function loadRootLabels() {
-  rootLabels.value = Object.fromEntries(
-    (meta.summary?.roots ?? []).map((root) => [root.name, root.label && root.label !== root.name ? root.label : '']),
-  )
+async function loadRootLabels() {
+  try {
+    const data = await api.rootLabels()
+    rootDisplays.value = data.roots ?? []
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '曲库设置加载失败')
+  }
   rootLabelsDirty.value = false
+}
+
+/** 新增曲库（运行时根）：路径必须在容器内已存在。 */
+const newRoot = ref({ name: '', path: '', host_path: '', display_name: '', role: 'library' })
+const addingRoot = ref(false)
+
+async function addRoot() {
+  if (!newRoot.value.name.trim() || !newRoot.value.path.trim()) {
+    ElMessage.warning('填写曲库名称与路径')
+    return
+  }
+  addingRoot.value = true
+  try {
+    await api.addRoot({ ...newRoot.value })
+    newRoot.value = { name: '', path: '', host_path: '', display_name: '', role: 'library' }
+    await loadRootLabels()
+    await meta.refresh()
+    ElMessage.success('曲库已添加，重启监控进程后开始监听')
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '添加曲库失败')
+  } finally {
+    addingRoot.value = false
+  }
 }
 
 async function saveRootLabels() {
   rootLabelsSaving.value = true
   try {
-    await api.updateRootLabels(rootLabels.value)
+    await api.updateRootDisplay(
+      rootDisplays.value.map((root) => ({
+        name: root.name,
+        display_name: root.display_name ?? '',
+        host_path: root.host_path ?? '',
+      })),
+    )
     await meta.refresh()
-    loadRootLabels()
-    ElMessage.success('显示名已保存')
+    await loadRootLabels()
+    ElMessage.success('曲库显示设置已保存')
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '显示名保存失败')
+    ElMessage.error(err instanceof Error ? err.message : '曲库显示设置保存失败')
   } finally {
     rootLabelsSaving.value = false
   }
@@ -1150,28 +1190,79 @@ onMounted(async () => {
         <span class="label">受管目录</span>
         <div class="roots">
           <span v-if="!summary?.roots.length" class="dim">没有配置受管目录</span>
-          <div v-for="root in summary?.roots ?? []" :key="root.name" class="root">
+          <div v-for="root in rootDisplays" :key="root.name" class="root">
             <el-tag size="small" type="info">{{ root.name }}</el-tag>
-            <span class="mono cell-meta">{{ root.path }}</span>
             <el-input
-              v-model="rootLabels[root.name]"
+              v-model="root.display_name"
               class="root-label-input"
               size="small"
-              :placeholder="`显示名（默认 ${root.path.split('/').filter(Boolean).pop() || root.name}）`"
+              :placeholder="`显示名（默认 ${root.label}）`"
               maxlength="60"
               clearable
               @input="rootLabelsDirty = true"
             />
+            <el-input
+              v-model="root.host_path"
+              class="root-path-input mono"
+              size="small"
+              placeholder="/vol2/1000/Music/Library"
+              @input="rootLabelsDirty = true"
+            />
+            <span class="mono cell-meta">容器内 {{ root.path }}</span>
           </div>
-          <div v-if="summary?.roots.length" class="row">
+          <div v-if="rootDisplays.length" class="row">
             <el-button
               size="small"
               type="primary"
               :disabled="!rootLabelsDirty"
               :loading="rootLabelsSaving"
               @click="saveRootLabels"
-            >保存显示名</el-button>
-            <span class="dim">显示名只影响界面，例如「默认曲库--Library」；留空则显示实际目录名</span>
+            >保存曲库设置</el-button>
+            <span class="dim">
+              显示名留空则用宿主机目录名；宿主机路径是你在文件管理器里能看到的位置
+            </span>
+          </div>
+          <div class="root-add">
+            <div class="label">新增曲库</div>
+            <div class="cell-meta">
+              路径需在容器内已存在：指向已有挂载点的子目录可以直接添加；
+              指向宿主机上的新目录要先在 compose 里挂载并重启。
+            </div>
+            <div class="root-add-row">
+              <el-input
+                v-model="newRoot.name"
+                size="small"
+                placeholder="名称（如 inbox）"
+                style="max-width: 150px"
+              />
+              <el-select v-model="newRoot.role" size="small" style="max-width: 110px">
+                <el-option label="曲库" value="library" />
+                <el-option label="收件箱" value="inbox" />
+              </el-select>
+              <el-input
+                v-model="newRoot.path"
+                size="small"
+                class="mono"
+                placeholder="/library/Inbox"
+                style="max-width: 220px"
+              />
+              <el-input
+                v-model="newRoot.host_path"
+                size="small"
+                class="mono"
+                placeholder="宿主机路径（可选）"
+                style="max-width: 240px"
+              />
+              <el-input
+                v-model="newRoot.display_name"
+                size="small"
+                placeholder="显示名（可选）"
+                style="max-width: 160px"
+              />
+              <el-button size="small" type="primary" :loading="addingRoot" @click="addRoot">
+                添加
+              </el-button>
+            </div>
           </div>
         </div>
       </div>
@@ -1362,7 +1453,27 @@ onMounted(async () => {
 }
 
 .root-label-input {
-  width: 220px;
+  width: 200px;
+}
+
+.root-path-input {
+  width: 300px;
+}
+
+.root-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--lyra-border, rgba(128, 128, 128, 0.2));
+}
+
+.root-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .root {

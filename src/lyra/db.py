@@ -32,7 +32,7 @@ __all__ = [
     "TransactionState",
 ]
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 class DatabaseError(Exception):
@@ -665,6 +665,22 @@ CREATE TABLE provider_health (
 );
 """
 
+_MIGRATION_20 = """
+-- 受管根的显示名与宿主机路径。
+--
+-- display_name：界面显示名（用户在设置里取名，如「我的曲库」）。
+-- host_path：宿主机上的真实路径。容器内路径是 /library，宿主机上却是
+--   /vol2/1000/Music/Library——目录名（Library）与内部名（library）
+--   大小写不一致时，按容器内路径推导显示名会得到「library」，与磁盘上
+--   的真实目录对不上。宿主机路径才是用户认的那个名字。
+ALTER TABLE roots ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE roots ADD COLUMN host_path TEXT NOT NULL DEFAULT '';
+-- runtime=1 表示这个根是用户在设置页新增的（不在 lyra.toml 里）。
+-- 配置文件里的根由 sync_root_profiles 登记，runtime 保持 0。
+ALTER TABLE roots ADD COLUMN runtime INTEGER NOT NULL DEFAULT 0;
+"""
+
+
 _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -685,6 +701,7 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
     (17, _MIGRATION_17),
     (18, _MIGRATION_18),
     (19, _MIGRATION_19),
+    (20, _MIGRATION_20),
 )
 
 
@@ -909,23 +926,51 @@ class StateStore:
         path: str,
         enabled: bool = True,
         read_only: bool = False,
+        display_name: str = "",
+        host_path: str = "",
+        runtime: bool = False,
     ) -> int:
         now = time.time()
         with self.transaction() as tx:
             row = tx.execute("SELECT id FROM roots WHERE name=?", (name,)).fetchone()
             if row:
+                # 显示名与宿主机路径是**用户设置**：已填的不要被调用方
+                # 的空值覆盖（每次扫描都会调 upsert_root）。
                 tx.execute(
-                    "UPDATE roots SET role=?, path=?, enabled=?, read_only=?, updated_at=? "
-                    "WHERE id=?",
-                    (role, path, int(enabled), int(read_only), now, row["id"]),
+                    "UPDATE roots SET role=?, path=?, enabled=?, read_only=?, "
+                    "display_name=CASE WHEN ?<>'' THEN ? ELSE display_name END, "
+                    "host_path=CASE WHEN ?<>'' THEN ? ELSE host_path END, "
+                    "runtime=MAX(runtime, ?), updated_at=? WHERE id=?",
+                    (
+                        role, path, int(enabled), int(read_only),
+                        display_name, display_name,
+                        host_path, host_path,
+                        int(runtime), now, row["id"],
+                    ),
                 )
                 return int(row["id"])
             cur = tx.execute(
-                "INSERT INTO roots(name, role, path, enabled, read_only, created_at, updated_at) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (name, role, path, int(enabled), int(read_only), now, now),
+                "INSERT INTO roots(name, role, path, enabled, read_only, "
+                "display_name, host_path, runtime, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (name, role, path, int(enabled), int(read_only),
+                 display_name, host_path, int(runtime), now, now),
             )
             return int(cur.lastrowid or 0)
+
+    def set_root_display(
+        self,
+        root_id: int,
+        *,
+        display_name: str = "",
+        host_path: str = "",
+    ) -> None:
+        """保存受管根的显示名与宿主机路径（设置页可改）。"""
+        self.conn.execute(
+            "UPDATE roots SET display_name=?, host_path=?, updated_at=? WHERE id=?",
+            (display_name, host_path, time.time(), root_id),
+        )
+        self.conn.commit()
 
     def get_root_id(self, name: str) -> int | None:
         row = self.conn.execute("SELECT id FROM roots WHERE name=?", (name,)).fetchone()
@@ -2879,6 +2924,76 @@ def open_store(data_dir: str | Path, *, migrate: bool = True) -> StateStore:
     if migrate:
         store.migrate()
     return store
+
+
+def load_runtime_roots(store: StateStore) -> list[dict[str, Any]]:
+    """读取**运行时新增**的受管根（设置页添加的，不在配置文件里的）。
+
+    配置文件里的根由 `sync_root_profiles` 登记；这里取的是用户在设置页
+    新增的那些——它们只存在于状态库里，重启后仍然有效。
+    """
+    rows = store.conn.execute(
+        "SELECT name, role, path, host_path, display_name, read_only, enabled "
+        "FROM roots WHERE runtime = 1 ORDER BY name"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def runtime_roots_as_configs(store: StateStore) -> list[Any]:
+    """把运行时新增的根转成 RootConfig（供合并进 cfg.roots）。"""
+    from .config import RootConfig, RootRole
+
+    out: list[Any] = []
+    for row in load_runtime_roots(store):
+        try:
+            role = RootRole(str(row.get("role") or "library"))
+        except ValueError:
+            role = RootRole.LIBRARY
+        out.append(
+            RootConfig(
+                name=str(row["name"]),
+                role=role,
+                path=str(row["path"]),
+                host_path=str(row.get("host_path") or ""),
+                display_name=str(row.get("display_name") or ""),
+                read_only=bool(row.get("read_only")),
+                enabled=bool(row.get("enabled")),
+            )
+        )
+    return out
+
+
+def sync_root_profiles(store: StateStore, roots: Sequence[Any]) -> None:
+    """把配置里的受管根登记进状态库，并同步**宿主机路径**。
+
+    为什么宿主机路径要进库：容器里挂载点是 `/library`，磁盘上真实目录
+    是 `/vol2/1000/Music/Library`。界面要显示用户认的那个名字与位置，
+    就得知道宿主机路径——它只在 `lyra.toml` 里，状态库里原本没有。
+
+    显示名（`display_name`）是**用户设置**，这里不覆盖：只在它为空时
+    用配置里的 `host_path` 补上，之后用户改了就以用户的为准。
+    """
+    for root_cfg in roots:
+        role = getattr(root_cfg.role, "value", str(root_cfg.role))
+        host_path = str(getattr(root_cfg, "host_path", "") or "")
+        root_id = store.upsert_root(
+            name=root_cfg.name,
+            role=str(role),
+            path=str(root_cfg.resolved_path),
+            enabled=bool(root_cfg.enabled),
+            read_only=bool(root_cfg.read_only),
+            host_path=host_path,
+        )
+        if host_path:
+            row = store.conn.execute(
+                "SELECT host_path FROM roots WHERE id=?", (root_id,)
+            ).fetchone()
+            if row is not None and not str(row["host_path"] or ""):
+                store.conn.execute(
+                    "UPDATE roots SET host_path=? WHERE id=?",
+                    (host_path, root_id),
+                )
+                store.conn.commit()
 
 
 def resolve_ids_by_hashes(
