@@ -805,6 +805,31 @@ def _artist_matches(wanted: str, artists: Sequence[str]) -> bool:
     return False
 
 
+def _alt_candidate_admissible(score: CandidateScore, policy: object) -> bool:
+    """模型选中的替换候选的**安全下限**（不是分数闸门）。
+
+    为什么不沿用分数闸门（生产实测，2.2.9 前的 30 条未采纳判定）：
+    需要模型仲裁的曲目，最优候选的数值分几乎全部低于 `min_confidence`
+    （0.51~0.75）——脏文件名、现场录音的时长伪影把分数拖低了，而模型
+    选中的候选时长吻合度反而好得多（Δt 0.02~0.9s 对 0~4.3s）。模型的
+    `same_recording + 高置信` 判定本身就是替代数值分的证据通道
+    （既有 adoptable 路径同样不重查分数闸门）。
+
+    仍然保留的是**防「毫不相关」硬底线**：
+    - 候选没有被硬约束否决（rejected 的绝不复活）；
+    - 时长差在硬外闸 `max_duration_delta_seconds` 内（差 30 秒是另一首歌）；
+    - 标题相似度 ≥0.5（`recommend` 的同一条界线：低于它就是另一首歌，
+      模型再怎么判定也不能把「黑夜」写成「白天」的词）。
+    """
+    if score.rejected:
+        return False
+    if score.duration_delta is None:
+        return False
+    if score.duration_delta > policy.max_duration_delta_seconds:
+        return False
+    return score.title_score >= 0.5
+
+
 def _ai_judge_candidates(
     cfg: Config,
     target: TrackTarget,
@@ -1150,6 +1175,70 @@ def _fetch_one(
                     ),
                 )
                 summary.ai_accepted += 1
+            elif (
+                cfg.ai.auto_accept
+                and judgement.same_recording
+                and judgement.best is not None
+                and decision.best is not None
+                and judgement.best != f"{decision.best.provider}:{decision.best.provider_id}"
+                and judgement.confidence >= cfg.ai.pre_review_confidence
+            ):
+                # 模型确认「同一录音」但选了**另一条候选**（生产实测：约
+                # 30% 的判定如此，程序按分数暂存的那条时长反而差得多）。
+                # 换用模型的选择，前提是那条候选过了「防毫不相关」硬底线
+                # （见 _alt_candidate_admissible）。取不到词或底线不过则
+                # 保持原判（进待办），分歧留给人。
+                alt_provider_name, _, alt_pid = judgement.best.partition(":")
+                alt_candidate = next(
+                    (
+                        c for c in all_candidates
+                        if c.provider == alt_provider_name
+                        and c.provider_id == alt_pid
+                    ),
+                    None,
+                )
+                alt_score = next(
+                    (
+                        s for s in boosted
+                        if s.provider == alt_provider_name
+                        and s.provider_id == alt_pid
+                    ),
+                    None,
+                )
+                if (
+                    alt_candidate is not None
+                    and alt_score is not None
+                    and providers.get(alt_provider_name) is not None
+                    and _alt_candidate_admissible(alt_score, cfg.policy.matching)
+                ):
+                    alt_lyrics, alt_error = _fetch_lyrics(
+                        providers.get(alt_provider_name),
+                        all_candidates, alt_score, store, cfg, target,
+                    )
+                    if alt_lyrics is not None and alt_lyrics.synced:
+                        parsed_alt = parse_lrc(
+                            normalize_lrc(alt_lyrics.text),
+                            duration_seconds=target.context.duration,
+                        )
+                        if parsed_alt.state is LyricsState.SYNCED:
+                            lyrics = alt_lyrics
+                            best = alt_score
+                            decision = replace(
+                                decision,
+                                best=alt_score,
+                                decision=Decision.ACCEPT,
+                                reason=(
+                                    f"AI 判定为同一录音（置信 {judgement.confidence:.2f}，"
+                                    f"{judgement.reason}），改用模型选中的候选"
+                                    f"（{alt_provider_name}）"
+                                ),
+                            )
+                            origin = "ai"
+                            summary.ai_accepted += 1
+                            text = normalize_lrc(lyrics.text)
+                            digest = content_hash(text)
+                if origin != "ai":
+                    summary.ai_suggested += 1
             else:
                 summary.ai_suggested += 1
 

@@ -1704,6 +1704,11 @@ def _write_auto(
             row = store.tag_proposal(proposal_id)
             if row is None:
                 continue
+            if str(row["state"]) in ("done", "ignored", "skipped"):
+                # 人工已定案/已忽略/已暂缓：写入阶段等不到的行。并发扫描
+                # 可能在采集 id 之后改变了状态——静默跳过，报「写入失败」
+                # 会让人以为出了问题。
+                continue
             if review_safe_only:
                 try:
                     payload = json.loads(str(row["payload_json"]))
@@ -1927,10 +1932,68 @@ def scan_tags(
     acoustid: AcoustIdClient | None = None,
     refresh_skipped: bool = False,
 ) -> TagScanSummary:
-    """扫描受管根并落库提案。`auto_write` 为真时顺手写入可自动的那部分。"""
+    """扫描受管根并落库提案。`auto_write` 为真时顺手写入可自动的那部分。
+
+    扫描互斥：监控的周期扫描与人工/CLI 扫描**不能并发**。两个扫描同时
+    改同一批提案时，一方采到的 id 在另一方写入前状态已变，写入阶段就会
+    报「这条提案不是自动项」这类莫名其妙的错；更糟的是两份全库查询会
+    打满 MusicBrainz 的限流配额。锁 4 小时自动过期——扫描进程被 kill
+    也不会永久卡死后续扫描。
+    """
     started = time.monotonic()
     summary = TagScanSummary()
     auto_write = cfg.policy.tags.auto_write if auto_write is None else auto_write
+
+    scan_owner = f"tags-scan-{uuid.uuid4().hex[:8]}"
+    if not store.acquire_write_lock(
+        "tags-scan", scan_owner, ttl_seconds=14400.0, wait_seconds=0.0
+    ):
+        holder = store.write_lock_holder("tags-scan")
+        summary.errors.append(
+            f"已有标签扫描在进行（{holder}），本轮跳过"
+        )
+        summary.elapsed_seconds = time.monotonic() - started
+        return summary
+
+    try:
+        return _scan_tags_locked(
+            cfg, root, store, provider,
+            lyric_providers=lyric_providers,
+            auto_write=auto_write,
+            limit=limit,
+            only_rel_paths=only_rel_paths,
+            progress=progress,
+            fingerprinter=fingerprinter,
+            acoustid=acoustid,
+            refresh_skipped=refresh_skipped,
+            _summary=summary,
+            _started=started,
+            _scan_owner=scan_owner,
+        )
+    finally:
+        store.release_write_lock("tags-scan", scan_owner)
+
+
+def _scan_tags_locked(
+    cfg: Config,
+    root: RootConfig,
+    store: StateStore,
+    provider: MusicBrainzProvider,
+    *,
+    lyric_providers: Sequence[object] = (),
+    auto_write: bool = True,
+    limit: int | None = None,
+    only_rel_paths: set[str] | None = None,
+    progress: Callable[[str], None] = lambda _m: None,
+    fingerprinter: FpcalcFingerprinter | None = None,
+    acoustid: AcoustIdClient | None = None,
+    refresh_skipped: bool = False,
+    _summary: TagScanSummary,
+    _started: float,
+    _scan_owner: str,
+) -> TagScanSummary:
+    started = _started
+    summary = _summary
 
     if not provider.available or not provider.health_check():
         # 来源不可用时**绝不**继续扫描：否则每首歌都会变成「未匹配」，
