@@ -1363,6 +1363,9 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     _STATE_SYNC_SECONDS = 60.0
     # 监听线程健康检查：每 5 分钟确认一次，死了就重启
     _OBSERVER_CHECK_SECONDS = 300.0
+    # 文件句柄自检：每 10 分钟一次，偏高时自动回收并告警
+    _FD_CHECK_SECONDS = 600.0
+    _FD_WARN_THRESHOLD = 800
     _OBSERVATION_PRUNE_SECONDS = 86400.0
     # 异名 .lrc 的自动改名：播放器只找 <音频同名>.lrc，Late 一天就等于
     # 这首歌「没有歌词」。扫描 3568 个文件约 1 秒，5 分钟一次足够。
@@ -1388,6 +1391,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     last_name_repair = 0.0
     last_state_sync = 0.0
     last_observer_check = 0.0
+    last_fd_check = 0.0
     last_policy_check = 0.0
     last_network_check = 0.0
     last_probe = 0.0
@@ -1682,6 +1686,32 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 _threading.Thread(
                     target=_dedupe_auto_worker, daemon=True, name="lyra-dedupe"
                 ).start()
+            # 文件句柄自检：句柄是程序打开文件/数据库时拿的「编号牌」，
+            # 用完要还，还不了就会像之前那样「Too many open files」整个
+            # 服务不可用。这里每 10 分钟看一眼：偏高就先自动回收数据库
+            # 连接（最常见的泄漏源），还高就大声告警。
+            if now - last_fd_check >= _FD_CHECK_SECONDS:
+                last_fd_check = now
+                try:
+                    fd_count = len(os.listdir("/proc/self/fd"))
+                except OSError:
+                    fd_count = 0
+                if fd_count >= _FD_WARN_THRESHOLD:
+                    with contextlib.suppress(Exception):
+                        store._reap_dead_threads()
+                    after = len(os.listdir("/proc/self/fd"))
+                    if after >= _FD_WARN_THRESHOLD:
+                        print(
+                            f"[watch] 文件句柄偏高：{fd_count}（回收后 {after}），"
+                            "可能有新的泄漏源，请排查",
+                            flush=True,
+                        )
+                        store.log_watch_event(
+                            "句柄告警",
+                            f"{fd_count} 个句柄（回收后 {after}）",
+                            {"before": fd_count, "after": after},
+                        )
+
             # 监听线程自愈：watchdog 的 emitter 线程可能已死（fd 还在，
             # 但不再派发事件）。不检查的话，监听会一直失明到进程重启。
             if now - last_observer_check >= _OBSERVER_CHECK_SECONDS:
