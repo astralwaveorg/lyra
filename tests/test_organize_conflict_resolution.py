@@ -208,7 +208,6 @@ def test_未表态时音频相同的副本自动合并(tmp_path: Path):
     旧行为只是跳过：源文件留在原处，下一次预览还是同一条冲突，
     待办里的条目永远消不掉（用户反馈的实际问题）。
     """
-    from conftest import make_flac
 
     cfg, lib = _env(tmp_path)
     src = lib / "旧目录" / "歌.flac"
