@@ -254,11 +254,16 @@ def _organize_new_files(
         if not path.is_file():
             continue
         try:
-            meta = read_audio_meta(path, base)
+            # 标签必须用**全量**读取：白名单标签里没有 TOTALDISCS，
+            # 算出来的目标路径会与整理页预览不一致，同一个文件被反复搬动
+            # （见 organize.read_organize_tags 的说明）。
+            tags = organize.read_organize_tags(path)
         except Exception:  # noqa: BLE001
             continue
+        if not tags:
+            continue
         target_rel, fields = organize.target_rel_path(
-            tags=meta.tags, source=path, template=cfg.policy.organize.template
+            tags=tags, source=path, template=cfg.policy.organize.template
         )
         if not target_rel or target_rel == rel:
             continue

@@ -189,6 +189,25 @@ def _title(tags: dict[str, list[str]], path: Path) -> str:
     return stem or path.stem
 
 
+def read_organize_tags(path: Path) -> dict[str, list[str]]:
+    """读取**决定路径形态**所需的全部标签。
+
+    为什么不用 `read_audio_meta`：它的标签是**匹配白名单**（故意精简，
+    匹配用不到就不读），里面没有 TOTALDISCS / TRACKTOTAL 这些决定
+    「要不要加碟号前缀」的字段。于是同一个文件：
+
+    - 预览（读全量标签）看到 TOTALDISCS=2 → 目标名带 `1-` 前缀；
+    - 归位（读白名单标签）看不到 → 判定单碟 → 目标名不带前缀。
+
+    两边各算各的，同一个文件被反复搬来搬去（线上实测同一个文件被移动
+    8 次），待办里的「待移动」永远消不下去。
+    """
+    tags, error = read_all_tags(path)
+    if error:
+        return {}
+    return tags
+
+
 def target_rel_path(
     *,
     tags: dict[str, list[str]],
@@ -513,7 +532,11 @@ def build_plan(
             skipped.append({"old_rel_path": rel, "reason": f"读不到标签：{error}"})
             continue
         try:
-            new_rel, fields = target_rel_path(tags=tags, source=path)
+            # 路径形态必须与实际归位（ingest）算出的一致，否则同一个文件
+            # 会被两边来回搬——见 read_organize_tags 的说明。
+            new_rel, fields = target_rel_path(
+                tags=tags, source=path, template=cfg.policy.organize.template
+            )
         except Exception as exc:  # noqa: BLE001 — 单个文件不能拖垮整次预览
             skipped.append({"old_rel_path": rel, "reason": f"无法生成路径：{exc}"})
             continue
