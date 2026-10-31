@@ -297,6 +297,8 @@ model = "gpt-4o-mini"
 # 建议用环境变量 LYRA_AI_API_KEY；设置页保存的 token 在 data/ai-token（0600）
 api_key = ""
 timeout_seconds = 30
+# 单轮（一次抓取/一次标签扫描）的模型请求上限。待核验队列几百条时
+# 建议调大（如 400），否则一轮只核验一小部分
 max_requests_per_run = 12
 auto_clean_duplicates = false
 # 智能预审：对落入「待审查」的候选调用模型判定，减少逐首人工确认。

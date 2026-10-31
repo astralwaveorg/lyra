@@ -221,7 +221,7 @@ model = "gpt-4o-mini"
 api_key = ""
 timeout_seconds = 30.0
 # 一轮最多问几次：既防超支，也防一次点击把上游打爆
-max_requests_per_run = 12
+max_requests_per_run = 12  # 队列大时可调大（上限 2000）
 # 高置信度的重复歌词是否自动清理（仍要求「歌词行 100% 被现有那份覆盖」）
 auto_clean_duplicates = false
 # 智能预审：对「待审查」候选调用模型判定（enabled=false 时无效）

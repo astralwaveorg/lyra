@@ -461,7 +461,10 @@ AI_SETTINGS_FIELDS = (
 
 AI_SETTINGS_BOUNDS: dict[str, tuple[float, float]] = {
     "timeout_seconds": (5.0, 300.0),
-    "max_requests_per_run": (0, 100),
+    # 上限 2000：全库扫描的待核验队列可达数百条（搜索匹配的模型核验 +
+    # 歌词预审共享预算），100 的旧上限让队列要好几轮才能消化完。
+    # 模型是 Flash 级，预算是「单轮花费」的闸而不是正确性的闸。
+    "max_requests_per_run": (0, 2000),
 }
 
 
