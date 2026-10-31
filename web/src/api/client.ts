@@ -470,7 +470,9 @@ export const api = {
 
   organizePreview: (payload: { root: string; subpaths?: string[]; exclude?: string[] }) =>
     request<OrganizePlan>('/api/v1/organize/preview', json(payload)),
-  organizeExecute: (payload: { plan_id: string; dirs?: string[] }) =>
+  organizeExecute: (payload: {
+    plan_id: string; dirs?: string[]; resolutions?: Record<string, string>
+  }) =>
     request<OrganizeResult>('/api/v1/organize/execute', json(payload)),
   organizeCleanupPreview: (payload: { root: string; subpaths?: string[]; exclude?: string[] }) =>
     request<{ root: string; subpaths: string[]; exclude: string[]; items: OrganizeDir[]; empty: number; no_audio: number }>(

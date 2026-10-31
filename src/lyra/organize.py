@@ -28,6 +28,7 @@ import shutil
 import time
 import unicodedata
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -450,6 +451,24 @@ class BuildResult:
     plan: dict[str, Any] = field(default_factory=dict)
 
 
+def _file_brief(path: Path) -> dict[str, Any]:
+    """文件的一句话摘要：给冲突处理界面做判断依据。
+
+    「目标已存在」时，使用者要判断「两个文件是不是同一首」——大小与
+    时长是最快的线索。读标签很慢（每个文件都要解析容器），所以这里
+    只取大小与修改时间，标签信息留给用户点开详情时再看。
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    return {
+        "size": int(stat.st_size),
+        "mtime": int(stat.st_mtime),
+        "name": path.name,
+    }
+
+
 def build_plan(
     store: StateStore,
     cfg: Config,
@@ -534,10 +553,13 @@ def build_plan(
         if target_counts[move["new_rel_path"]] > 1:
             move["status"] = "conflict"
             move["reason"] = "多个文件会映射到同一路径"
+            move["conflict_type"] = "same_target"
             continue
         if target.exists() and move["new_rel_path"] not in sources:
             move["status"] = "conflict"
             move["reason"] = "目标已存在，拒绝覆盖"
+            move["conflict_type"] = "target_exists"
+            move["target_info"] = _file_brief(target)
             continue
         if target.exists() and move["new_rel_path"] in sources:
             move["status"] = "chain"
@@ -617,6 +639,58 @@ def build_plan(
 # ---------------------------------------------------------------------------
 
 
+def _replace_target(
+    store: StateStore,
+    cfg: Config,
+    root: RootConfig,
+    base: Path,
+    move: dict[str, Any],
+    target_rel: str,
+    batch_id: str,
+    root_id: int,
+    result: dict[str, Any],
+) -> bool:
+    """把目标文件移进回收站，让源文件占用它的位置。
+
+    目标进回收站并记一条 `delete` 操作——**可撤销**：用户在「回收站」
+    里能还原。被替换掉的目标文件不会被真正删除。
+
+    位置行处理：目标路径已有行（文件确实在磁盘上），源文件移过去后
+    两行会指向同一路径。保留目标那行（它带着目标文件的歌词观察与暂存
+    状态），把源行的附属数据并过去，再删源行——与移动时的合并逻辑
+    一致。
+    """
+    target = base / target_rel
+    old_rel = str(move["old_rel_path"])
+    try:
+        trash_rel = move_to_trash(cfg, root, target, batch_id)
+    except OSError as exc:
+        result["failed"] += 1
+        result["errors"].append(f"{old_rel}: 替换失败，目标无法移入回收站：{exc}")
+        return False
+    detail: dict[str, Any] = {"reason": "用户选择用该文件替换已有文件"}
+    sidecar = target.with_suffix(".lrc")
+    if sidecar.is_file():
+        try:
+            detail["sidecar"] = move_to_trash(cfg, root, sidecar, batch_id)
+        except OSError as exc:
+            detail["sidecar_error"] = str(exc)
+    store.record_organize_op(
+        root_id=root_id, batch_id=batch_id, op_kind="delete",
+        old_rel_path=target_rel, trash_rel_path=trash_rel,
+        detail=json.dumps(detail, ensure_ascii=False),
+    )
+    # 目标的位置行：文件已不在原处，删掉（附属数据随之清理）
+    try:
+        target_location = store.location_by_rel_path(root_id, target_rel)
+        if target_location is not None:
+            store.delete_location(int(target_location["id"]))
+    except Exception:  # noqa: BLE001 — 文件已处理，状态库清理失败不影响结果
+        pass
+    result["replaced"] = int(result.get("replaced", 0)) + 1
+    return True
+
+
 def _rename_with_sidecar(
     *, base: Path, old_rel: str, new_rel: str, source_override: Path | None = None
 ) -> tuple[bool, str | None, str | None, str | None]:
@@ -674,8 +748,17 @@ def execute_plan(
     plan_row: Any,
     *,
     dirs: list[str] | None = None,
+    resolutions: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """执行预览计划。`dirs` 是用户勾选要清理的目录相对路径。"""
+    """执行预览计划。
+
+    `dirs` 是用户勾选要清理的目录相对路径。
+
+    `resolutions` 是**用户对冲突的逐条处理**：`{原相对路径: "replace"}`。
+    只有用户明确选了「用这个文件替换」，目标文件才会被移进回收站
+    （可撤销）再让源文件过去——默认行为仍是「保留现有、跳过」。
+    自动流程永远不会走到这条分支。
+    """
     base = root.resolved_path
     payload = json.loads(str(plan_row["payload_json"]))
     batch_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
@@ -687,7 +770,12 @@ def execute_plan(
         "errors": [],
         "dirs_removed": 0,
         "dirs_trashed": 0,
+        "replaced": 0,
+        "skipped_conflicts": 0,
         "ops": [],
+    }
+    decisions: dict[str, str] = {
+        str(k): str(v) for k, v in (resolutions or {}).items()
     }
 
     # 重新验证，但**不重新计算目标**：执行的是用户看到的那一份。
@@ -705,6 +793,33 @@ def execute_plan(
             # 目标可能是本次也要移走的另一个源，按依赖关系处理
             pass
         pending.append(move)
+
+    # **用户选择「替换」的冲突项也要进入执行**。
+    #
+    # 预览里的冲突项不在 executable 里——它们默认被跳过（目标已存在，
+    # 绝不覆盖）。但用户既然在界面上逐条点了「用它替换」，这次执行就
+    # 要照做：先把目标移进回收站，再把源文件放过去。
+    replace_moves: list[dict[str, Any]] = []
+    for item in payload.get("conflicts") or []:
+        old_rel = str(item.get("old_rel_path") or "")
+        if decisions.get(old_rel) != "replace":
+            # 没表态 = 保留已有、跳过。**要计数**：执行完只看到
+            # 「移动 12 个」却不知道还有几条没处理，是说不清楚的。
+            result["skipped_conflicts"] = int(result["skipped_conflicts"]) + 1
+            continue
+        if not old_rel or not str(item.get("new_rel_path") or ""):
+            continue
+        if not (base / old_rel).is_file():
+            result["failed"] += 1
+            result["errors"].append(f"{old_rel}: 源文件已不存在")
+            continue
+        if item.get("conflict_type") != "target_exists":
+            # 「多个源映射到同一目标」没有可替换的对象
+            result["failed"] += 1
+            result["errors"].append(f"{old_rel}: 这一类冲突不能替换，只能跳过其中一条")
+            continue
+        replace_moves.append(item)
+    pending.extend(replace_moves)
 
     pending_olds = {m["old_rel_path"] for m in pending}
     processed: set[str] = set()
@@ -759,13 +874,31 @@ def execute_plan(
             ):
                 continue
             if (base / target_rel).exists() and target_rel not in processed:
-                result["failed"] += 1
-                result["errors"].append(
-                    f"{move['old_rel_path']}: 目标已存在，拒绝覆盖 {target_rel}"
+                decision = decisions.get(str(move["old_rel_path"]), "skip")
+                replacing = (
+                    decision == "replace"
+                    and move.get("conflict_type") == "target_exists"
                 )
-                pending.remove(move)
-                progress = True
-                continue
+                if replacing:
+                    # 用户明确选了「用这个文件替换」：目标移进回收站
+                    # （可撤销），再把源文件放过去。默认绝不走到这里。
+                    if not _replace_target(
+                        store, cfg, root, base, move, target_rel,
+                        batch_id, int(plan_row["root_id"]), result,
+                    ):
+                        # 替换失败：按跳过处理，并说明原因
+                        pending.remove(move)
+                        progress = True
+                        continue
+                    # 替换成功：目标已经移走，**继续往下走**把源文件移过去
+                else:
+                    result["failed"] += 1
+                    result["errors"].append(
+                        f"{move['old_rel_path']}: 目标已存在，拒绝覆盖 {target_rel}"
+                    )
+                    pending.remove(move)
+                    progress = True
+                    continue
             _do(move)
             pending.remove(move)
             progress = True

@@ -2478,8 +2478,18 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if root.read_only:
             raise HTTPException(status_code=409, detail="该受管根是只读的")
         dirs = payload.get("dirs")
+        # 用户对冲突的逐条处理：{原相对路径: "replace"}。缺省一律
+        # 「保留现有、跳过」——不处理就是不动文件。
+        resolutions: dict[str, str] = {}
+        raw_resolutions = payload.get("resolutions")
+        if isinstance(raw_resolutions, dict):
+            for key, value in raw_resolutions.items():
+                if value == "replace":
+                    resolutions[str(key)] = "replace"
         result = execute_plan(
-            state, cfg, root, row, dirs=[str(d) for d in dirs] if isinstance(dirs, list) else []
+            state, cfg, root, row,
+            dirs=[str(d) for d in dirs] if isinstance(dirs, list) else [],
+            resolutions=resolutions,
         )
         _invalidate_caches()
         return result

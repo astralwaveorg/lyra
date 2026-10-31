@@ -719,6 +719,10 @@ export type OrganizeMove = {
   multi_disc: boolean
   status: 'move' | 'chain' | 'conflict'
   reason: string
+  /** 冲突类型：目标已存在 / 多个源映射到同一路径 */
+  conflict_type?: 'target_exists' | 'same_target'
+  /** 目标文件的简要信息（大小等），供人工判断 */
+  target_info?: { size?: number; mtime?: number; name?: string }
 }
 
 export type OrganizeDir = {
@@ -758,6 +762,10 @@ export type OrganizeResult = {
   errors: string[]
   dirs_removed: number
   dirs_trashed: number
+  /** 因用户选择「替换」而被移入回收站的文件数 */
+  replaced?: number
+  /** 未表态、保持原样的冲突数 */
+  skipped_conflicts?: number
   ops: number[]
 }
 

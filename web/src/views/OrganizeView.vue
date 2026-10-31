@@ -8,6 +8,7 @@ import type {
   DedupeResponse,
   DirNode,
   OrganizeDir,
+  OrganizeMove,
   OrganizePlan,
   OrganizeResult,
 } from '@/api/types'
@@ -187,6 +188,7 @@ async function preview() {
       exclude: excludedPaths.value,
     })
     selectedDirs.value = plan.value.dirs.map((item) => item.rel_path)
+    conflictDecisions.value = {}
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '预览失败')
   } finally {
@@ -194,14 +196,43 @@ async function preview() {
   }
 }
 
+/** 冲突的逐条处理：原相对路径 → 'replace'。缺省一律保留现有、跳过。 */
+const conflictDecisions = ref<Record<string, 'skip' | 'replace'>>({})
+
+const replaceCount = computed(
+  () => Object.values(conflictDecisions.value).filter((v) => v === 'replace').length,
+)
+
+function decideConflict(rel: string, decision: 'skip' | 'replace') {
+  conflictDecisions.value = { ...conflictDecisions.value, [rel]: decision }
+}
+
+function decideAllConflicts(decision: 'skip' | 'replace') {
+  if (!plan.value) return
+  const next: Record<string, 'skip' | 'replace'> = {}
+  for (const item of plan.value.conflicts) {
+    next[item.old_rel_path] = decision
+  }
+  conflictDecisions.value = next
+}
+
+/** 只有「目标已存在」的冲突才能替换：两个源映射到同一目标时没有可替换的对象。 */
+function canReplace(item: OrganizeMove): boolean {
+  return item.conflict_type === 'target_exists'
+}
+
 async function execute() {
   if (!plan.value) return
   const summary = plan.value.summary
+  const replaceText = replaceCount.value
+    ? ` ${replaceCount.value} 个冲突会用整理后的文件替换已有文件（被替换的文件进回收站，可还原）。`
+    : ''
   try {
     await ElMessageBox.confirm(
       `将移动 ${summary.move} 个文件，并清理 ${selectedDirs.value.length} 个空目录或移动后变空的目录。` +
-        `${summary.conflict ? ` ${summary.conflict} 个冲突会被跳过。` : ''}` +
-        '移动不复制音频，目标已存在时绝不覆盖；移动后变空的旧目录会一并移除，所有操作都可撤销。',
+        `${summary.conflict ? ` ${summary.conflict} 个冲突会跳过` : ''}。` +
+        replaceText +
+        '移动不复制音频，移动后变空的旧目录会一并移除，所有操作都可撤销。',
       '确认整理',
       {
         confirmButtonText: '开始整理',
@@ -217,9 +248,13 @@ async function execute() {
     result.value = await api.organizeExecute({
       plan_id: plan.value.plan_id,
       dirs: selectedDirs.value,
+      resolutions: conflictDecisions.value,
     })
     if (result.value.ok) {
-      ElMessage.success(`已移动 ${result.value.moved} 个文件`)
+      const extra = result.value.skipped_conflicts
+        ? `，${result.value.skipped_conflicts} 个冲突保留原样`
+        : ''
+      ElMessage.success(`已移动 ${result.value.moved} 个文件${extra}`)
     } else {
       ElMessage.warning(
         `已移动 ${result.value.moved} 个文件，${result.value.failed} 个失败：${
@@ -641,6 +676,12 @@ onMounted(async () => {
       <template #title>
         已移动 {{ result.moved }} 个文件，清理 {{ result.dirs_removed }} 个空目录 /
         {{ result.dirs_trashed }} 个无音频目录
+        <template v-if="result.replaced">
+          ，替换 {{ result.replaced }} 个冲突目标
+        </template>
+        <template v-if="result.skipped_conflicts">
+          ，{{ result.skipped_conflicts }} 个冲突保留原样
+        </template>
       </template>
       <div v-if="result.errors.length" class="cell-meta">
         {{ result.errors.slice(0, 3).join('；') }}
@@ -663,16 +704,57 @@ onMounted(async () => {
 
       <section v-if="plan.conflicts.length" class="card">
         <div class="card-head">
-          <span class="card-title">需要先处理的目标冲突</span>
-          <span class="card-hint">这些文件不会被移动，也不会覆盖已有文件</span>
+          <span class="card-title">目标冲突</span>
+          <span class="card-hint">逐条选择怎么处理，默认保留已有文件、跳过移动</span>
+          <div class="card-actions">
+            <el-button size="small" text @click="decideAllConflicts('skip')">
+              全部保留
+            </el-button>
+            <el-button size="small" text @click="decideAllConflicts('replace')">
+              全部替换
+            </el-button>
+          </div>
         </div>
         <div class="conflict-list">
-          <div v-for="item in plan.conflicts" :key="item.old_rel_path" class="conflict-item">
-            <span class="path ellipsis">{{ item.old_rel_path }}</span>
-            <AppIcon name="Right" :size="12" />
-            <span class="path ellipsis muted">{{ item.new_rel_path }}</span>
-            <span class="cell-meta">{{ item.reason }}</span>
+          <div
+            v-for="item in plan.conflicts"
+            :key="item.old_rel_path"
+            class="conflict-item"
+            :class="{ replacing: conflictDecisions[item.old_rel_path] === 'replace' }"
+          >
+            <div class="conflict-main">
+              <div class="conflict-paths">
+                <span class="path ellipsis">{{ item.old_rel_path }}</span>
+                <AppIcon name="Right" :size="12" />
+                <span class="path ellipsis muted">{{ item.new_rel_path }}</span>
+              </div>
+              <div class="conflict-meta">
+                <span class="cell-meta">{{ item.reason }}</span>
+                <span v-if="canReplace(item)" class="cell-meta">
+                  目标已有 {{ fmtBytes(item.target_info?.size) }}
+                </span>
+                <span v-else class="cell-meta">两条路径会撞在一起，只能跳过其中一条</span>
+              </div>
+            </div>
+            <div class="conflict-actions">
+              <el-radio-group
+                :model-value="conflictDecisions[item.old_rel_path] ?? 'skip'"
+                size="small"
+                @update:model-value="
+                  (v: string | number | boolean) =>
+                    decideConflict(item.old_rel_path, v === 'replace' ? 'replace' : 'skip')
+                "
+              >
+                <el-radio-button value="skip">保留已有</el-radio-button>
+                <el-radio-button value="replace" :disabled="!canReplace(item)">
+                  用它替换
+                </el-radio-button>
+              </el-radio-group>
+            </div>
           </div>
+        </div>
+        <div class="cell-meta conflict-foot">
+          「用它替换」会把目标位置的文件移进回收站（可还原），再把整理后的文件放过去。
         </div>
       </section>
 
@@ -1136,13 +1218,50 @@ onMounted(async () => {
 }
 
 .conflict-item {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr auto;
+  display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 16px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
+}
+
+.conflict-item.replacing {
+  background: var(--surface-2, rgba(120, 120, 120, 0.08));
+}
+
+.conflict-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.conflict-paths {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.conflict-paths .path {
+  min-width: 0;
+}
+
+.conflict-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.conflict-actions {
+  flex: none;
+}
+
+.conflict-foot {
+  padding: 8px 16px 12px;
 }
 
 .muted {
@@ -1363,6 +1482,36 @@ onMounted(async () => {
     display: none;
   }
 
+  /* 选择区竖排等宽：三个控件横排时宽度各不相同（140/340/280），
+     右边缘参差，"排除"标签还会挤在中间。竖排后每个控件都占满整行。 */
+  .scope-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .scope-bar .root-sel,
+  .scope-bar .dir-sel,
+  .scope-bar .exclude-sel {
+    width: 100%;
+  }
+
+  .scope-label {
+    order: 3;
+    margin-top: 2px;
+  }
+
+  .scope-bar .exclude-sel {
+    order: 4;
+  }
+
+  /* 执行条不再悬浮：sticky 底部会让按钮压住列表内容，
+     移动端尤其明显（列表长、浏览器地址栏还占一截）。 */
+  .execute-bar {
+    position: static;
+    bottom: auto;
+  }
+
   .dedupe-bar,
   .dedupe-actions {
     align-items: stretch;
@@ -1374,7 +1523,29 @@ onMounted(async () => {
 
   .move-row {
     grid-template-columns: 1fr;
-    gap: 3px;
+    gap: 4px;
+    padding: 10px 12px;
+  }
+
+  /* 路径是判断依据：移动端换行显示完整，不截断。
+     截断后看不出「目标是谁」，冲突就无从处理。 */
+  .move-row .path,
+  .conflict-paths .path {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    word-break: break-all;
+    line-height: 1.45;
+  }
+
+  .conflict-paths {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .conflict-paths .arrow {
+    display: none;
   }
 
   .move-row.head {
@@ -1386,7 +1557,22 @@ onMounted(async () => {
   }
 
   .conflict-item {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .conflict-actions :deep(.el-radio-group) {
+    width: 100%;
+    display: flex;
+  }
+
+  .conflict-actions :deep(.el-radio-button) {
+    flex: 1;
+  }
+
+  .conflict-actions :deep(.el-radio-button__inner) {
+    width: 100%;
   }
 
   .execute-bar {
