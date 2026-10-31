@@ -162,3 +162,65 @@ def test_失败明细不被清理(tmp_path: Path):
     ).fetchone()["n"]
     assert left == 10, "失败明细要留着"
     store.close()
+
+
+def test_源文件已删的归位冲突不再显示(tmp_path: Path):
+    """源文件没了 → 这条「冲突」已经不存在，不能再占待办。
+
+    线上实测：21 条归位待办全是源文件已删的死记录（冲突的双方之一
+    被自动合并进了回收站）。
+    """
+    client, store = _client(tmp_path)
+    loc = store.upsert_location(
+        root_id=store.get_root_id("lib"), rel_path="歌.flac", size=1, mtime=1.0,
+    )
+    store.conn.execute(
+        "INSERT INTO tasks(id, kind, state, started_at) VALUES('t1','ingest','done',1.0)"
+    )
+    store.add_task_step(
+        task_id="t1", seq=1, kind="organize", rel_path="歌.flac",
+        state="review", detail={"conflict": "新/歌.flac", "fields": {}},
+    )
+    store.conn.commit()
+    counts = client.get("/api/v1/todo").json()["counts"]
+    assert counts["organize"] == 1
+
+    store.mark_location_missing(int(loc))
+    counts = client.get("/api/v1/todo").json()["counts"]
+    assert counts["organize"] == 0, f"源已删的冲突不该再占待办：{counts}"
+    page = client.get("/api/v1/todo", params={"kind": "organize"}).json()
+    assert page["items"] == []
+    store.close()
+
+
+def test_丢弃来源时清理对应归位待办(tmp_path: Path):
+    from lyra.organize import _discard_source
+
+    client, store = _client(tmp_path)
+    store.conn.execute(
+        "INSERT INTO tasks(id, kind, state, started_at) VALUES('t1','ingest','done',1.0)"
+    )
+    store.add_task_step(
+        task_id="t1", seq=1, kind="organize", rel_path="歌.flac",
+        state="review", detail={"conflict": "新/歌.flac", "fields": {}},
+    )
+    store.conn.commit()
+
+    cfg = Config(
+        roots=[RootConfig(name="lib", path=str(tmp_path / "lib"))],
+        storage=StorageConfig(data_dir=str(tmp_path / "data")),
+    )
+    lib = tmp_path / "lib"
+    (lib / "歌.flac").write_bytes(b"x" * 8)
+    result = {"failed": 0, "errors": [], "discarded": 0}
+    _discard_source(
+        store, cfg, cfg.roots[0], lib, "歌.flac", "batch-test",
+        store.get_root_id("lib"), result, reason="测试",
+    )
+    assert result["discarded"] == 1
+    left = store.conn.execute(
+        "SELECT COUNT(*) n FROM task_steps WHERE kind='organize' AND state='review' "
+        "AND rel_path='歌.flac'"
+    ).fetchone()["n"]
+    assert left == 0, f"丢弃后对应的归位待办应被清理，还剩 {left}"
+    store.close()

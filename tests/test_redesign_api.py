@@ -551,7 +551,10 @@ def test_封面支线嵌入同目录图且二次运行跳过(env):
             store, env.cfg, env.cfg.roots[0], rel_paths=["新专辑/新歌.flac"])
     assert again["embedded"] == 0, again
     assert again["steps"] == [
-        ("新专辑/新歌.flac", "skipped", {"why": "已有内嵌封面"}),
+        # 2.2.33 起：小封面（测试图 16 像素）会尝试升级，没有更大的可换时
+        # 如实说明偏小
+        ("新专辑/新歌.flac", "skipped",
+         {"why": "已有内嵌封面（16 像素，偏小但没有更大的可换）"}),
     ], again
 
 

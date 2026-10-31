@@ -40,6 +40,7 @@ from .cover import (
 )
 from .db import StateStore
 from .formats import read_audio_meta
+from .models import MediaFormat
 from .pipeline import ProgressFn, _noop, run_apply, run_fetch, sync_state
 from .providers import Provider
 
@@ -363,7 +364,29 @@ def run_cover_stage(
             steps.append((rel, "skipped", {"why": "不支持的容器"}))
             continue
         if meta.embedded.has_cover:
-            steps.append((rel, "skipped", {"why": "已有内嵌封面"}))
+            # 已有封面**通常**跳过；但线上 60% 的封面是 500×500（QQ 默认
+            # 尺寸），大屏上发糊。低于升级线且能拿到更大的图时重写一次
+            # （写入走字节级改写 + 音频哈希校验，安全性与嵌入一致）。
+            pixels = embedded_cover_pixels(path, meta.info.media_format)
+            if pixels is None or pixels >= _COVER_UPGRADE_BELOW:
+                steps.append((rel, "skipped", {"why": "已有内嵌封面"}))
+                continue
+            upgraded = False
+            if writable and policy.auto_write:
+                block = self_serve_cover_block(
+                    store, cfg, root, path, meta, policy,
+                )
+                if block is not None and _embed_block(
+                    path, meta.info.media_format, block
+                ):
+                    upgraded = True
+            if upgraded:
+                embedded += 1
+                steps.append((rel, "done", {"source": "upgrade", "from_pixels": pixels}))
+            else:
+                steps.append((rel, "skipped", {
+                    "why": f"已有内嵌封面（{pixels or '?'} 像素，偏小但没有更大的可换）",
+                }))
             continue
 
         # ---- 同目录图 ----
@@ -435,6 +458,102 @@ def run_cover_stage(
     return {"embedded": embedded, "steps": steps}
 
 
+#: 低分辨率封面的升级线（像素数）。低于它视为「偏小」，尝试换更大的。
+#: 500×500 = 25 万像素，是 QQ 来源的默认尺寸——在大屏/车机上已经发糊。
+_COVER_UPGRADE_BELOW = 250_000
+
+
+def embedded_cover_pixels(path: Path, media_format) -> int | None:
+    """内嵌封面的像素数（宽 × 高）；读不出返回 None。
+
+    用于「低分辨率封面升级」：线上实测 60% 的内嵌封面是 500×500
+    （QQ 来源的默认尺寸），在大屏播放器 / 车机上明显发糊。升级前先
+    知道现在有多小，才不会把已经够大的封面重写一遍（每次写入都有
+    备份与校验成本）。
+    """
+    try:
+        if media_format == MediaFormat.FLAC:
+            from . import flacmeta
+            from .cover import detect_image, parse_picture_block
+
+            layout = flacmeta.flac_parse_file(path)
+            for btype, payload in getattr(layout, "blocks", []):
+                if btype != 6:  # BlockType.PICTURE
+                    continue
+                _mime, data = parse_picture_block(payload)
+                info = detect_image(data)
+                return info.width * info.height
+            return None
+        if media_format in (MediaFormat.MP3,):
+            from . import id3meta
+            from .cover import detect_image
+
+            id3 = id3meta.id3_parse_file(path)
+            for frame_id, frame in getattr(id3, "frames", {}).items():
+                if not str(frame_id).startswith("APIC"):
+                    continue
+                data = getattr(frame, "data", None) or b""
+                if not data:
+                    continue
+                info = detect_image(data)
+                return info.width * info.height
+            return None
+    except Exception:  # noqa: BLE001 — 读不出就当「尺寸未知」，不升级
+        return None
+    return None
+
+
+def self_serve_cover_block(
+    store: StateStore,
+    cfg: Config,
+    root: RootConfig,
+    path: Path,
+    meta,
+    policy,
+) -> bytes | None:
+    """给「已有封面但偏小」的文件找一张更大的：CAA 缓存 → CAA → 歌词来源。
+
+    与嵌入链路同一批来源、同一套质量门；区别在于入口——这里先看
+    **专辑缓存里那张是不是已经够大**（大概率够：缓存里的图和内嵌的
+    是同一张专辑），缓存不满足才联网。
+    """
+    release_id = _release_id(meta.tags)
+    album_key = release_id or f"{root.name}:{path.parent.as_posix()}"
+
+    # 专辑缓存：那张图若比现内嵌的大 2 倍以上，直接用
+    cached = store.get_cover_album(album_key)
+    if cached is not None and cached["state"] == "ready":
+        cached_path = Path(str(cached["file_path"]))
+        if cached_path.is_file():
+            try:
+                info = detect_image(cached_path.read_bytes())
+                if info.width * info.height >= _COVER_UPGRADE_BELOW * 2:
+                    return build_picture_block(info)
+            except Exception:  # noqa: BLE001 — 缓存坏了走联网
+                pass
+
+    block = _album_cover_block(
+        store, cfg, album_key, release_id, policy.min_min_pixels
+    )
+    if block is not None:
+        return block
+
+    from .providers import create_providers
+
+    providers = create_providers(cfg.providers)
+    try:
+        return _lyrics_source_cover_block(
+            store, cfg,
+            title=str(next(iter(meta.tags.get("TITLE") or []), "")),
+            artists=list(meta.tags.get("ARTIST") or []),
+            album=str(next(iter(meta.tags.get("ALBUM") or []), "")),
+            duration=meta.info.duration,
+        )
+    finally:
+        for provider in providers:
+            provider.close()
+
+
 def _release_id(tags: dict[str, list[str]]) -> str:
     values = tags.get("MUSICBRAINZ_ALBUMID") or []
     return values[0].strip() if values else ""
@@ -459,7 +578,11 @@ def _album_cover_block(
     if not release_id:
         return None
     try:
-        data, info = download_cover(caa_front_url(release_id), max_bytes=_MAX_COVER_BYTES)
+        # 1200：CAA 对多数发行都有 1200 宽的图；500 是缩略图级别的清晰度，
+        # 在大屏播放器 / 车机上明显发糊。下载上限与质量门不变。
+        data, info = download_cover(
+            caa_front_url(release_id, size=1200), max_bytes=_MAX_COVER_BYTES
+        )
     except Exception:  # noqa: BLE001 — 网络失败按「无封面」处理，下轮再试
         return None
     if not cover_quality_ok(info, min_pixels=min_pixels):
@@ -559,7 +682,9 @@ def _lyrics_source_cover_block(
                 albummid = str((cand.extra or {}).get("albummid") or "")
                 if not albummid:
                     continue
-                art_url = qq_album_art_url(albummid)
+                # 1500：QQ CDN 支持到 3000；500 是列表缩略图的清晰度。
+                # 实测同一张专辑 500 与 1500 的文件都存在，直接要大的。
+                art_url = qq_album_art_url(albummid, size=1500)
                 try:
                     data, info = download_cover(art_url, max_bytes=_MAX_COVER_BYTES)
                 except Exception:  # noqa: BLE001

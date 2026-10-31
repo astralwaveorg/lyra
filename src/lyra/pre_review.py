@@ -80,7 +80,10 @@ def run_ai_pre_review(
     rows = store.conn.execute(
         "SELECT s.id, s.location_id, s.provider, s.provider_id, s.content, "
         "s.score, s.duration_delta FROM staged_lyrics s "
-        "WHERE s.state='needs_review' ORDER BY s.score DESC, s.created_at DESC "
+        "JOIN locations l ON l.id = s.location_id "
+        "WHERE s.state='needs_review' AND l.missing_since IS NULL "
+        # 文件已删的条目没法判定也没法写入，不花 AI 预算在它们身上
+        "ORDER BY s.score DESC, s.created_at DESC "
         "LIMIT ?",
         (int(limit),),
     ).fetchall()

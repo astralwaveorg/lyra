@@ -29,6 +29,7 @@ import time
 import unicodedata
 import uuid
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -780,6 +781,9 @@ def _discard_source(
             store.delete_location(int(location["id"]))
     except Exception:  # noqa: BLE001 — 文件已处理，状态库清理失败不影响结果
         pass
+    # 它参与的「归位冲突」待办也随之消失
+    with suppress(Exception):
+        store.drop_organize_reviews(rel)
     result["discarded"] = int(result.get("discarded", 0)) + 1
     return True
 

@@ -2587,6 +2587,19 @@ class StateStore:
         self.conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
         self.conn.commit()
 
+    def drop_organize_reviews(self, rel_path: str) -> None:
+        """删掉某个文件的「归位冲突」待办记录。
+
+        文件被丢弃/删除后，它参与的冲突就消失了——记录留着只会变成
+        陈旧待办（线上实测 21 条全是源文件已删的死记录）。
+        """
+        self.conn.execute(
+            "DELETE FROM task_steps WHERE kind='organize' AND state='review' "
+            "AND rel_path=?",
+            (rel_path,),
+        )
+        self.conn.commit()
+
     def delete_location(self, location_id: int) -> None:
         """删除一个位置行及其附属数据（文件已被移走时用）。
 

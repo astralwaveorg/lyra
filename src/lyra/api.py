@@ -3338,8 +3338,12 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             #   人处理的问题，不该占用待办。
             "organize": int(state.conn.execute(
                 "SELECT COUNT(DISTINCT s.rel_path) FROM task_steps s "
+                "JOIN locations l ON l.rel_path = s.rel_path "
                 "WHERE s.kind='organize' AND s.state='review' "
-                "AND s.detail_json LIKE '%\"conflict\"%'"
+                "AND s.detail_json LIKE '%\"conflict\"%' "
+                # 源文件已删的记录是陈旧的：冲突的双方之一都没了，
+                # 这条「冲突」已经不存在（线上实测 21 条全是这种）
+                "AND l.missing_since IS NULL"
             ).fetchone()[0]),
             "orphans": orphans,
             "failed": failed_staged + failed_steps,
@@ -3497,6 +3501,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 "JOIN roots r ON r.id = l.root_id "
                 "WHERE s.kind='organize' AND s.state='review' "
                 "AND s.detail_json LIKE '%\"conflict\"%' "
+                "AND l.missing_since IS NULL "
                 "AND s.id = (SELECT MAX(s2.id) FROM task_steps s2 "
                 "            WHERE s2.kind='organize' AND s2.state='review' "
                 "              AND s2.rel_path = s.rel_path) "

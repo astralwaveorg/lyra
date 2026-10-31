@@ -25,6 +25,7 @@ import re
 import time
 import unicodedata
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -937,6 +938,9 @@ def _auto_delete_one(
                 store.delete_location(int(location["id"]))
         except Exception:  # noqa: BLE001 — 文件已删除，状态库清理失败不影响结果
             pass
+    # 它参与的「归位冲突」待办也随之消失
+    with suppress(Exception):
+        store.drop_organize_reviews(rel)
     return {"ok": True, "deleted": 1, "batch_ids": [batch_id]}
 
 
