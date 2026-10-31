@@ -1488,9 +1488,15 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
             tag_state["running"] = False
 
     def _dedupe_auto_worker() -> None:
+        import contextlib
+
         from .dedupe import clean_exact_duplicates, scan_duplicates
 
         try:
+            # 任务明细只增不减：全库扫描一轮几千行，几个月后十几万行。
+            # 在这里顺手清理（失败不影响本次任务）。
+            with contextlib.suppress(Exception):
+                store.prune_task_steps()
             print("[watch] 重复音频检测开始（只检查，不删除）", flush=True)
             result = scan_duplicates(store, cfg, roots)
             print(

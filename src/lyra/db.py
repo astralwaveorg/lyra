@@ -1388,6 +1388,24 @@ class StateStore:
             (state, new_full_hash, new_audio_hash, backup_ref, staging_ref, error, time.time(), txn_id),
         )
 
+    def prune_task_steps(self, *, keep: int = 5000) -> int:
+        """给「任务明细」做滚动清理。
+
+        `task_steps` 只增不减：每次扫描/入库都会为每个文件写一条，
+        几个月后就是十几万行（生产实测 7 万）。它只用于回溯「这轮任务
+        对每个文件做了什么」，保留最近几千条足够。
+
+        删的都是**已完成**的明细；未完成的（review/failed）留着——
+        它们还是待办队列的来源，删了会让待办凭空少条目。
+        """
+        with self.transaction() as tx:
+            removed = tx.execute(
+                "DELETE FROM task_steps WHERE state IN ('done', 'skipped') AND id NOT IN ("
+                "  SELECT id FROM task_steps ORDER BY id DESC LIMIT ?)",
+                (max(0, keep),),
+            ).rowcount
+        return int(removed)
+
     def prune_audit(
         self, *, keep_writes: int = 100, keep_transactions: int = 100
     ) -> dict[str, int]:

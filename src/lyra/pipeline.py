@@ -692,6 +692,9 @@ def run_fetch(
     # 放在批量写入结束时做，开销与「一次删除扫描」相当。
     try:  # noqa: SIM105
         store.prune_audit()
+        # 任务明细同样只增不减：全库扫描一轮就是几千行，几个月后
+        # 会到十几万。保留最近几千条即可回溯。
+        store.prune_task_steps()
     except Exception:  # noqa: BLE001 — 清理失败不影响写入结果
         pass  # noqa: SIM105
 

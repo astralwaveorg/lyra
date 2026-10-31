@@ -3300,10 +3300,18 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             "lyrics": lyrics,
             "tags": tags,
             "covers": covers,
-            # 归置建议的权威视图是整理页预览（organize/preview）；
-            # 这里只计任务明细里的归位冲突，避免对全库逐文件算路径
+            # 归置建议的权威视图是整理页预览（organize/preview）；这里只计
+            # **真正的归位冲突**。
+            #
+            # 两个修正（生产实测这个队列显示 9508 条，实际待处理远没这么多）：
+            # - **按文件去重**：task_steps 是流水，每次扫描都写一条；同一个
+            #   冲突反复入库会累积成几百条（实测同一文件记了 205 次）。
+            # - **排除「仅生成建议」**：mode=off 时写入的是建议，不是需要
+            #   人处理的问题，不该占用待办。
             "organize": int(state.conn.execute(
-                "SELECT COUNT(*) FROM task_steps WHERE kind='organize' AND state='review'"
+                "SELECT COUNT(DISTINCT s.rel_path) FROM task_steps s "
+                "WHERE s.kind='organize' AND s.state='review' "
+                "AND s.detail_json LIKE '%\"conflict\"%'"
             ).fetchone()[0]),
             "orphans": orphans,
             "failed": failed_staged + failed_steps,
@@ -3447,12 +3455,19 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                     "issues": json.loads(row["issues"] or "[]"),
                 })
         elif kind == "organize":
+            # 每个文件只取**最新**一条记录（task_steps 是流水，同一冲突会
+            # 反复写入），并排除「仅生成建议」那种不算待办的条目。
             rows = state.conn.execute(
                 "SELECT s.rel_path, s.detail_json, t.started_at, r.name AS root_name "
-                "FROM task_steps s JOIN tasks t ON t.id = s.task_id "
+                "FROM task_steps s "
+                "JOIN tasks t ON t.id = s.task_id "
                 "JOIN locations l ON l.rel_path = s.rel_path "
                 "JOIN roots r ON r.id = l.root_id "
                 "WHERE s.kind='organize' AND s.state='review' "
+                "AND s.detail_json LIKE '%\"conflict\"%' "
+                "AND s.id = (SELECT MAX(s2.id) FROM task_steps s2 "
+                "            WHERE s2.kind='organize' AND s2.state='review' "
+                "              AND s2.rel_path = s.rel_path) "
                 "ORDER BY t.started_at DESC LIMIT ? OFFSET ?",
                 (size, (page - 1) * size),
             ).fetchall()
