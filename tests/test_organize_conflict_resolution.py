@@ -299,3 +299,94 @@ def test_选择丢弃来源时源进回收站(tmp_path: Path):
     assert not src.exists()
     assert target.is_file(), "目标保留"
     store.close()
+
+
+def test_同一首歌的两次下载自动合并(tmp_path: Path):
+    """标题与专辑相同、时长接近 → 同一首歌，自动合并（保留目标）。
+
+    线上有一批冲突只是**大小写不同**（Linux 区分大小写，成了两个文件）：
+    `05 - Think For Yourself.flac` 与 `05 - Think for Yourself.flac`。
+    两次下载的压制不同 → 音频哈希不同，只能靠标题+专辑+时长判定。
+    """
+    from conftest import make_flac
+
+    cfg, lib = _env(tmp_path)
+    src = lib / "旧目录" / "05 - Think For Yourself.flac"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    make_flac(src, entries=(
+        ("TITLE", "Think For Yourself"), ("ALBUM", "Rubber Soul"),
+        ("ARTIST", "The Beatles"), ("TRACKNUMBER", "5"),
+    ))
+    (lib / "The Beatles" / "Rubber Soul").mkdir(parents=True)
+    target = lib / "The Beatles" / "Rubber Soul" / "05 - Think for Yourself.flac"
+    make_flac(target, entries=(
+        ("TITLE", "Think for Yourself"), ("ALBUM", "Rubber Soul"),
+        ("ARTIST", "The Beatles"), ("TRACKNUMBER", "5"),
+    ))
+
+    store = open_store(cfg.storage.resolved_data_dir)
+    root_id = store.upsert_root(
+        name="lib", role="library", path=str(lib), enabled=True, read_only=False,
+    )
+    plan = build_plan(store, cfg, cfg.roots[0], subpaths=[], exclude=[])
+    store.save_organize_plan(
+        plan_id=str(plan["plan_id"]), root_id=int(root_id),
+        subpath="", payload=plan,
+    )
+    row = store.organize_plan(str(plan["plan_id"]))
+    result = execute_plan(store, cfg, cfg.roots[0], row, dirs=[])
+    assert result["discarded"] == 1, f"同一首歌应自动合并：{result}"
+    assert not src.exists()
+    assert target.is_file()
+    store.close()
+
+
+def test_不同专辑的同名曲不算同一首(tmp_path: Path):
+    """同标题但不同专辑 → 是两首不同的歌，不能自动合并。
+
+    直接测判定函数：走完整流程时这种组合会被算成「链式移动」
+    （目标文件自己也要移动），压根到不了合并这一步。
+    """
+    from conftest import make_flac
+
+    from lyra.organize import _same_song
+
+    lib = tmp_path / "lib"
+    src = lib / "旧目录" / "歌.flac"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    make_flac(src, entries=(
+        ("TITLE", "Something"), ("ALBUM", "Abbey Road"), ("ARTIST", "The Beatles"),
+    ))
+    (lib / "The Beatles" / "1").mkdir(parents=True, exist_ok=True)
+    other = lib / "The Beatles" / "1" / "01 - Something.flac"
+    make_flac(other, entries=(
+        ("TITLE", "Something"), ("ALBUM", "1"), ("ARTIST", "The Beatles"),
+    ))
+
+    assert not _same_song(lib, "旧目录/歌.flac", "The Beatles/1/01 - Something.flac"), (
+        "不同专辑是不同发行，不能当成同一首合并"
+    )
+
+
+def test_同专辑同标题同曲名算同一首(tmp_path: Path):
+    """标题与专辑相同（大小写差异也算）→ 同一首，可以自动合并。"""
+    from conftest import make_flac
+
+    from lyra.organize import _same_song
+
+    lib = tmp_path / "lib"
+    src = lib / "旧目录" / "05 - Think For Yourself.flac"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    make_flac(src, entries=(
+        ("TITLE", "Think For Yourself"), ("ALBUM", "Rubber Soul"),
+        ("ARTIST", "The Beatles"),
+    ))
+    (lib / "The Beatles" / "Rubber Soul").mkdir(parents=True, exist_ok=True)
+    same = lib / "The Beatles" / "Rubber Soul" / "05 - Think for Yourself.flac"
+    make_flac(same, entries=(
+        ("TITLE", "Think for Yourself"), ("ALBUM", "Rubber Soul"),
+        ("ARTIST", "The Beatles"),
+    ))
+
+    assert _same_song(lib, "旧目录/05 - Think For Yourself.flac",
+                      "The Beatles/Rubber Soul/05 - Think for Yourself.flac")

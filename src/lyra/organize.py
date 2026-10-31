@@ -38,6 +38,7 @@ from .config import Config, RootConfig
 from .db import StateStore
 from .fileops import move_to_trash, trash_root
 from .formats import read_all_tags
+from .tagsources import _fold_value
 from .writer import audio_hash_for
 
 __all__ = [
@@ -688,6 +689,45 @@ def _same_audio(base: Path, left_rel: str, right_rel: str) -> bool:
     return bool(left_hash) and left_hash == right_hash
 
 
+def _same_song(base: Path, left_rel: str, right_rel: str) -> bool:
+    """两份文件是不是**同一首歌**（同一专辑下的两次下载）。
+
+    比音频哈希更宽一档：两次下载的压制方式不同 → 哈希不同，但仍是同一首。
+    判据：标题与专辑规范化后相同、时长接近。
+
+    为什么需要它：线上剩下的冲突里有一批是
+    `The Beatles/Rubber Soul/05 - Think For Yourself.flac` 与
+    `.../05 - Think for Yourself.flac`——**只是大小写不同**（Linux 区分
+    大小写，于是成了两个文件）。它们显然是同一首歌，没有判断空间。
+    """
+    from .formats import read_audio_meta
+
+    left = base / left_rel
+    right = base / right_rel
+    if not left.is_file() or not right.is_file():
+        return False
+    try:
+        left_tags, left_err = read_all_tags(left)
+        right_tags, right_err = read_all_tags(right)
+        left_meta = read_audio_meta(left, base)
+        right_meta = read_audio_meta(right, base)
+    except Exception:  # noqa: BLE001 — 读失败交给人判断
+        return False
+    if left_err or right_err:
+        return False
+    for key in ("TITLE", "ALBUM"):
+        a = " ".join(left_tags.get(key) or [])
+        b = " ".join(right_tags.get(key) or [])
+        if not a or not b:
+            return False
+        if _fold_value(key, a) != _fold_value(key, b):
+            return False
+    ld, rd = left_meta.info.duration, right_meta.info.duration
+    if ld is None or rd is None:
+        return False
+    return abs(ld - rd) <= 3.0
+
+
 def _discard_source(
     store: StateStore,
     cfg: Config,
@@ -928,7 +968,7 @@ def execute_plan(
         if not (base / old_rel).is_file() or not (base / new_rel).is_file():
             result["skipped_conflicts"] = int(result["skipped_conflicts"]) + 1
             continue
-        if _same_audio(base, old_rel, new_rel):
+        if _same_audio(base, old_rel, new_rel) or _same_song(base, old_rel, new_rel):
             discard_moves.append(item)
         else:
             result["skipped_conflicts"] = int(result["skipped_conflicts"]) + 1
