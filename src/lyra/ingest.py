@@ -287,6 +287,20 @@ def _organize_new_files(
             old_rel_path=rel, new_rel_path=target_rel,
             detail="入库自动归位（仅新增文件）",
         )
+        # 状态库路径必须同步：移动后不更新的话，这首歌的位置行还指向
+        # 旧路径——下次扫描会把它当成「消失 + 新增」，歌词观察、暂存
+        # 提案全部错位（生产实测：174 首因未同步而显示「文件不存在」，
+        # 界面报缺歌词，文件其实好好的）。
+        try:
+            location = store.location_by_rel_path(root_id, rel)
+            if location is not None:
+                store.update_location_path(int(location["id"]), target_rel)
+        except Exception as exc:  # noqa: BLE001 — 文件已移走，如实报告即可
+            store.add_task_step(
+                task_id=task_id, seq=step_seq, kind="organize", rel_path=rel,
+                state="review",
+                detail={"error": "状态库路径同步失败", "detail": str(exc)[:120]},
+            )
         # 同名 .lrc 跟随（与整理页语义一致；异名配对交给人工预览）
         sidecar = path.with_suffix(".lrc")
         if sidecar.is_file():

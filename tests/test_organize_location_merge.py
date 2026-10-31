@@ -196,3 +196,52 @@ def test_归位目标不含分号拼接(tmp_path: Path):
     )
     assert ";" not in rel, f"目录名不应含分号拼接：{rel}"
     assert rel.startswith("G.E.M. 鄧紫棋/25 LOOKS/")
+
+
+def test_入库自动归位同步位置行(tmp_path: Path):
+    """自动归位移动文件后必须更新位置行。
+
+    不更新的后果（生产实测 174 首）：位置行还指向旧路径，界面显示
+    「文件不存在」「缺歌词」，而文件其实好好地待在新位置——歌词观察、
+    暂存提案全部错位。
+    """
+    from lyra.config import Config, RootConfig, StorageConfig
+    from lyra.db import open_store
+    from lyra.ingest import _organize_new_files
+
+    lib = tmp_path / "lib"
+    src_dir = lib / "乱目录"
+    src_dir.mkdir(parents=True)
+    from conftest import make_flac
+
+    make_flac(
+        src_dir / "歌.flac",
+        entries=(("TITLE", "歌"), ("ARTIST", "人"), ("ALBUM", "专辑"),
+                 ("TRACKNUMBER", "1")),
+    )
+    cfg = Config(
+        roots=[RootConfig(name="lib", path=str(lib))],
+        storage=StorageConfig(data_dir=str(tmp_path / "data")),
+    )
+    cfg.policy.organize.template = "{artist}/{album}/{track_no} - {title}"
+    store = open_store(cfg.storage.resolved_data_dir)
+    root_id = store.upsert_root(
+        name="lib", role="library", path=str(lib), enabled=True, read_only=False,
+    )
+    loc = store.upsert_location(
+        root_id=root_id, rel_path="乱目录/歌.flac", size=1, mtime=1.0,
+    )
+    store.upsert_task(
+        task_id="task-1", kind="ingest", state="running", started_at=1.0,
+    )
+
+    moved = _organize_new_files(
+        store, cfg, cfg.roots[0], ["乱目录/歌.flac"], "task-1", root_id,
+    )
+    assert moved == 1
+    row = store.conn.execute(
+        "SELECT rel_path FROM locations WHERE id=?", (loc,)
+    ).fetchone()
+    assert row["rel_path"] != "乱目录/歌.flac", "位置行应跟着移动更新"
+    assert (lib / row["rel_path"]).is_file(), "新路径应指向真实文件"
+    store.close()
