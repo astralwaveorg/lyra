@@ -1263,6 +1263,26 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                       flush=True)
             return bool(fetched.yielded or (applied is not None and applied.yielded))
 
+    def _on_file_deleted(root, path):  # noqa: ANN001, ANN202
+        """文件被删除 → 立刻把位置标记为缺失。
+
+        不做这件事，待办里的条目就一直挂着：使用者删了文件，界面还
+        让他去处理一条已经不存在的曲目的歌词（点进去还会报 500）。
+        """
+        try:
+            rel = str(path.relative_to(root.resolved_path))
+        except ValueError:
+            return
+        root_id = store.get_root_id(root.name)
+        if root_id is None:
+            return
+        with lock:
+            location = store.location_by_rel_path(root_id, rel)
+            if location is None:
+                return
+            store.mark_location_missing(int(location["id"]))
+        print(f"[watch] {root.name}: 文件已删除，标记缺失 {rel}", flush=True)
+
     def make_callback(root):  # noqa: ANN001, ANN202
         def on_files(paths):  # noqa: ANN001, ANN202
             rels = set()
@@ -1300,6 +1320,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     watchers = [
         LibraryWatcher(
             cfg, root, make_callback(root),
+            on_deleted=lambda path, _root=root: _on_file_deleted(_root, path),
             log=lambda m: print(m, flush=True),
         )
         for root in roots

@@ -1161,6 +1161,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         上传、链接下载两条入口共用它：两条路**只允许在「图片来源」上不同**，
         落到磁盘上的动作必须一模一样（备份语义、音频哈希校验、状态刷新）。
         """
+        _require_file(resolved)
         meta = read_audio_meta(resolved, root_cfg.resolved_path)
         outcome = apply_cover_edit(
             CoverEditPlan(
@@ -1226,6 +1227,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         root_cfg, resolved = _safe_root_file(cfg, root_name, rel)
         if _kind_of(resolved) != "audio":
             raise HTTPException(status_code=415, detail="只有音频文件支持标签改写")
+        _require_file(resolved)
         meta = read_audio_meta(resolved, root_cfg.resolved_path)
 
         outcome = apply_tag_edit(
@@ -1547,6 +1549,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         if _kind_of(resolved) != "audio":
             raise HTTPException(status_code=415, detail="只有音频文件有标签")
 
+        _require_file(resolved)
         meta = read_audio_meta(resolved, root_cfg.resolved_path)
         all_tags, tags_error = read_all_tags(resolved)
         if tags_error:
@@ -1662,6 +1665,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             # 用户输入问题 → 400，并把「怎么改」写清楚，别只说「无效」
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        _require_file(resolved)
         meta = read_audio_meta(resolved, root_cfg.resolved_path)
         all_tags, tags_error = read_all_tags(resolved)
         if tags_error:
@@ -1970,6 +1974,15 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="不存在")
 
         root = _root_for_location(cfg, state, row["root_id"])
+        # 文件可能已经被删掉（使用者自己在文件管理器里删的）。这时读文件
+        # 会抛 FileNotFoundError → 整个接口 500，看起来像服务坏了。
+        # 实际只是「这一条已经没法处理了」，如实说明即可。
+        target = root.resolved_path / str(row["rel_path"])
+        if not target.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail="文件已不存在，可能已被删除；这条待办会随对账自动消失",
+            )
         from .providers import create_providers
 
         providers = create_providers(cfg.providers)
@@ -2027,6 +2040,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        _require_file(root.resolved_path / str(row["rel_path"]))
         meta = read_audio_meta(root.resolved_path / row["rel_path"], root.resolved_path)
         context = build_context(meta.tags, meta.info.duration)
         query = TrackQuery(
@@ -3278,13 +3292,18 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
     def _todo_counts() -> dict[str, int]:
         """六类待办的计数。全部走现有表，惰性聚合，不做全库大查询。"""
         lyrics = int(state.conn.execute(
-            "SELECT COUNT(*) FROM staged_lyrics WHERE state='needs_review'"
+            "SELECT COUNT(*) FROM staged_lyrics s "
+            "JOIN locations l ON l.id = s.location_id "
+            "WHERE s.state='needs_review' AND l.missing_since IS NULL"
         ).fetchone()[0])
         tags = int(state.conn.execute(
-            "SELECT COUNT(*) FROM tag_proposals "
+            "SELECT COUNT(*) FROM tag_proposals p "
+            "JOIN locations l ON l.id = p.location_id "
             # unmatched 不计入待办：MusicBrainz 匹配不上（如华语专辑覆盖有限），
             # 人工也无从处理（除手动链接指定），留在列表里只是刷屏。
-            "WHERE state IN ('auto','review') AND dismissed_at IS NULL"
+            # 文件已删的同样不算——它已经没法处理了。
+            "WHERE p.state IN ('auto','review') AND p.dismissed_at IS NULL "
+            "AND l.missing_since IS NULL"
         ).fetchone()[0])
         covers = int(state.conn.execute(
             """SELECT COUNT(*) FROM lyric_observations obs
@@ -3363,6 +3382,9 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 "FROM staged_lyrics s JOIN locations l ON l.id = s.location_id "
                 "JOIN roots r ON r.id = l.root_id "
                 "WHERE s.state = 'needs_review' "
+                # 文件已被删的条目不再出现：留着它，使用者点进去只会看到
+                # 一个打不开的文件（用户反馈：删了文件条目却不消失）
+                "AND l.missing_since IS NULL "
                 "ORDER BY s.created_at DESC LIMIT ? OFFSET ?",
                 (size, (page - 1) * size),
             ).fetchall()
@@ -3424,6 +3446,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 "JOIN roots r ON r.id = l.root_id "
                 "WHERE p.state IN ('auto','review') "
                 "AND p.dismissed_at IS NULL "
+                "AND l.missing_since IS NULL "
                 "ORDER BY p.updated_at DESC LIMIT ? OFFSET ?",
                 (size, (page - 1) * size),
             ).fetchall()
@@ -5632,6 +5655,17 @@ def _safe_root_file(cfg: Config, root_name: str, rel: str) -> tuple[RootConfig, 
     if _kind_of(resolved) not in _PREVIEWABLE_KINDS:
         raise HTTPException(status_code=415, detail=f"不支持的预览类型: {resolved.suffix}")
     return root, resolved
+
+
+def _require_file(path: Path, detail: str = "文件已不存在，可能已被删除"):
+    """文件必须存在——否则抛 404 而不是让下层抛 FileNotFoundError。
+
+    使用者会在文件管理器里直接删文件，之后再来点待办里的条目。
+    那时接口应该如实说「文件没了」，而不是 500（看起来像服务坏了）。
+    """
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=detail)
+    return path
 
 
 def _root_for_location(cfg: Config, state: StateStore, root_id: Any) -> RootConfig:

@@ -198,6 +198,7 @@ class LibraryWatcher:
         *,
         on_reconcile: BatchFn | None = None,
         on_full_scan: BatchFn | None = None,
+        on_deleted: Callable[[Path], None] | None = None,
         log: LogFn = _noop,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -208,6 +209,7 @@ class LibraryWatcher:
         self._on_files = on_files
         self._on_reconcile = on_reconcile
         self._on_full_scan = on_full_scan
+        self._on_deleted = on_deleted
         self._log = log
         self._clock = clock
 
@@ -249,6 +251,28 @@ class LibraryWatcher:
         with self._lock:
             self.stats.events_seen += 1
             dest = getattr(event, "dest_path", "") or ""
+            if getattr(event, "event_type", "") == "deleted":
+                # **文件被删除：立刻告诉上层。**
+                #
+                # 原来删除事件被当成「文件变化」处理——进稳定判定队列，
+                # 而队列里它已经 stat 不到文件，于是被静默跳过。位置行
+                # 永远不被标记缺失，待办里的条目就一直挂着（用户反馈：
+                # 「我删除了文件，为什么不会自动更新消失」）。
+                #
+                # 现在直接回调：上层把位置标记为缺失，待办随之消失。
+                for target in (dest, event.src_path):
+                    if not target:
+                        continue
+                    path = Path(str(target))
+                    if not self._accept(path):
+                        continue
+                    self._gate.forget(path)
+                    if self._on_deleted is not None:
+                        try:
+                            self._on_deleted(path)
+                        except Exception as exc:  # noqa: BLE001 — 单个失败不影响监听
+                            self._log(f"[watch] 处理删除事件失败 {path.name}: {exc}")
+                return
             if event.is_directory:
                 # 新建目录或整目录移入：枚举其中的音频，交给稳定判定。
                 # 空目录事件与稍后到达的文件事件都要处理，所以这里只是提前发现。
