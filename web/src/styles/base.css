@@ -329,16 +329,22 @@ p {
   gap: 10px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
+  /* 窄屏时标题、说明、操作按钮各自换行，而不是把标题压成竖排 */
+  flex-wrap: wrap;
 }
 
 .card-title {
   font-size: 13.5px;
   font-weight: 600;
+  /* 标题是短词，绝不允许被压成一列竖排的字 */
+  flex: none;
+  white-space: nowrap;
 }
 
 .card-hint {
   font-size: 12px;
   color: var(--text-3);
+  min-width: 0;
 }
 
 .card-actions {
@@ -346,6 +352,7 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: none;
 }
 
 .card-body {
@@ -709,6 +716,20 @@ p {
 
   .topbar-title {
     font-size: 17px;
+  }
+
+  /* 窄屏：卡片标题独占一行，说明与操作按钮各占一行 */
+  .card-head {
+    row-gap: 6px;
+  }
+
+  .card-head .card-hint {
+    flex-basis: 100%;
+    order: 3;
+  }
+
+  .card-head .card-actions {
+    margin-left: 0;
   }
 
   .topbar-pill {
