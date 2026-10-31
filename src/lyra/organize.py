@@ -725,7 +725,12 @@ def _same_song(base: Path, left_rel: str, right_rel: str) -> bool:
     ld, rd = left_meta.info.duration, right_meta.info.duration
     if ld is None or rd is None:
         return False
-    return abs(ld - rd) <= 3.0
+    # 容差 8 秒（不是 3 秒）：同一首歌的不同压制常常在首尾的静音上差
+    # 几秒。线上实测 `Think For Yourself` 两份差 3.4 秒、
+    # `Run For Your Life` 差 4.3 秒——标题与专辑完全相同（只差文件名
+    # 大小写），差 3 秒就被判成「不同歌」，冲突永远留在那里。
+    # 标题与专辑都相同的前提下，8 秒足够区分「同一首的不同压制」。
+    return abs(ld - rd) <= 8.0
 
 
 def _discard_source(

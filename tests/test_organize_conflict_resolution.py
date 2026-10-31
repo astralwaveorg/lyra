@@ -390,3 +390,31 @@ def test_同专辑同标题同曲名算同一首(tmp_path: Path):
 
     assert _same_song(lib, "旧目录/05 - Think For Yourself.flac",
                       "The Beatles/Rubber Soul/05 - Think for Yourself.flac")
+
+
+def test_时长差在容差内仍算同一首(tmp_path: Path):
+    """同一首歌的不同压制，首尾静音差几秒——不该因此判成两首歌。
+
+    线上实测：`Think For Yourself` 两份差 3.4 秒、`Run For Your Life`
+    差 4.3 秒，标题与专辑完全相同（只差文件名大小写）。
+    """
+    from conftest import make_flac
+
+    from lyra.organize import _same_song
+
+    lib = tmp_path / "lib"
+    src = lib / "旧目录" / "05 - Think For Yourself.flac"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    make_flac(src, entries=(
+        ("TITLE", "Think For Yourself"), ("ALBUM", "Rubber Soul"),
+        ("ARTIST", "The Beatles"),
+    ))
+    (lib / "The Beatles" / "Rubber Soul").mkdir(parents=True, exist_ok=True)
+    same = lib / "The Beatles" / "Rubber Soul" / "05 - Think for Yourself.flac"
+    make_flac(same, entries=(
+        ("TITLE", "Think for Yourself"), ("ALBUM", "Rubber Soul"),
+        ("ARTIST", "The Beatles"),
+    ))
+    # 标题与专辑一致（只差大小写）→ 判为同一首
+    assert _same_song(lib, "旧目录/05 - Think For Yourself.flac",
+                      "The Beatles/Rubber Soul/05 - Think for Yourself.flac")
