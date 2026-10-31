@@ -214,6 +214,23 @@ const conflictDecisions = ref<Record<string, ConflictDecision>>({})
 const replaceCount = computed(
   () => Object.values(conflictDecisions.value).filter((v) => v === 'replace').length,
 )
+const conflictDecisionCount = computed(() => Object.keys(conflictDecisions.value).length)
+
+/**
+ * 执行按钮的文案：**说清这次实际会做什么**。
+ *
+ * 之前固定写「执行 N 项移动」，冲突处理不体现在按钮上——移动项为 0 时
+ * 按钮显示「执行 0 项移动」，使用者以为没事可做，冲突就一直搁着。
+ */
+const executeLabel = computed(() => {
+  const parts: string[] = []
+  const move = plan.value?.summary.move ?? 0
+  if (move) parts.push(`${move} 项移动`)
+  const decided = conflictDecisionCount.value
+  if (decided) parts.push(`${decided} 项冲突处理`)
+  if (selectedDirs.value.length) parts.push(`${selectedDirs.value.length} 个目录清理`)
+  return parts.length ? `执行：${parts.join('，')}` : '没有需要执行的改动'
+})
 const discardCount = computed(
   () => Object.values(conflictDecisions.value).filter((v) => v === 'discard').length,
 )
@@ -300,6 +317,9 @@ async function execute() {
     }
     plan.value = null
     await loadDirs()
+    // 重新生成预览：处理过的冲突应该从列表里消失，让使用者**看见**
+    // 结果，而不是自己刷新页面去数还剩几条。
+    await preview()
   } catch (err) {
     // 监控正在写文件时，人工请求会等一会儿再拿写租约；拿不到就返回 409。
     // 这不是失败——等监控让出后重试即可。
@@ -830,6 +850,7 @@ onMounted(async () => {
           丢弃来源：把来源文件移进回收站，保留目标文件。用它替换：把目标文件移进回收站，
           再把来源文件放过去。两种都可在「回收站」还原。
           「自动判断」会在两份音频完全相同时自动合并，不同则保留现状等你决定。
+          选好后点页面下方的执行按钮，冲突处理才会真正生效。
         </div>
       </section>
 
@@ -908,10 +929,10 @@ onMounted(async () => {
           type="primary"
           size="large"
           :loading="executing"
-          :disabled="!plan.summary.move && !selectedDirs.length"
+          :disabled="!plan.summary.move && !selectedDirs.length && !conflictDecisionCount"
           @click="execute"
         >
-          执行 {{ plan.summary.move }} 项移动
+          {{ executeLabel }}
         </el-button>
       </div>
     </template>

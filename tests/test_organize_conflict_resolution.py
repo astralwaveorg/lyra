@@ -223,7 +223,6 @@ def test_未表态时音频相同的副本自动合并(tmp_path: Path):
         name="lib", role="library", path=str(lib), enabled=True, read_only=False,
     )
     plan = build_plan(store, cfg, cfg.roots[0], subpaths=[], exclude=[])
-    conflict = plan["conflicts"][0]
     store.save_organize_plan(
         plan_id=str(plan["plan_id"]), root_id=int(root_id),
         subpath="", payload=plan,
@@ -295,6 +294,7 @@ def test_选择丢弃来源时源进回收站(tmp_path: Path):
         store, cfg, cfg.roots[0], row, dirs=[],
         resolutions={conflict["old_rel_path"]: "discard"},
     )
+    assert conflict["old_rel_path"]
     assert result["discarded"] == 1, f"应丢弃来源：{result}"
     assert not src.exists()
     assert target.is_file(), "目标保留"
