@@ -929,6 +929,14 @@ def _auto_delete_one(
                 ensure_ascii=False,
             ),
         )
+        # 位置行一起删：文件已经不在原处，留着行会让界面显示「缺歌词」，
+        # 下次扫描还会把它当成缺失文件重新登记一遍。
+        try:
+            location = store.location_by_rel_path(root_id, rel)
+            if location is not None:
+                store.delete_location(int(location["id"]))
+        except Exception:  # noqa: BLE001 — 文件已删除，状态库清理失败不影响结果
+            pass
     return {"ok": True, "deleted": 1, "batch_ids": [batch_id]}
 
 

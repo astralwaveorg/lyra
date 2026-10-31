@@ -300,3 +300,99 @@ def test_路径不同不判为重复():
         title="口袋的天空", artist="張韶涵", album="潘朵拉",
     )
     assert not _auto_same_song(a, b)
+
+
+def test_自动删除后位置行一并清理(tmp_path: Path):
+    """文件移进回收站后位置行必须删掉。
+
+    留着行，界面会显示「缺歌词」，下次扫描还会把它当缺失文件重登记。
+    """
+    from lyra.config import Config, RootConfig, StorageConfig
+    from lyra.db import open_store
+
+    lib = tmp_path / "lib"
+    (lib / "a").mkdir(parents=True)
+    (lib / "b").mkdir(parents=True)
+    (lib / "a" / "歌.flac").write_bytes(b"x" * 10)
+    (lib / "b" / "歌.flac").write_bytes(b"x" * 10)
+    cfg = Config(
+        roots=[RootConfig(name="lib", path=str(lib))],
+        storage=StorageConfig(data_dir=str(tmp_path / "data")),
+    )
+    store = open_store(cfg.storage.resolved_data_dir)
+    root_id = store.upsert_root(
+        name="lib", role="library", path=str(lib), enabled=True, read_only=False,
+    )
+    keep = store.upsert_location(
+        root_id=root_id, rel_path="a/歌.flac", size=10, mtime=1.0,
+    )
+    gone = store.upsert_location(
+        root_id=root_id, rel_path="b/歌.flac", size=10, mtime=2.0,
+    )
+    store.replace_dedupe_groups(root_id, [{
+        "group_key": "k4", "kind": "exact",
+        "keep_rel_path": "a/歌.flac", "keep_reason": "",
+        "items": [_entry("a/歌.flac"), _entry("b/歌.flac")],
+    }])
+    result = clean_exact_duplicates(store, cfg, cfg.roots)
+    assert result["deleted"] == 1
+    rows = store.conn.execute(
+        "SELECT id FROM locations WHERE root_id=?", (root_id,)
+    ).fetchall()
+    assert [int(r["id"]) for r in rows] == [keep], "被删副本的位置行应一并清理"
+    assert store.conn.execute(
+        "SELECT COUNT(*) FROM locations WHERE id=?", (gone,)
+    ).fetchone()[0] == 0
+    store.close()
+
+
+def test_撤销自动清理会重新登记位置行(tmp_path: Path):
+    """还原文件后必须把位置行登记回来。
+
+    不登记的话，这首歌在界面上仍是「不存在」，歌词观察与暂存提案
+    无处可挂——撤销等于只还原了文件、没还原状态。
+    """
+    from lyra.config import Config, RootConfig, StorageConfig
+    from lyra.db import open_store
+    from lyra.organize import undo_organize_op
+
+    lib = tmp_path / "lib"
+    (lib / "a").mkdir(parents=True)
+    (lib / "b").mkdir(parents=True)
+    (lib / "a" / "歌.flac").write_bytes(b"x" * 10)
+    (lib / "b" / "歌.flac").write_bytes(b"x" * 10)
+    cfg = Config(
+        roots=[RootConfig(name="lib", path=str(lib))],
+        storage=StorageConfig(data_dir=str(tmp_path / "data")),
+    )
+    store = open_store(cfg.storage.resolved_data_dir)
+    root_id = store.upsert_root(
+        name="lib", role="library", path=str(lib), enabled=True, read_only=False,
+    )
+    store.upsert_location(
+        root_id=root_id, rel_path="a/歌.flac", size=10, mtime=1.0,
+    )
+    store.upsert_location(
+        root_id=root_id, rel_path="b/歌.flac", size=10, mtime=2.0,
+    )
+    store.replace_dedupe_groups(root_id, [{
+        "group_key": "k5", "kind": "exact",
+        "keep_rel_path": "a/歌.flac", "keep_reason": "",
+        "items": [_entry("a/歌.flac"), _entry("b/歌.flac")],
+    }])
+    clean_exact_duplicates(store, cfg, cfg.roots)
+    assert not (lib / "b" / "歌.flac").is_file()
+
+    row = store.conn.execute(
+        "SELECT o.*, r.name AS root_name FROM organize_ops o "
+        "JOIN roots r ON r.id=o.root_id WHERE o.op_kind='delete' "
+        "AND o.undone_at IS NULL LIMIT 1"
+    ).fetchone()
+    ok, _msg = undo_organize_op(store, cfg, row)
+    assert ok
+    assert (lib / "b" / "歌.flac").is_file(), "文件应还原"
+    restored = store.conn.execute(
+        "SELECT id FROM locations WHERE rel_path=?", ("b/歌.flac",)
+    ).fetchone()
+    assert restored is not None, "位置行应重新登记"
+    store.close()

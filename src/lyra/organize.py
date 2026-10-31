@@ -1033,6 +1033,20 @@ def undo_organize_op(store: StateStore, cfg: Config, row: Any) -> tuple[bool, st
                     shutil.move(str(lrc_trash), str(lrc_target))
                 except OSError:
                     pass
+        # 位置行在删除时被一并清掉了（否则界面显示「缺歌词」）。还原文件
+        # 时也要把它登记回来，否则这首歌在界面上仍是「不存在」，
+        # 歌词观察与暂存提案也无处可挂。
+        try:
+            root_id = store.get_root_id(str(row["root_name"]))
+            if root_id is not None:
+                restored = base / str(row["old_rel_path"])
+                stat = restored.stat()
+                store.upsert_location(
+                    root_id=root_id, rel_path=str(row["old_rel_path"]),
+                    size=int(stat.st_size), mtime=int(stat.st_mtime),
+                )
+        except (OSError, ValueError):
+            pass
         store.mark_organize_undone(int(row["id"]))
         return True, f"已从回收站还原 {row['old_rel_path']}"
 

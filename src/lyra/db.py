@@ -2489,6 +2489,16 @@ class StateStore:
         self.conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
         self.conn.commit()
 
+    def delete_location(self, location_id: int) -> None:
+        """删除一个位置行及其附属数据（文件已被移走时用）。
+
+        文件移进回收站后，位置行必须一起删——留着它，界面就会显示
+        「文件还在但缺歌词」，下次扫描还会把它当成缺失文件重新登记。
+        附属表都是 ON DELETE CASCADE，会跟着一起清掉。
+        """
+        self.conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
+        self.conn.commit()
+
     def _drop_duplicate_children(
         self, table: str, old_location_id: int, keep_location_id: int
     ) -> None:
