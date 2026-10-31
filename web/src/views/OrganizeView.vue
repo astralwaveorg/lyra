@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api } from '@/api/client'
+import { ApiError, api } from '@/api/client'
 import type {
   CleanupResult,
   DedupeGroup,
@@ -265,7 +265,27 @@ async function execute() {
     plan.value = null
     await loadDirs()
   } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '整理失败')
+    // 监控正在写文件时，人工请求会等一会儿再拿写租约；拿不到就返回 409。
+    // 这不是失败——等监控让出后重试即可。
+    if (err instanceof ApiError && err.status === 409) {
+      ElMessage.warning('监控正在处理文件，稍后自动重试…')
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 8000))
+        const planId = plan.value?.plan_id
+        if (!planId) throw new Error('预览已失效，请重新生成')
+        result.value = await api.organizeExecute({
+          plan_id: planId,
+          dirs: selectedDirs.value,
+          resolutions: conflictDecisions.value,
+        })
+      } catch (retryErr) {
+        ElMessage.error(
+          retryErr instanceof Error ? retryErr.message : '整理失败，请稍后重试',
+        )
+      }
+    } else {
+      ElMessage.error(err instanceof Error ? err.message : '整理失败')
+    }
   } finally {
     executing.value = false
   }

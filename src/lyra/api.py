@@ -790,8 +790,14 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
 
     # -- 文件管理（删除 / 替换）------------------------------------------
 
-    def manual_lease(wait_seconds: float = 20.0):
-        """给「人工点一下就改文件」的接口套上写租约。"""
+    def manual_lease(wait_seconds: float = 90.0):
+        """给「人工点一下就改文件」的接口套上写租约。
+
+        等待时间从 20 秒放宽到 90 秒：监控一批要处理 45 个文件（5~7 分钟），
+        它在**每首歌的边界**检查有没有人在等并让出，但当前那首歌的网络
+        请求本身可能就要 20~30 秒。20 秒的等待几乎必然落空——用户点
+        「执行 187 项移动」得到一句「写入任务仍在运行」，什么也没发生。
+        """
         def deco(fn):
             @functools.wraps(fn)
             def wrapper(*args, **kwargs):
@@ -800,7 +806,10 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                     if not lease["acquired"]:
                         raise HTTPException(
                             status_code=409,
-                            detail=f"写入任务仍在运行（{lease['holder']}），请稍后重试",
+                            detail=(
+                                f"写入任务仍在运行（{lease['holder']}），"
+                                "监控会在当前文件处理完后让出，稍后重试即可"
+                            ),
                         )
                     return fn(*args, **kwargs)
             return wrapper
