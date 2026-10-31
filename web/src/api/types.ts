@@ -764,6 +764,8 @@ export type OrganizeResult = {
   dirs_trashed: number
   /** 因用户选择「替换」而被移入回收站的文件数 */
   replaced?: number
+  /** 因自动合并（音频相同）而被移入回收站的文件数 */
+  discarded?: number
   /** 未表态、保持原样的冲突数 */
   skipped_conflicts?: number
   ops: number[]

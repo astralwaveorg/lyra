@@ -196,24 +196,57 @@ async function preview() {
   }
 }
 
-/** 冲突的逐条处理：原相对路径 → 'replace'。缺省一律保留现有、跳过。 */
-const conflictDecisions = ref<Record<string, 'skip' | 'replace'>>({})
+/**
+ * 冲突的逐条处理：原相对路径 → 决议。
+ *
+ * - `replace`：目标进回收站，源文件放过去；
+ * - `discard`：源文件进回收站，保留目标；
+ * - 缺省（不留决议）：执行时比对音频哈希——同一份录音的副本自动合并，
+ *   不同的才留给人。
+ *
+ * **两个选项都让冲突消失**：只跳过不动的话，源文件留在原处，下一次
+ * 预览还是同一条冲突，待办里的条目永远消不掉。
+ */
+type ConflictDecision = 'replace' | 'discard'
+
+const conflictDecisions = ref<Record<string, ConflictDecision>>({})
 
 const replaceCount = computed(
   () => Object.values(conflictDecisions.value).filter((v) => v === 'replace').length,
 )
+const discardCount = computed(
+  () => Object.values(conflictDecisions.value).filter((v) => v === 'discard').length,
+)
 
-function decideConflict(rel: string, decision: 'skip' | 'replace') {
-  conflictDecisions.value = { ...conflictDecisions.value, [rel]: decision }
+function decideConflict(rel: string, decision: ConflictDecision | null) {
+  const next = { ...conflictDecisions.value }
+  if (decision === null) {
+    // 「自动判断」= 不表态，执行时按音频哈希决定
+    delete next[rel]
+  } else {
+    next[rel] = decision
+  }
+  conflictDecisions.value = next
 }
 
-function decideAllConflicts(decision: 'skip' | 'replace') {
+function decideAllConflicts(decision: ConflictDecision) {
   if (!plan.value) return
-  const next: Record<string, 'skip' | 'replace'> = {}
+  const next: Record<string, ConflictDecision> = {}
   for (const item of plan.value.conflicts) {
     next[item.old_rel_path] = decision
   }
   conflictDecisions.value = next
+}
+
+/** 两个文件的体量差异——判断「留哪一个」最直接的依据。 */
+function sizeDiff(item: OrganizeMove): string {
+  const source = item.size ?? 0
+  const target = item.target_info?.size ?? 0
+  if (!source || !target) return ''
+  const diff = target - source
+  if (diff === 0) return '两边一样大'
+  const bigger = diff > 0 ? '目标' : '来源'
+  return `${bigger}大 ${fmtBytes(Math.abs(diff))}`
 }
 
 /** 只有「目标已存在」的冲突才能替换：两个源映射到同一目标时没有可替换的对象。 */
@@ -224,14 +257,14 @@ function canReplace(item: OrganizeMove): boolean {
 async function execute() {
   if (!plan.value) return
   const summary = plan.value.summary
-  const replaceText = replaceCount.value
-    ? ` ${replaceCount.value} 个冲突会用整理后的文件替换已有文件（被替换的文件进回收站，可还原）。`
-    : ''
+  const decisionText = [
+    discardCount.value ? `${discardCount.value} 个冲突丢弃来源文件` : '',
+    replaceCount.value ? `${replaceCount.value} 个冲突用来源替换目标` : '',
+  ].filter(Boolean).join('，')
   try {
     await ElMessageBox.confirm(
       `将移动 ${summary.move} 个文件，并清理 ${selectedDirs.value.length} 个空目录或移动后变空的目录。` +
-        `${summary.conflict ? ` ${summary.conflict} 个冲突会跳过` : ''}。` +
-        replaceText +
+        (summary.conflict ? ` ${summary.conflict} 个冲突：${decisionText || '自动判断（音频相同就合并）'}。` : '') +
         '移动不复制音频，移动后变空的旧目录会一并移除，所有操作都可撤销。',
       '确认整理',
       {
@@ -251,9 +284,12 @@ async function execute() {
       resolutions: conflictDecisions.value,
     })
     if (result.value.ok) {
-      const extra = result.value.skipped_conflicts
-        ? `，${result.value.skipped_conflicts} 个冲突保留原样`
-        : ''
+      const parts = [
+        result.value.replaced ? `替换 ${result.value.replaced} 个` : '',
+        result.value.discarded ? `合并 ${result.value.discarded} 个` : '',
+        result.value.skipped_conflicts ? `${result.value.skipped_conflicts} 个待人工` : '',
+      ].filter(Boolean)
+      const extra = parts.length ? `，${parts.join('，')}` : ''
       ElMessage.success(`已移动 ${result.value.moved} 个文件${extra}`)
     } else {
       ElMessage.warning(
@@ -699,6 +735,9 @@ onMounted(async () => {
         <template v-if="result.replaced">
           ，替换 {{ result.replaced }} 个冲突目标
         </template>
+        <template v-if="result.discarded">
+          ，合并 {{ result.discarded }} 个重复副本
+        </template>
         <template v-if="result.skipped_conflicts">
           ，{{ result.skipped_conflicts }} 个冲突保留原样
         </template>
@@ -725,10 +764,12 @@ onMounted(async () => {
       <section v-if="plan.conflicts.length" class="card">
         <div class="card-head">
           <span class="card-title">目标冲突</span>
-          <span class="card-hint">逐条选择怎么处理，默认保留已有文件、跳过移动</span>
+          <span class="card-hint">
+            目标位置已有文件。选一个处理方式，两个选项都会清掉这条冲突
+          </span>
           <div class="card-actions">
-            <el-button size="small" text @click="decideAllConflicts('skip')">
-              全部保留
+            <el-button size="small" text @click="decideAllConflicts('discard')">
+              全部丢弃来源
             </el-button>
             <el-button size="small" text @click="decideAllConflicts('replace')">
               全部替换
@@ -740,7 +781,10 @@ onMounted(async () => {
             v-for="item in plan.conflicts"
             :key="item.old_rel_path"
             class="conflict-item"
-            :class="{ replacing: conflictDecisions[item.old_rel_path] === 'replace' }"
+            :class="{
+              replacing: conflictDecisions[item.old_rel_path] === 'replace',
+              discarding: conflictDecisions[item.old_rel_path] === 'discard',
+            }"
           >
             <div class="conflict-main">
               <div class="conflict-paths">
@@ -749,23 +793,32 @@ onMounted(async () => {
                 <span class="path ellipsis muted">{{ item.new_rel_path }}</span>
               </div>
               <div class="conflict-meta">
-                <span class="cell-meta">{{ item.reason }}</span>
-                <span v-if="canReplace(item)" class="cell-meta">
-                  目标已有 {{ fmtBytes(item.target_info?.size) }}
+                <span class="cell-meta">
+                  来源 {{ fmtBytes(item.size) }}
+                  <template v-if="item.target_info?.size">
+                    · 目标 {{ fmtBytes(item.target_info.size) }}
+                  </template>
+                  <template v-if="sizeDiff(item)"> · {{ sizeDiff(item) }}</template>
                 </span>
-                <span v-else class="cell-meta">两条路径会撞在一起，只能跳过其中一条</span>
+                <span v-if="!canReplace(item)" class="cell-meta">
+                  两条来源会撞到同一目标，只能丢弃其中一条
+                </span>
               </div>
             </div>
             <div class="conflict-actions">
               <el-radio-group
-                :model-value="conflictDecisions[item.old_rel_path] ?? 'skip'"
+                :model-value="conflictDecisions[item.old_rel_path] ?? 'auto'"
                 size="small"
                 @update:model-value="
                   (v: string | number | boolean) =>
-                    decideConflict(item.old_rel_path, v === 'replace' ? 'replace' : 'skip')
+                    decideConflict(
+                      item.old_rel_path,
+                      v === 'replace' || v === 'discard' ? v : null,
+                    )
                 "
               >
-                <el-radio-button value="skip">保留已有</el-radio-button>
+                <el-radio-button value="auto">自动判断</el-radio-button>
+                <el-radio-button value="discard">丢弃来源</el-radio-button>
                 <el-radio-button value="replace" :disabled="!canReplace(item)">
                   用它替换
                 </el-radio-button>
@@ -774,7 +827,9 @@ onMounted(async () => {
           </div>
         </div>
         <div class="cell-meta conflict-foot">
-          「用它替换」会把目标位置的文件移进回收站（可还原），再把整理后的文件放过去。
+          丢弃来源：把来源文件移进回收站，保留目标文件。用它替换：把目标文件移进回收站，
+          再把来源文件放过去。两种都可在「回收站」还原。
+          「自动判断」会在两份音频完全相同时自动合并，不同则保留现状等你决定。
         </div>
       </section>
 

@@ -2493,8 +2493,8 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         raw_resolutions = payload.get("resolutions")
         if isinstance(raw_resolutions, dict):
             for key, value in raw_resolutions.items():
-                if value == "replace":
-                    resolutions[str(key)] = "replace"
+                if value in ("replace", "discard"):
+                    resolutions[str(key)] = value
         result = execute_plan(
             state, cfg, root, row,
             dirs=[str(d) for d in dirs] if isinstance(dirs, list) else [],

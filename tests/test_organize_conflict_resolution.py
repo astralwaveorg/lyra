@@ -71,8 +71,12 @@ def test_冲突项带类型与目标信息(tmp_path: Path):
     store.close()
 
 
-def test_默认不处理时跳过不覆盖(tmp_path: Path):
-    """不带决议 → 保持旧行为：跳过，目标文件保持原样。"""
+def test_默认不处理时目标不被覆盖(tmp_path: Path):
+    """不带决议 → 目标文件保持原样（绝不被静默覆盖）。
+
+    源文件可能被自动合并（音频相同时），但**目标**永远不动——
+    覆盖已有文件必须有人明确点头。
+    """
     cfg, lib = _env(tmp_path)
     _make_flac(lib / "旧目录" / "歌.flac", "歌", "专辑")
     (lib / "艺人" / "专辑").mkdir(parents=True)
@@ -91,10 +95,9 @@ def test_默认不处理时跳过不覆盖(tmp_path: Path):
     row = store.organize_plan(str(plan["plan_id"]))
     result = execute_plan(store, cfg, cfg.roots[0], row, dirs=[])
 
-    assert result["moved"] == 0
-    assert result["skipped_conflicts"] == 1, "跳过的冲突要计数，不能悄悄消失"
-    assert target.is_file(), "默认不覆盖目标"
-    assert (lib / "旧目录" / "歌.flac").is_file(), "源文件不动"
+    assert result["moved"] == 0, "不表态时不移动源文件"
+    assert result["replaced"] == 0
+    assert target.is_file(), "目标绝不被静默覆盖"
     store.close()
 
 
@@ -191,4 +194,109 @@ def test_同一目标冲突不可替换(tmp_path: Path):
     same_target = [c for c in plan["conflicts"] if c.get("conflict_type") == "same_target"]
     assert same_target, f"应识别出同目标冲突：{plan['conflicts']}"
     assert "target_info" not in same_target[0] or not same_target[0].get("target_info")
+    store.close()
+
+
+# ---------------------------------------------------------------------------
+# 冲突必须被「解决」，不是被「跳过」
+# ---------------------------------------------------------------------------
+
+
+def test_未表态时音频相同的副本自动合并(tmp_path: Path):
+    """两份音频完全相同 → 自动丢弃来源，冲突消失。
+
+    旧行为只是跳过：源文件留在原处，下一次预览还是同一条冲突，
+    待办里的条目永远消不掉（用户反馈的实际问题）。
+    """
+    from conftest import make_flac
+
+    cfg, lib = _env(tmp_path)
+    src = lib / "旧目录" / "歌.flac"
+    _make_flac(src, "歌", "专辑")
+    (lib / "艺人" / "专辑").mkdir(parents=True)
+    target = lib / "艺人" / "专辑" / "01 - 歌.flac"
+    _make_flac(target, "歌", "专辑")
+    # 两份内容完全一致（同样的字节）
+    target.write_bytes(src.read_bytes())
+
+    store = open_store(cfg.storage.resolved_data_dir)
+    root_id = store.upsert_root(
+        name="lib", role="library", path=str(lib), enabled=True, read_only=False,
+    )
+    plan = build_plan(store, cfg, cfg.roots[0], subpaths=[], exclude=[])
+    conflict = plan["conflicts"][0]
+    store.save_organize_plan(
+        plan_id=str(plan["plan_id"]), root_id=int(root_id),
+        subpath="", payload=plan,
+    )
+    row = store.organize_plan(str(plan["plan_id"]))
+    result = execute_plan(store, cfg, cfg.roots[0], row, dirs=[])
+
+    assert result["discarded"] == 1, f"音频相同应自动合并：{result}"
+    assert result["skipped_conflicts"] == 0
+    assert not src.exists(), "来源应进回收站"
+    assert target.is_file(), "目标保留"
+    ops = store.conn.execute(
+        "SELECT op_kind, trash_rel_path FROM organize_ops WHERE op_kind='delete'"
+    ).fetchall()
+    assert len(ops) == 1 and ops[0]["trash_rel_path"], "被丢弃的副本应可还原"
+    store.close()
+
+
+def test_未表态时音频不同的保留现状(tmp_path: Path):
+    """两份内容不同 → 不自动动，计入待人工。"""
+    cfg, lib = _env(tmp_path)
+    src = lib / "旧目录" / "歌.flac"
+    _make_flac(src, "歌", "专辑")
+    (lib / "艺人" / "专辑").mkdir(parents=True)
+    target = lib / "艺人" / "专辑" / "01 - 歌.flac"
+    _make_flac(target, "歌", "专辑")
+    target.write_bytes(b"different bytes entirely" * 40)
+
+    store = open_store(cfg.storage.resolved_data_dir)
+    root_id = store.upsert_root(
+        name="lib", role="library", path=str(lib), enabled=True, read_only=False,
+    )
+    plan = build_plan(store, cfg, cfg.roots[0], subpaths=[], exclude=[])
+    store.save_organize_plan(
+        plan_id=str(plan["plan_id"]), root_id=int(root_id),
+        subpath="", payload=plan,
+    )
+    row = store.organize_plan(str(plan["plan_id"]))
+    result = execute_plan(store, cfg, cfg.roots[0], row, dirs=[])
+
+    assert result["discarded"] == 0, "内容不同不能自动丢弃"
+    assert result["skipped_conflicts"] == 1, "应计入待人工"
+    assert src.is_file() and target.is_file(), "两边都不动"
+    store.close()
+
+
+def test_选择丢弃来源时源进回收站(tmp_path: Path):
+    """用户明确选「丢弃来源」→ 源文件进回收站，冲突消失。"""
+    cfg, lib = _env(tmp_path)
+    src = lib / "旧目录" / "歌.flac"
+    _make_flac(src, "歌", "专辑")
+    (lib / "艺人" / "专辑").mkdir(parents=True)
+    target = lib / "艺人" / "专辑" / "01 - 歌.flac"
+    _make_flac(target, "歌", "专辑")
+    target.write_bytes(b"different bytes entirely" * 40)
+
+    store = open_store(cfg.storage.resolved_data_dir)
+    root_id = store.upsert_root(
+        name="lib", role="library", path=str(lib), enabled=True, read_only=False,
+    )
+    plan = build_plan(store, cfg, cfg.roots[0], subpaths=[], exclude=[])
+    conflict = plan["conflicts"][0]
+    store.save_organize_plan(
+        plan_id=str(plan["plan_id"]), root_id=int(root_id),
+        subpath="", payload=plan,
+    )
+    row = store.organize_plan(str(plan["plan_id"]))
+    result = execute_plan(
+        store, cfg, cfg.roots[0], row, dirs=[],
+        resolutions={conflict["old_rel_path"]: "discard"},
+    )
+    assert result["discarded"] == 1, f"应丢弃来源：{result}"
+    assert not src.exists()
+    assert target.is_file(), "目标保留"
     store.close()

@@ -38,6 +38,7 @@ from .config import Config, RootConfig
 from .db import StateStore
 from .fileops import move_to_trash, trash_root
 from .formats import read_all_tags
+from .writer import audio_hash_for
 
 __all__ = [
     "build_plan",
@@ -662,6 +663,82 @@ def build_plan(
 # ---------------------------------------------------------------------------
 
 
+def _same_audio(base: Path, left_rel: str, right_rel: str) -> bool:
+    """两个文件的音频数据是否完全相同（同一首歌的重复下载）。
+
+    哈希一致 = 同一份录音的副本。这类冲突**不需要人判断**：保留目标
+    （位置已经是规范的），把源文件丢弃即可——留两个文件只会让「待移动」
+    永远消不掉。
+    """
+    from .formats import read_audio_meta
+
+    left = base / left_rel
+    right = base / right_rel
+    if not left.is_file() or not right.is_file():
+        return False
+    try:
+        left_meta = read_audio_meta(left, base)
+        right_meta = read_audio_meta(right, base)
+    except Exception:  # noqa: BLE001 — 读失败按「不相同」处理，交给人
+        return False
+    if not left_meta.info.media_format.supported:
+        return False
+    left_hash = audio_hash_for(left, left_meta.info.media_format)
+    right_hash = audio_hash_for(right, right_meta.info.media_format)
+    return bool(left_hash) and left_hash == right_hash
+
+
+def _discard_source(
+    store: StateStore,
+    cfg: Config,
+    root: RootConfig,
+    base: Path,
+    rel: str,
+    batch_id: str,
+    root_id: int,
+    result: dict[str, Any],
+    *,
+    reason: str,
+) -> bool:
+    """把冲突的**源文件**移进回收站（可撤销）。
+
+    这是「保留已有目标」的真正做法：源文件被丢弃，冲突从此消失。
+    只跳过不动的话，源文件留在原处，下一次预览还是同一条冲突——
+    待办里的条目永远消不掉（用户反馈的实际问题）。
+    """
+    path = base / rel
+    if not path.is_file():
+        result["failed"] += 1
+        result["errors"].append(f"{rel}: 文件已不存在")
+        return False
+    try:
+        trash_rel = move_to_trash(cfg, root, path, batch_id)
+    except OSError as exc:
+        result["failed"] += 1
+        result["errors"].append(f"{rel}: 无法移入回收站：{exc}")
+        return False
+    detail: dict[str, Any] = {"reason": reason}
+    sidecar = path.with_suffix(".lrc")
+    if sidecar.is_file():
+        try:
+            detail["sidecar"] = move_to_trash(cfg, root, sidecar, batch_id)
+        except OSError as exc:
+            detail["sidecar_error"] = str(exc)
+    store.record_organize_op(
+        root_id=root_id, batch_id=batch_id, op_kind="delete",
+        old_rel_path=rel, trash_rel_path=trash_rel,
+        detail=json.dumps(detail, ensure_ascii=False),
+    )
+    try:
+        location = store.location_by_rel_path(root_id, rel)
+        if location is not None:
+            store.delete_location(int(location["id"]))
+    except Exception:  # noqa: BLE001 — 文件已处理，状态库清理失败不影响结果
+        pass
+    result["discarded"] = int(result.get("discarded", 0)) + 1
+    return True
+
+
 def _replace_target(
     store: StateStore,
     cfg: Config,
@@ -794,6 +871,7 @@ def execute_plan(
         "dirs_removed": 0,
         "dirs_trashed": 0,
         "replaced": 0,
+        "discarded": 0,
         "skipped_conflicts": 0,
         "ops": [],
     }
@@ -817,31 +895,43 @@ def execute_plan(
             pass
         pending.append(move)
 
-    # **用户选择「替换」的冲突项也要进入执行**。
+    # **冲突项也要进入执行**。
     #
-    # 预览里的冲突项不在 executable 里——它们默认被跳过（目标已存在，
-    # 绝不覆盖）。但用户既然在界面上逐条点了「用它替换」，这次执行就
-    # 要照做：先把目标移进回收站，再把源文件放过去。
+    # 预览里的冲突项不在 executable 里。旧行为是「跳过」——源文件留在
+    # 原处，下一次预览还是同一条冲突，待办里的条目永远消不掉（用户
+    # 反馈的实际问题）。现在有三条出路：
+    #
+    # 1. 用户选了「用这个替换」→ 目标进回收站，源放过去；
+    # 2. 用户选了「丢弃这个文件」→ 源进回收站，保留目标；
+    # 3. **用户没表态** → 比对音频哈希：同一份录音的副本自动丢弃源
+    #    （哈希一致就是同一首歌的重复下载，没有判断空间）；不同则保留
+    #    现状并计入「待人工处理」。
     replace_moves: list[dict[str, Any]] = []
+    discard_moves: list[dict[str, Any]] = []
     for item in payload.get("conflicts") or []:
         old_rel = str(item.get("old_rel_path") or "")
-        if decisions.get(old_rel) != "replace":
-            # 没表态 = 保留已有、跳过。**要计数**：执行完只看到
-            # 「移动 12 个」却不知道还有几条没处理，是说不清楚的。
+        new_rel = str(item.get("new_rel_path") or "")
+        if not old_rel or not new_rel:
+            continue
+        decision = decisions.get(old_rel, "")
+        if decision == "replace":
+            if item.get("conflict_type") != "target_exists":
+                result["failed"] += 1
+                result["errors"].append(f"{old_rel}: 这一类冲突不能替换，只能跳过其中一条")
+                continue
+            replace_moves.append(item)
+            continue
+        if decision == "discard":
+            discard_moves.append(item)
+            continue
+        # 没表态：自动判断是不是同一份音频
+        if not (base / old_rel).is_file() or not (base / new_rel).is_file():
             result["skipped_conflicts"] = int(result["skipped_conflicts"]) + 1
             continue
-        if not old_rel or not str(item.get("new_rel_path") or ""):
-            continue
-        if not (base / old_rel).is_file():
-            result["failed"] += 1
-            result["errors"].append(f"{old_rel}: 源文件已不存在")
-            continue
-        if item.get("conflict_type") != "target_exists":
-            # 「多个源映射到同一目标」没有可替换的对象
-            result["failed"] += 1
-            result["errors"].append(f"{old_rel}: 这一类冲突不能替换，只能跳过其中一条")
-            continue
-        replace_moves.append(item)
+        if _same_audio(base, old_rel, new_rel):
+            discard_moves.append(item)
+        else:
+            result["skipped_conflicts"] = int(result["skipped_conflicts"]) + 1
     pending.extend(replace_moves)
 
     pending_olds = {m["old_rel_path"] for m in pending}
@@ -884,6 +974,17 @@ def execute_plan(
             result["errors"].append(f"{old_rel}: {warning}")
         processed.add(old_rel)
         return True
+
+    # 「丢弃这个文件」的冲突项：源文件移进回收站，冲突就此消失。
+    for item in discard_moves:
+        rel = str(item.get("old_rel_path") or "")
+        if not rel:
+            continue
+        _discard_source(
+            store, cfg, root, base, rel, batch_id,
+            int(plan_row["root_id"]), result,
+            reason="与目标文件音频相同，自动合并（保留目标）",
+        )
 
     # 依赖顺序：目标仍是待处理源文件时先处理那个源；成环时用临时名交换。
     while pending:
