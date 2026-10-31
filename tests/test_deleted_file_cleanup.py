@@ -154,3 +154,39 @@ def test_删除事件立刻标记位置缺失(tmp_path: Path):
     ).fetchone()
     assert row["missing_since"] is not None
     store.close()
+
+
+def test_事件处理抛异常不会杀死监听线程(tmp_path: Path):
+    """handler 抛异常时必须被兜住。
+
+    watchdog 的 `dispatch_events` 不捕获 handler 的异常——一个事件让处理
+    抛错，emitter 线程就**静默死掉**：inotify 的 fd 还在，但再也不会派发
+    任何事件。现场症状是「新建的文件永远不被处理、删除的文件永远不被
+    发现」，而日志里什么异常都看不到。
+    """
+    from lyra.config import WatchConfig
+    from lyra.watcher import LibraryWatcher
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    cfg = Config(
+        roots=[RootConfig(name="lib", path=str(lib))],
+        storage=StorageConfig(data_dir=str(tmp_path / "data")),
+        watch=WatchConfig(stable_seconds=1, stable_samples=1),
+    )
+    watcher = LibraryWatcher(cfg, cfg.roots[0], lambda paths: None)
+
+    class _Bad:
+        event_type = "created"
+        is_directory = False
+        src_path = str(lib / "x.flac")
+        dest_path = ""
+
+    def _boom(_event):
+        raise RuntimeError("模拟处理失败")
+
+    watcher._on_event = _boom  # type: ignore[method-assign]
+    from lyra.watcher import _Collector
+
+    collector = _Collector(watcher)
+    collector.on_any_event(_Bad())  # 不应抛出异常

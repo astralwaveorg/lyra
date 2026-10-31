@@ -1361,6 +1361,8 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     # 它们没了。实际用户移动/删除了文件，界面要等到第二天全量核对才变。
     # 204 首的审计约 1 秒，30 秒一次可以接受。
     _STATE_SYNC_SECONDS = 60.0
+    # 监听线程健康检查：每 5 分钟确认一次，死了就重启
+    _OBSERVER_CHECK_SECONDS = 300.0
     _OBSERVATION_PRUNE_SECONDS = 86400.0
     # 异名 .lrc 的自动改名：播放器只找 <音频同名>.lrc，Late 一天就等于
     # 这首歌「没有歌词」。扫描 3568 个文件约 1 秒，5 分钟一次足够。
@@ -1385,6 +1387,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     last_cover_repair = 0.0
     last_name_repair = 0.0
     last_state_sync = 0.0
+    last_observer_check = 0.0
     last_policy_check = 0.0
     last_network_check = 0.0
     last_probe = 0.0
@@ -1679,6 +1682,17 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 _threading.Thread(
                     target=_dedupe_auto_worker, daemon=True, name="lyra-dedupe"
                 ).start()
+            # 监听线程自愈：watchdog 的 emitter 线程可能已死（fd 还在，
+            # 但不再派发事件）。不检查的话，监听会一直失明到进程重启。
+            if now - last_observer_check >= _OBSERVER_CHECK_SECONDS:
+                last_observer_check = now
+                for watcher in watchers:
+                    try:
+                        watcher.restart_observer()
+                    except Exception as exc:  # noqa: BLE001 — 自愈失败不影响主流程
+                        print(f"[watch] 重启监听失败 {type(exc).__name__}: {exc}",
+                              flush=True)
+
             if now - last_state_sync < _STATE_SYNC_SECONDS:
                 continue
             last_state_sync = now

@@ -163,7 +163,20 @@ class _Collector(FileSystemEventHandler):
         self._watcher = watcher
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        self._watcher._on_event(event)  # noqa: SLF001 — 同模块协作
+        # **绝不让异常逃出去。**
+        #
+        # watchdog 的 `dispatch_events` 不捕获 handler 的异常——一个事件
+        # 让处理抛错，emitter 线程就**静默死掉**：inotify 的 fd 还在，
+        # 但再也不会派发任何事件。现场症状是「新建的文件永远不被处理、
+        # 删除的文件永远不被发现」，而日志里什么异常都看不到。
+        #
+        # 这里兜住异常并记一笔，emitter 线程就能一直活着。
+        try:
+            self._watcher._on_event(event)  # noqa: SLF001 — 同模块协作
+        except Exception as exc:  # noqa: BLE001 — 单个事件不能杀死监听线程
+            self._watcher._log(
+                f"[watch] 处理文件事件失败（{type(exc).__name__}: {exc}），已忽略"
+            )
 
 
 #: 只关心**会改变内容或位置**的事件。
@@ -424,6 +437,24 @@ class LibraryWatcher:
             return
         self._observer = observer
         self._log(f"[watch] 已递归监听 {self.base}")
+
+    def observer_alive(self) -> bool:
+        """监听线程是否还在工作。
+
+        watchdog 的 emitter 线程一旦因 handler 异常而死，fd 还在但不再
+        派发事件——从外面看「一切正常」，实际监听已经失明。
+        """
+        observer = self._observer
+        return observer is not None and observer.is_alive()
+
+    def restart_observer(self) -> bool:
+        """重建监听。返回是否重建成功。"""
+        if self.observer_alive():
+            return False
+        self._log("[watch] 监听线程已停止，正在重启")
+        self.stop()
+        self.start()
+        return True
 
     def _degrade(self, reason: str) -> None:
         self.stats.degraded = True
