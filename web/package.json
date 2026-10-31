@@ -1,7 +1,7 @@
 {
   "name": "lyra-web",
   "private": true,
-  "version": "2.2.25",
+  "version": "2.2.26",
   "type": "module",
   "scripts": {
     "dev": "vite",
