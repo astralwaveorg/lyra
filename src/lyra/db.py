@@ -2425,11 +2425,104 @@ class StateStore:
 
         不这样做的话，下次扫描会把它当成「新文件」而把旧路径当成「消失」，
         负缓存与歌词观察状态都会错位。
+
+        **目标路径可能已经有行**：整理把文件从脏目录（如
+        `G.E.M. 鄧紫棋; G.E.M.鄧紫棋/…`）移到规范目录时，扫描早就为
+        新路径登记过位置行——直接改路径会撞 `UNIQUE(root_id, rel_path)`
+        约束，整个整理接口报 500（旧实现正是如此）。
+
+        此时的正确处理是**合并**：新路径的行是「这个文件在磁盘上确实
+        存在」的记录（存活），本次移动的旧行携带的是同一首歌的历史
+        状态（歌词观察、暂存、标签提案）。把旧行的附属数据迁到存活行、
+        删除旧行，既保住状态又不留重复。
         """
+        now = time.time()
+        row = self.conn.execute(
+            "SELECT root_id FROM locations WHERE id=?", (location_id,)
+        ).fetchone()
+        if row is None:
+            return
+        root_id = int(row["root_id"])
+        existing = self.conn.execute(
+            "SELECT id FROM locations WHERE root_id=? AND rel_path=? AND id<>?",
+            (root_id, new_rel_path, location_id),
+        ).fetchone()
+        if existing is None:
+            self.conn.execute(
+                "UPDATE locations SET rel_path=?, missing_since=NULL, "
+                "last_seen_at=? WHERE id=?",
+                (new_rel_path, now, location_id),
+            )
+            return
+
+        # 合并：附属数据全部 ON DELETE CASCADE，删旧行会带走它们，
+        # 所以先把它们迁到存活行，再删旧行。
+        keep_id = int(existing["id"])
         self.conn.execute(
-            "UPDATE locations SET rel_path=?, missing_since=NULL, last_seen_at=? WHERE id=?",
-            (new_rel_path, time.time(), location_id),
+            "UPDATE locations SET missing_since=NULL, last_seen_at=? WHERE id=?",
+            (now, keep_id),
         )
+        for table in (
+            "lyric_observations", "staged_lyrics", "tag_proposals",
+            "resolutions", "approvals", "identities", "assets",
+        ):
+            try:
+                self.conn.execute(
+                    f"UPDATE {table} SET location_id=? WHERE location_id=?",
+                    (keep_id, location_id),
+                )
+            except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
+                # 目标行已有同键附属数据（如两条内容相同的暂存歌词）：
+                # 直接迁会撞唯一约束。此时**保留目标行的那份**，删掉
+                # 旧行的重复份——两者指向同一首歌的同一份内容，
+                # 留一份就够，删的是重复不是数据。
+                if "UNIQUE" not in str(exc):
+                    continue
+                self._drop_duplicate_children(table, location_id, keep_id)
+                try:
+                    self.conn.execute(
+                        f"UPDATE {table} SET location_id=? WHERE location_id=?",
+                        (keep_id, location_id),
+                    )
+                except (sqlite3.OperationalError, sqlite3.IntegrityError):
+                    continue
+        self.conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
+        self.conn.commit()
+
+    def _drop_duplicate_children(
+        self, table: str, old_location_id: int, keep_location_id: int
+    ) -> None:
+        """删掉旧位置行里与存活行重复的附属记录。
+
+        判定「重复」按各表的自然键：暂存歌词按 content_hash、标签提案
+        按 location（每位置一条）、歌词观察按 (location, 观测时间)、
+        其余按 location 唯一。
+        """
+        try:
+            if table == "staged_lyrics":
+                self.conn.execute(
+                    "DELETE FROM staged_lyrics WHERE location_id=? AND content_hash IN "
+                    "(SELECT content_hash FROM staged_lyrics WHERE location_id=?)",
+                    (old_location_id, keep_location_id),
+                )
+            elif table == "tag_proposals":
+                self.conn.execute(
+                    "DELETE FROM tag_proposals WHERE location_id=?",
+                    (old_location_id,),
+                )
+            elif table == "lyric_observations":
+                self.conn.execute(
+                    "DELETE FROM lyric_observations WHERE location_id=? AND id NOT IN "
+                    "(SELECT MAX(id) FROM lyric_observations "
+                    " WHERE location_id=? GROUP BY embedded_state, sidecar_state)",
+                    (old_location_id, keep_location_id),
+                )
+            else:
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE location_id=?", (old_location_id,)
+                )
+        except sqlite3.OperationalError:
+            pass
 
     # -- 曲库整理：音频索引 / 重复组 / 操作日志 ---------------------------
 

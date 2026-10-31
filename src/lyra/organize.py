@@ -65,14 +65,37 @@ _NUMBER = re.compile(r"^\s*(\d+)")
 # ---------------------------------------------------------------------------
 
 
+def _name_key(text: str) -> str:
+    """人名/专辑名的比较键：简繁折叠 + 去空白 + 小写。
+
+    只用于**比较**（去重），绝不写回文件。
+    """
+    from .match import normalize_text
+
+    return re.sub(r"\s+", "", normalize_text(text))
+
+
 def _values(tags: dict[str, list[str]], *keys: str) -> list[str]:
+    """按字段优先级取值，**同名信息只取一次**。
+
+    曲库里同一条信息常同时写在两个字段（`ALBUMARTISTS` 与
+    `ALBUMARTIST` 都是专辑艺人）。不去重的话，两个字段各返回一次，
+    拼目录名就成了 `A; A`——而且这两个值可能一边简繁一边繁体
+    （`G.E.M. 鄧紫棋` 与 `G.E.M.鄧紫棋`），字面比较认不出是同一个。
+    """
     out: list[str] = []
+    seen: set[str] = set()
     upper = {str(k).upper(): v for k, v in tags.items()}
     for key in keys:
         for value in upper.get(key.upper(), []) or []:
             text = str(value).strip()
-            if text:
-                out.append(text)
+            if not text:
+                continue
+            marker = _name_key(text)
+            if marker and marker in seen:
+                continue
+            seen.add(marker)
+            out.append(text)
     return out
 
 
@@ -91,12 +114,23 @@ def _artist_list(tags: dict[str, list[str]]) -> list[str]:
     if not raw:
         raw = _values(tags, "ARTISTS", "ARTIST")
     out: list[str] = []
+    seen: set[str] = set()
     for value in raw:
         for part in re.split(r"\s*[;；]\s*", value):
             text = part.strip()
-            if text and text.casefold() not in {item.casefold() for item in out}:
+            if not text:
+                continue
+            # 去重按**规范化形式**比较：简繁、全半角、空格差异不算
+            # 不同的人。实际曲库里的 `G.E.M. 鄧紫棋; G.E.M.鄧紫棋` 是
+            # 下载工具把两个写法制本留下的——按字面比会当成两个人，
+            # 拼回目录名就成了 `G.E.M. 鄧紫棋; G.E.M.鄧紫棋` 这种脏目录，
+            # 整理越理越乱。
+            key = _name_key(text)
+            if key and key not in seen:
+                seen.add(key)
                 out.append(text)
     return out
+
 
 
 def _number(tags: dict[str, list[str]], *keys: str) -> int | None:
@@ -695,9 +729,17 @@ def execute_plan(
                 ensure_ascii=False,
             ),
         )
-        location = store.location_by_rel_path(int(plan_row["root_id"]), old_rel)
-        if location is not None:
-            store.update_location_path(int(location["id"]), new_rel)
+        # 状态库路径同步：**单个文件失败不能毁掉整批**。位置行合并、
+        # 唯一约束冲突这类问题曾经让整个接口报 500（一首失败 = 全批失败）。
+        try:
+            location = store.location_by_rel_path(int(plan_row["root_id"]), old_rel)
+            if location is not None:
+                store.update_location_path(int(location["id"]), new_rel)
+        except Exception as exc:  # noqa: BLE001 — 文件已经移走了，报出来即可
+            result["errors"].append(
+                f"{old_rel}: 文件已移动，但状态库路径同步失败："
+                f"{type(exc).__name__}: {exc}"
+            )
         result["moved"] += 1
         result["ops"].append(op_id)
         if warning:
@@ -935,9 +977,18 @@ def undo_organize_op(store: StateStore, cfg: Config, row: Any) -> tuple[bool, st
                 except OSError:
                     pass
         _fsync_dir(original.parent)
-        location = store.location_by_rel_path(int(row["root_id"]), str(row["new_rel_path"]))
-        if location is not None:
-            store.update_location_path(int(location["id"]), str(row["old_rel_path"]))
+        # 位置行合并与整理执行同样可能撞唯一约束：撤销时旧路径可能
+        # 又有了行（期间又扫描过一次）。同样逐项隔离，不让撤销整体失败。
+        try:
+            location = store.location_by_rel_path(
+                int(row["root_id"]), str(row["new_rel_path"])
+            )
+            if location is not None:
+                store.update_location_path(
+                    int(location["id"]), str(row["old_rel_path"])
+                )
+        except Exception:  # noqa: BLE001 — 文件已还原，状态库同步失败不影响结果
+            pass
         store.mark_organize_undone(int(row["id"]))
         return True, f"已还原为 {row['old_rel_path']}"
 
