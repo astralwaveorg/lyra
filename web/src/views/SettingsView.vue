@@ -7,6 +7,7 @@ import type {
   AISettings,
   AITestResult,
   CoverPolicySettings,
+  DedupePolicySettings,
   LyricsSettings,
   NetworkSettings,
   OrganizePolicySettings,
@@ -54,6 +55,7 @@ const aiError = ref('')
 
 const coverPolicy = ref<CoverPolicySettings | null>(null)
 const organizePolicy = ref<OrganizePolicySettings | null>(null)
+const dedupePolicy = ref<DedupePolicySettings | null>(null)
 const lyricsSettings = ref<LyricsSettings | null>(null)
 const acoustid = ref<{ enabled: boolean; has_key: boolean; masked: string; source: string } | null>(null)
 const acoustidKey = ref('')
@@ -130,14 +132,16 @@ async function saveTagPolicy() {
 
 async function loadAutomationSettings() {
   try {
-    const [cover, organize, lyrics, acid] = await Promise.all([
+    const [cover, organize, dedupe, lyrics, acid] = await Promise.all([
       api.coverSettings(),
       api.organizeSettings(),
+      api.dedupeSettings(),
       api.lyricsSettings(),
       api.acoustidSettings(),
     ])
     coverPolicy.value = cover.policy
     organizePolicy.value = organize.policy
+    dedupePolicy.value = dedupe.policy
     lyricsSettings.value = lyrics.settings
     acoustid.value = acid
   } catch (err) {
@@ -164,6 +168,19 @@ async function saveOrganizePolicy() {
   try {
     organizePolicy.value = (await api.updateOrganizeSettings(organizePolicy.value)).policy
     ElMessage.success('归位设置已保存，监控进程会在一分钟内应用')
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '保存失败')
+  } finally {
+    organizeSaving.value = false
+  }
+}
+
+async function saveDedupePolicy() {
+  if (!dedupePolicy.value) return
+  organizeSaving.value = true
+  try {
+    dedupePolicy.value = (await api.updateDedupeSettings(dedupePolicy.value)).policy
+    ElMessage.success('重复检测设置已保存，监控进程会在一分钟内应用')
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '保存失败')
   } finally {
@@ -623,14 +640,15 @@ onMounted(async () => {
         <div class="setting-text">
           <div class="label">自动归位</div>
           <div class="cell-meta">
-            只对「新入库文件」生效：按模板建目录并移动，冲突转待办。
-            存量曲库永远在整理页预览后手动执行；所有移动可撤销。
+            「新文件自动归位」只对入库文件生效；「定期整理全库」每 6 小时
+            把全库（含存量）按模板归位。冲突一律转待办，所有移动可撤销。
           </div>
         </div>
         <el-select v-model="organizePolicy.mode" style="width: 210px">
           <el-option label="不动文件（只出建议）" value="off" />
           <el-option label="新文件自动归位" value="new_files" />
           <el-option label="收件箱流转" value="inbox" />
+          <el-option label="定期整理全库（含存量）" value="full" />
         </el-select>
       </div>
       <div class="setting-row">
@@ -654,6 +672,45 @@ onMounted(async () => {
       </div>
     </div>
     <el-skeleton v-else :loading="true" animated :rows="4" class="settings-skeleton" />
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="card-title">重复文件</span>
+      <span class="card-hint">完全一样的副本自动清理，其余留人工判断</span>
+    </div>
+    <div v-if="dedupePolicy" class="card-body col">
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">自动清理完全相同的副本</div>
+          <div class="cell-meta">
+            音频数据、时长、标题、艺人、专辑全部相同才自动处理：保留一份，
+            其余进回收站（可还原）。同一首歌的不同专辑或不同版本不动。
+          </div>
+        </div>
+        <el-switch v-model="dedupePolicy.auto_clean_exact" />
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="label">检测间隔</div>
+          <div class="cell-meta">扫描全库找出重复文件的时间间隔</div>
+        </div>
+        <el-input-number
+          v-model="dedupePolicy.scan_interval_hours"
+          :min="1"
+          :max="720"
+          size="small"
+          style="width: 130px"
+        />
+        <span class="cell-meta">小时</span>
+      </div>
+      <div class="setting-actions">
+        <el-button type="primary" :loading="organizeSaving" @click="saveDedupePolicy">
+          保存重复检测设置
+        </el-button>
+        <span class="cell-meta">被清理的副本在「回收站」里可以还原</span>
+      </div>
+    </div>
   </section>
 
   <section class="card">

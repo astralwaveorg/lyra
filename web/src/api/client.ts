@@ -3,6 +3,7 @@ import type {
   Alternatives,
   CoverPolicySettings,
   LyricsSettings,
+  DedupePolicySettings,
   OrganizePolicySettings,
   ProviderHealth,
   RunDetail,
@@ -561,6 +562,12 @@ export const api = {
   updateCoverSettings: (policy: Partial<CoverPolicySettings>) =>
     request<{ ok: boolean; policy: CoverPolicySettings }>(
       '/api/v1/settings/cover', json(policy),
+    ),
+  dedupeSettings: () =>
+    request<{ policy: DedupePolicySettings; revision: string }>('/api/v1/settings/dedupe'),
+  updateDedupeSettings: (policy: Partial<DedupePolicySettings>) =>
+    request<{ ok: boolean; policy: DedupePolicySettings }>(
+      '/api/v1/settings/dedupe', json(policy),
     ),
   organizeSettings: () =>
     request<{ policy: OrganizePolicySettings; revision: string }>('/api/v1/settings/organize'),

@@ -55,6 +55,7 @@ from .config import (
     apply_acoustid_key,
     apply_ai_settings_values,
     apply_cover_policy_values,
+    apply_dedupe_policy_values,
     apply_lyrics_settings_values,
     apply_network_settings_values,
     apply_organize_policy_values,
@@ -3772,6 +3773,28 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         state.set_meta("settings.revision", revision)
         _invalidate_caches()
         return {"ok": True, "labels": cleaned, "revision": revision}
+
+    @app.get("/api/v1/settings/dedupe", dependencies=[Depends(require_auth)])
+    def dedupe_settings_view() -> dict[str, Any]:
+        """重复检测的自动化策略。"""
+        return {
+            "policy": asdict(cfg.policy.dedupe),
+            "revision": state.get_meta("settings.revision") or "",
+        }
+
+    @app.put("/api/v1/settings/dedupe", dependencies=[Depends(require_auth)])
+    def update_dedupe_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="设置必须是对象")
+        try:
+            apply_dedupe_policy_values(cfg, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state.set_meta("settings.dedupe_policy", json.dumps(payload, ensure_ascii=False))
+        revision = str(time.time_ns())
+        state.set_meta("settings.revision", revision)
+        _invalidate_caches()
+        return {"ok": True, "policy": asdict(cfg.policy.dedupe), "revision": revision}
 
     def _lyrics_settings_view() -> dict[str, Any]:
         return {

@@ -696,6 +696,155 @@ def delete_duplicates_selected(
     }
 
 
+def _decode_items(row: Any) -> list[dict[str, Any]]:
+    """解码重复组的 items_json。"""
+    try:
+        data = json.loads(str(row["items_json"] or "[]"))
+    except (TypeError, ValueError):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+#: 自动清理的判定：四项**全同**才算「完全一样」。
+#:
+#: - 音频哈希相同（压缩后的音频数据逐字节一致——同一首歌的两次转码
+#:   会得到不同哈希，所以这条最严）；
+#: - 时长相同（哈希之外的独立复核，防哈希实现有洞）；
+#: - 标题、艺人、专辑三者规范化后相同（简繁、大小写、全半角、空格
+#:   差异不算不同——那正是「同一首的不同写法」）；
+#: - 专辑名相同才允许自动删：**不同专辑的同名曲不是重复**
+#:   （`The Beatles/1/24 - Something.flac` 与 `Abbey Road/Something.flac`
+#:   是同录音不同发行，删掉会丢内容）。
+_AUTO_CLEAN_FIELDS = ("title", "artist", "album")
+
+
+def _auto_same(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """两份音频是否「完全一样」（可自动清理的前提）。
+
+    严判的理由：错删一首曲子比多留一个待办糟得多。宁可漏过「同曲的
+    两次转码」（哈希不同）也不误删「同曲不同专辑」（专辑名不同）。
+    """
+    if str(a.get("audio_hash") or "") != str(b.get("audio_hash") or ""):
+        return False
+    if not str(a.get("audio_hash") or ""):
+        return False
+    da, db = a.get("duration"), b.get("duration")
+    if da is None or db is None or abs(float(da) - float(db)) > 0.01:
+        return False
+    for key in _AUTO_CLEAN_FIELDS:
+        if _normalize(a.get(key) or "") != _normalize(b.get(key) or ""):
+            return False
+    return True
+
+
+def clean_exact_duplicates(
+    store: StateStore,
+    cfg: Config,
+    roots: list[RootConfig],
+    *,
+    dry_run: bool = False,
+    progress: Any = None,
+) -> dict[str, Any]:
+    """自动清理「完全一样」的重复文件：保留最优的一份，其余进回收站。
+
+    只处理**判定为完全一样**的组（同音频哈希 + 同时长 + 同标题/艺人/专辑）。
+    「同一录音但不同专辑」「同曲不同版本」「仅标题相近」这些一律不动，
+    仍留在重复检测面板由人判断。
+
+    删除走回收站批次，可撤销（与整理页的删除语义一致）。
+    """
+    started = time.time()
+    result: dict[str, Any] = {
+        "ok": True, "scanned_groups": 0, "groups": 0, "deleted": 0,
+        "kept": 0, "errors": [], "batch_ids": [], "dry_run": bool(dry_run),
+    }
+    for root in roots:
+        base = root.resolved_path
+        if not base.is_dir():
+            continue
+        root_id = store.get_root_id(root.name)
+        if root_id is None:
+            continue
+        for row in store.iter_dedupe_groups(include_dismissed=False):
+            if int(row["root_id"]) != int(root_id):
+                continue
+            result["scanned_groups"] += 1
+            items = _decode_items(row)
+            if len(items) < 2:
+                continue
+            # 只在「同哈希」的组里找完全一样的对
+            by_hash: dict[str, list[dict[str, Any]]] = {}
+            for item in items:
+                by_hash.setdefault(str(item.get("audio_hash") or ""), []).append(item)
+            for same_hash in by_hash.values():
+                if len(same_hash) < 2:
+                    continue
+                keep = _best(same_hash, list(range(len(same_hash))))
+                keeper = same_hash[keep]
+                for item in same_hash:
+                    if item is keeper:
+                        continue
+                    if not _auto_same(keeper, item):
+                        continue
+                    if item.get("reference"):
+                        # 参照项属于其它分类，受保护
+                        continue
+                    rel = str(item.get("rel_path") or "")
+                    if not rel:
+                        continue
+                    result["groups"] += 1
+                    result["kept"] += 1
+                    if dry_run:
+                        continue
+                    outcome = _auto_delete_one(store, cfg, root, rel)
+                    if outcome.get("ok"):
+                        result["deleted"] += 1
+                        for batch in outcome.get("batch_ids") or []:
+                            if batch not in result["batch_ids"]:
+                                result["batch_ids"].append(batch)
+                    else:
+                        for message in outcome.get("errors") or []:
+                            result["errors"].append(str(message))
+                        result["ok"] = False
+        if progress:
+            progress(f"{root.name}: 已检查 {result['scanned_groups']} 组")
+    result["elapsed_seconds"] = time.time() - started
+    return result
+
+
+def _auto_delete_one(
+    store: StateStore, cfg: Config, root: RootConfig, rel: str
+) -> dict[str, Any]:
+    """把一个「完全一样」的副本移进回收站（可撤销）。"""
+    base = root.resolved_path
+    path = base / rel
+    if not path.is_file():
+        return {"ok": False, "errors": [f"{rel}: 文件已不存在"]}
+    batch_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    try:
+        trash_rel = move_to_trash(cfg, root, path, batch_id)
+    except OSError as exc:
+        return {"ok": False, "errors": [f"{rel}: {exc}"]}
+    detail: dict[str, Any] = {}
+    sidecar = path.with_suffix(".lrc")
+    if sidecar.is_file():
+        try:
+            detail["sidecar"] = move_to_trash(cfg, root, sidecar, batch_id)
+        except OSError as exc:
+            detail["sidecar_error"] = str(exc)
+    root_id = store.get_root_id(root.name)
+    if root_id is not None:
+        store.record_organize_op(
+            root_id=int(root_id), batch_id=batch_id, op_kind="delete",
+            old_rel_path=rel, trash_rel_path=trash_rel,
+            detail=json.dumps(
+                {**detail, "reason": "自动清理完全相同的重复文件"},
+                ensure_ascii=False,
+            ),
+        )
+    return {"ok": True, "deleted": 1, "batch_ids": [batch_id]}
+
+
 def delete_duplicates(
     store: StateStore,
     cfg: Config,

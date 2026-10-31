@@ -44,6 +44,7 @@ __all__ = [
     "TagPolicy",
     "CoverPolicy",
     "OrganizePolicy",
+    "DedupePolicy",
     "PolicyConfig",
     "RetryConfig",
     "LyricsFormatConfig",
@@ -354,6 +355,27 @@ class TagPolicy:
 
 
 @dataclass(slots=True)
+class DedupePolicy:
+    """重复文件的自动化策略。
+
+    重复检测**只扫描不删除**是默认行为（删文件必须有人确认）；
+    但「完全一样」的重复（同一音频数据 + 同时长 + 同标题/艺人/专辑）
+    没有判断空间——保留一份、其余进回收站（可撤销）是确定性的处置。
+    """
+
+    auto_scan: bool = True
+    """监控进程定期扫描重复文件。"""
+    scan_interval_hours: float = 24.0
+    auto_clean_exact: bool = True
+    """自动清理「完全一样」的重复：保留最优的一份，其余进回收站。
+
+    判定要求四项全同：音频哈希、时长、标题、艺人、专辑。其中**专辑
+    必须相同**——同录音出现在不同专辑（精选集 vs 原专辑）不是重复，
+    自动删掉会丢内容。这类仍留在重复检测面板由人判断。
+    """
+
+
+@dataclass(slots=True)
 class CoverPolicy:
     """封面自动化策略。同目录图零网络成本、风险最低，默认自动；
     网络抓取（CAA/来源站）默认只暂存预览，L2 起自动。"""
@@ -400,6 +422,7 @@ class PolicyConfig:
     matching: MatchingPolicy = field(default_factory=MatchingPolicy)
     tags: TagPolicy = field(default_factory=TagPolicy)
     cover: CoverPolicy = field(default_factory=CoverPolicy)
+    dedupe: DedupePolicy = field(default_factory=DedupePolicy)
     organize: OrganizePolicy = field(default_factory=OrganizePolicy)
 
 
@@ -897,7 +920,10 @@ _POLICY_KEYS = {
     "write_enabled", "write_mode", "write_sidecar_lrc", "embed_lyrics", "fill_empty_lrc",
     "skip_if_valid_synced", "clear_plain_embedded", "allow_other_providers",
     "instrumental_placeholder", "matching",
-    "tags", "cover", "organize",
+    "tags", "cover", "organize", "dedupe",
+}
+_DEDUPE_KEYS = {
+    "auto_scan", "scan_interval_hours", "auto_clean_exact",
 }
 _COVER_KEYS = {
     "auto_embed_sibling", "fetch_sources", "min_min_pixels", "auto_write",
@@ -1533,6 +1559,26 @@ def _parse_top(problems: _Problems, cfg: Config, raw: Mapping[str, Any]) -> None
                     dt.low_risk_auto_correct,
                 ),
             )
+        if "dedupe" in table:
+            d_t = _unwrap(problems, "policy.dedupe", table["dedupe"])
+            problems.unknown_keys("policy.dedupe", d_t, _DEDUPE_KEYS)
+            dd = DedupePolicy()
+            policy.dedupe = DedupePolicy(
+                auto_scan=_as_bool(
+                    problems, "policy.dedupe.auto_scan",
+                    d_t.get("auto_scan", dd.auto_scan), dd.auto_scan,
+                ),
+                scan_interval_hours=_as_float(
+                    problems, "policy.dedupe.scan_interval_hours",
+                    d_t.get("scan_interval_hours", dd.scan_interval_hours),
+                    dd.scan_interval_hours,
+                ),
+                auto_clean_exact=_as_bool(
+                    problems, "policy.dedupe.auto_clean_exact",
+                    d_t.get("auto_clean_exact", dd.auto_clean_exact),
+                    dd.auto_clean_exact,
+                ),
+            )
         if "matching" in table:
             m_t = _unwrap(problems, "policy.matching", table["matching"])
             problems.unknown_keys("policy.matching", m_t, _MATCHING_KEYS)
@@ -1981,6 +2027,7 @@ COVER_POLICY_FIELDS = ("auto_embed_sibling", "auto_write", "min_min_pixels", "fe
 """设置页可修改的封面策略字段。"""
 
 ORGANIZE_POLICY_FIELDS = ("mode", "template")
+DEDUPE_POLICY_FIELDS = ("auto_scan", "scan_interval_hours", "auto_clean_exact")
 """设置页可修改的归置策略字段。"""
 
 LYRICS_SETTINGS_FIELDS = (
@@ -2050,6 +2097,28 @@ def apply_organize_policy_values(cfg: Config, values: Mapping[str, Any]) -> Orga
                 )
             policy.template = raw
     cfg.policy.organize = policy
+    return policy
+
+
+def apply_dedupe_policy_values(cfg: Config, values: Mapping[str, Any]) -> DedupePolicy:
+    """校验并把重复检测策略写进配置对象。"""
+    if not isinstance(values, Mapping):
+        raise ValueError("设置必须是对象")
+    policy = replace(cfg.policy.dedupe)
+    for key, raw in values.items():
+        if key not in DEDUPE_POLICY_FIELDS:
+            raise ValueError(f"未知设置项：{key}")
+        if key in ("auto_scan", "auto_clean_exact"):
+            if not isinstance(raw, bool):
+                raise ValueError(f"{key} 必须是布尔值")
+            setattr(policy, key, raw)
+        elif key == "scan_interval_hours":
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise ValueError(f"{key} 必须是数字")
+            if not (0 < float(raw) <= 24 * 30):
+                raise ValueError(f"{key} 必须在 0 到 720 之间")
+            policy.scan_interval_hours = float(raw)
+    cfg.policy.dedupe = policy
     return policy
 
 

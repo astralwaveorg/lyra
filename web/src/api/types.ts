@@ -902,6 +902,12 @@ export interface OrganizePolicySettings {
   template: string
 }
 
+export interface DedupePolicySettings {
+  auto_scan: boolean
+  scan_interval_hours: number
+  auto_clean_exact: boolean
+}
+
 export interface LyricsSettings {
   translation: string
   keep_word_level: boolean

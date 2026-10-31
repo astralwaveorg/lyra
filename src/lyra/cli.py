@@ -29,6 +29,7 @@ from .config import (
     ConfigError,
     apply_ai_settings_values,
     apply_cover_policy_values,
+    apply_dedupe_policy_values,
     apply_lyrics_settings_values,
     apply_organize_policy_values,
     apply_tag_policy_values,
@@ -1080,6 +1081,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
             ("settings.cover_policy", apply_cover_policy_values, "封面"),
             ("settings.organize_policy", apply_organize_policy_values, "归置"),
             ("settings.lyrics_format", apply_lyrics_settings_values, "歌词输出"),
+            ("settings.dedupe_policy", apply_dedupe_policy_values, "重复检测"),
         )
         for key, apply_fn, label in loaders:
             raw = store.get_meta(key)
@@ -1485,7 +1487,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
             tag_state["running"] = False
 
     def _dedupe_auto_worker() -> None:
-        from .dedupe import scan_duplicates
+        from .dedupe import clean_exact_duplicates, scan_duplicates
 
         try:
             print("[watch] 重复音频检测开始（只检查，不删除）", flush=True)
@@ -1500,6 +1502,27 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 f"{result['duplicates']} 个可清理副本 / {result['groups']} 组",
                 {"duplicates": result["duplicates"], "groups": result["groups"]},
             )
+            # 「完全一样」的重复没有判断空间：保留最优的一份，其余进回收站
+            # （可撤销）。同录音不同专辑、同曲不同版本这类仍留人工。
+            if cfg.policy.dedupe.auto_clean_exact:
+                cleaned = clean_exact_duplicates(store, cfg, roots)
+                if cleaned["deleted"]:
+                    print(
+                        f"[watch] 自动清理完全相同的重复 {cleaned['deleted']} 个"
+                        f"（保留 {cleaned['kept']} 份，可在回收站还原）",
+                        flush=True,
+                    )
+                    store.log_watch_event(
+                        "自动清理重复",
+                        f"{cleaned['deleted']} 个完全相同的副本已进回收站",
+                        {"deleted": cleaned["deleted"], "groups": cleaned["groups"]},
+                    )
+                elif cleaned["errors"]:
+                    print(
+                        f"[watch] 自动清理重复有 {len(cleaned['errors'])} 条错误："
+                        f"{cleaned['errors'][0][:120]}",
+                        flush=True,
+                    )
         except Exception as exc:  # noqa: BLE001 — 自动任务失败不能停监控
             print(f"[watch] 重复音频检测失败 {type(exc).__name__}: {exc}", flush=True)
             store.log_watch_event("重复检测失败", str(exc)[:300])

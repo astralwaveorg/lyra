@@ -160,6 +160,15 @@ fetch_sources = ["caa"]
 min_min_pixels = 90000
 auto_write = false
 
+[policy.dedupe]
+# 重复文件处理。默认只检测不删除；「完全一样」的副本（音频数据、时长、
+# 标题、艺人、专辑全部相同）可以自动清理：保留一份，其余进回收站可还原。
+# 同一首歌的不同专辑或不同版本（精选集 vs 原专辑、限定版 vs 普通版）
+# 不满足上面的条件，仍留在重复检测面板由人判断
+auto_scan = true
+scan_interval_hours = 24
+auto_clean_exact = true
+
 [policy.organize]
 # 目录归置。默认 off = 只出建议不动文件；new_files 仅对新增文件自动归位；
 # full 定期把全库（含存量）归位到标准结构
