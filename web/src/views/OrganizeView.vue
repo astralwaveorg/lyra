@@ -1288,8 +1288,10 @@ onMounted(async () => {
 }
 
 .conflict-list {
-  max-height: 240px;
-  overflow: auto;
+  /* 不限高：限高 + 滚动会把「一共有几条冲突」藏起来——使用者只看到
+     一条半，得自己猜下面还有多少。冲突条数不多，全部展开更好判断。 */
+  display: flex;
+  flex-direction: column;
 }
 
 .conflict-item {
