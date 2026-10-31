@@ -1132,6 +1132,63 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 return
         return
 
+    # **新文件处理放到后台线程。**
+    #
+    # 原来在监听回调里同步处理：一次对账发现 2199 个"变化"文件时，
+    # 主循环被占住 8 小时，周期任务（标签扫描 / 重复检测 / 全库整理）
+    # 全部饿死——日志里一条"标签扫描"都没有，而标签队列的提案越积越多。
+    #
+    # 队列 + 单工作线程：处理不丢（没处理完的文件下次对账还会被当作
+    # 新增）、不阻塞调度。写库仍有进程内锁 + 跨进程写租约双重保护。
+    _pending_files: dict[str, set[str]] = {}
+    _file_worker_state = {"running": False}
+    _queue_lock = threading.Lock()
+
+    def _file_worker() -> None:
+        try:
+            while not stop.is_set():
+                with _queue_lock:
+                    queued = [
+                        (name, paths)
+                        for name, paths in _pending_files.items()
+                        if paths
+                    ]
+                    for name, _paths in queued:
+                        _pending_files[name] = set()
+                if not queued:
+                    return
+                for name, paths in queued:
+                    if stop.is_set():
+                        return
+                    root = next((r for r in roots if r.name == name), None)
+                    if root is None:
+                        continue
+                    try:
+                        _process_new_files(root, paths, lock=lock)
+                    except Exception as exc:  # noqa: BLE001 — 一轮失败不影响后续
+                        print(
+                            f"[watch] {name}: 新文件处理失败 "
+                            f"{type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
+        finally:
+            _file_worker_state["running"] = False
+
+    def _enqueue_new_files(root, paths) -> None:
+        """把新文件排进后台处理队列。"""
+        if not paths:
+            return
+        with _queue_lock:
+            _pending_files.setdefault(root.name, set()).update(paths)
+            if _file_worker_state["running"]:
+                return
+            _file_worker_state["running"] = True
+        import threading as _threading
+
+        _threading.Thread(
+            target=_file_worker, daemon=True, name="lyra-files"
+        ).start()
+
     # 人工写入请求的检查：每个文件都查库没必要，1 秒一次足够快。
     _yield_state = {"at": 0.0}
 
@@ -1236,7 +1293,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 f"[watch] {root.name}: 开始处理 {len(rels)} 个稳定文件…",
                 flush=True,
             )
-            _process_new_files(root, rels, lock=lock)
+            _enqueue_new_files(root, rels)
 
         return on_files
 
@@ -1620,7 +1677,7 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                         )
                     added = list(result.get("added_paths") or [])
                     if added:
-                        _process_new_files(root, added, lock=lock)
+                        _enqueue_new_files(root, added)
 
                     # 异名 .lrc → 改成音频同名。**播放器只认这个名字**，
                     # 不改名等于这首歌在车机上没有歌词。
