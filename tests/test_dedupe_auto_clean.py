@@ -206,3 +206,97 @@ def test_干跑不删文件(tmp_path: Path):
     assert result["groups"] == 1, "干跑也要报出待处理数量"
     assert (lib / "b" / "歌.flac").is_file(), "干跑不碰文件"
     store.close()
+
+
+# ---------------------------------------------------------------------------
+# 第二层：同一首歌的重复副本（路径规范化后相同）
+# ---------------------------------------------------------------------------
+
+
+def test_同一位置的重复下载判为可清理():
+    """`潘朵拉/口袋的天空.flac` 与 `潘朵拉/08 - 口袋的天空.flac`。
+
+    只差一个音轨号前缀——同一位置留下了两份，保留一份即可。
+    """
+    from lyra.dedupe import _auto_same_song
+
+    a = _entry(
+        "潘朵拉/口袋的天空.flac", audio_hash="h1", duration=261.77,
+        title="口袋的天空", artist="張韶涵", album="潘朵拉",
+    )
+    b = _entry(
+        "潘朵拉/08 - 口袋的天空.flac", audio_hash="h2", duration=263.77,
+        title="口袋的天空", artist="張韶涵", album="潘朵拉",
+    )
+    assert _auto_same_song(a, b)
+
+
+def test_目录大小写差异的重复判为可清理():
+    from lyra.dedupe import _auto_same_song
+
+    a = _entry(
+        "張韶涵/Over the Rainbow/遺失的美好.flac", audio_hash="h1",
+        duration=260.98, title="遺失的美好", artist="張韶涵", album="Over the Rainbow",
+    )
+    b = _entry(
+        "張韶涵/Over The Rainbow/11 - 遺失的美好.flac", audio_hash="h2",
+        duration=261.93, title="遺失的美好", artist="張韶涵", album="Over the Rainbow",
+    )
+    assert _auto_same_song(a, b)
+
+
+def test_不同专辑的同名曲不判为重复():
+    """`The Beatles/1/24 - Something` 与 `Abbey Road/Something`：不同发行。"""
+    from lyra.dedupe import _auto_same_song
+
+    a = _entry(
+        "The Beatles/1/24 - Something.flac", audio_hash="h1", duration=181.2,
+        title="Something", artist="The Beatles", album="1",
+    )
+    b = _entry(
+        "The Beatles/Abbey Road/Something.flac", audio_hash="h2", duration=182.0,
+        title="Something", artist="The Beatles", album="Abbey Road",
+    )
+    assert not _auto_same_song(a, b)
+
+
+def test_署名差异不判为重复():
+    """`Taylor Swift ft. Bon Iver` 与 `Taylor Swift`：不同署名。"""
+    from lyra.dedupe import _auto_same_song
+
+    a = _entry(
+        "Taylor Swift/folklore/04 - exile.flac", audio_hash="h1", duration=285.64,
+        title="exile", artist="Taylor Swift ft. Bon Iver", album="folklore",
+    )
+    b = _entry(
+        "Taylor Swift/folklore/06 - exile.flac", audio_hash="h2", duration=285.63,
+        title="exile", artist="Taylor Swift", album="folklore",
+    )
+    assert not _auto_same_song(a, b)
+
+
+def test_时长差过大不判为重复():
+    from lyra.dedupe import _auto_same_song
+
+    a = _entry(
+        "A/歌.flac", audio_hash="h1", duration=100.0, album="专辑",
+    )
+    b = _entry(
+        "A/01 - 歌.flac", audio_hash="h2", duration=130.0, album="专辑",
+    )
+    assert not _auto_same_song(a, b)
+
+
+def test_路径不同不判为重复():
+    """同专辑同歌但在不同目录（不是同一位置的两份）。"""
+    from lyra.dedupe import _auto_same_song
+
+    a = _entry(
+        "張韶涵/潘朵拉/口袋的天空.flac", audio_hash="h1", duration=261.0,
+        title="口袋的天空", artist="張韶涵", album="潘朵拉",
+    )
+    b = _entry(
+        "張韶涵/别的专辑/口袋的天空.flac", audio_hash="h2", duration=261.0,
+        title="口袋的天空", artist="張韶涵", album="潘朵拉",
+    )
+    assert not _auto_same_song(a, b)

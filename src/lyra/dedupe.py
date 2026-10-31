@@ -26,7 +26,7 @@ import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import scan
@@ -68,6 +68,13 @@ class DedupeSummary:
             "errors": self.errors[:20],
             "elapsed_seconds": round(self.elapsed, 2),
         }
+
+
+def _name_key(text: str) -> str:
+    """路径片段的比较键：简繁折叠 + 去空白 + 小写。"""
+    from .match import normalize_text
+
+    return re.sub(r"\s+", "", normalize_text(text)).casefold()
 
 
 def _normalize(text: str) -> str:
@@ -718,6 +725,32 @@ def _decode_items(row: Any) -> list[dict[str, Any]]:
 _AUTO_CLEAN_FIELDS = ("title", "artist", "album")
 
 
+#: 「同一首歌的重复副本」的时长容差（秒）。两次下载的同一首歌，
+#: 压缩方式不同会带来 1~2 秒的时长差（尤其 44.1kHz 与 48kHz 之间）。
+_AUTO_DURATION_TOLERANCE = 3.0
+
+#: 文件名开头的音轨号前缀：`08 - 歌.flac`、`01_歌.flac`、`3 歌.flac`。
+_TRACK_PREFIX = re.compile(r"^\d+\s*[-_.]?\s*")
+
+
+def _path_signature(rel_path: str) -> str:
+    """路径的**规范化签名**：去掉音轨号前缀、折叠大小写与简繁。
+
+    用来判断「两个文件是不是同一个位置的两个版本」：
+    - `潘朵拉/口袋的天空.flac` 与 `潘朵拉/08 - 口袋的天空.flac` → 相同
+    - `Over the Rainbow/遺失的美好.flac` 与
+      `Over The Rainbow/11 - 遺失的美好.flac` → 相同
+
+    这类差异只说明**下载或整理时留下了两份**，不代表它们是不同版本。
+    """
+    parts = [p for p in PurePosixPath(str(rel_path)).parts if p]
+    if not parts:
+        return ""
+    name = _TRACK_PREFIX.sub("", parts[-1])
+    parts[-1] = name
+    return "/".join(_name_key(part) for part in parts)
+
+
 def _auto_same(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """两份音频是否「完全一样」（可自动清理的前提）。
 
@@ -735,6 +768,37 @@ def _auto_same(a: dict[str, Any], b: dict[str, Any]) -> bool:
         if _normalize(a.get(key) or "") != _normalize(b.get(key) or ""):
             return False
     return True
+
+
+def _auto_same_song(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """两份是否「同一首歌的重复副本」（同一位置的两次下载）。
+
+    比「完全一样」宽一档，但仍然严判——四项都要成立：
+
+    - 标题、艺人、专辑三者规范化后相同；
+    - 时长差 ≤ 3 秒（同一首歌的两次下载，压缩方式不同会带来 1~2 秒差）；
+    - **路径规范化后相同**（去掉音轨号前缀、折叠大小写与简繁后相同）——
+      这一条证明它们是「同一个位置的两份」，而不是两首不同的歌。
+
+    不满足路径相同的一律不动：`The Beatles/1/24 - Something.flac` 与
+    `Abbey Road/Something.flac` 是同录音不同专辑，`Taylor Swift ft. Bon
+    Iver` 与 `Taylor Swift` 是不同署名，删掉都是丢内容。
+    """
+    if not str(a.get("audio_hash") or "") or not str(b.get("audio_hash") or ""):
+        return False
+    for key in _AUTO_CLEAN_FIELDS:
+        if _normalize(a.get(key) or "") != _normalize(b.get(key) or ""):
+            return False
+    da, db = a.get("duration"), b.get("duration")
+    if da is None or db is None:
+        return False
+    if abs(float(da) - float(db)) > _AUTO_DURATION_TOLERANCE:
+        return False
+    return bool(
+        _path_signature(str(a.get("rel_path") or ""))
+        and _path_signature(str(a.get("rel_path") or ""))
+        == _path_signature(str(b.get("rel_path") or ""))
+    )
 
 
 def clean_exact_duplicates(
@@ -772,7 +836,9 @@ def clean_exact_duplicates(
             items = _decode_items(row)
             if len(items) < 2:
                 continue
-            # 只在「同哈希」的组里找完全一样的对
+            deletable: list[dict[str, Any]] = []
+            protected: set[int] = set()
+            # 第一层：完全一样（音频数据也相同）
             by_hash: dict[str, list[dict[str, Any]]] = {}
             for item in items:
                 by_hash.setdefault(str(item.get("audio_hash") or ""), []).append(item)
@@ -789,23 +855,44 @@ def clean_exact_duplicates(
                     if item.get("reference"):
                         # 参照项属于其它分类，受保护
                         continue
-                    rel = str(item.get("rel_path") or "")
-                    if not rel:
+                    deletable.append(item)
+                    protected.add(id(keeper))
+            # 第二层：同一首歌的重复副本（路径规范化后相同 = 同一位置的两份）
+            for left_index, left in enumerate(items):
+                if id(left) in protected or left.get("reference"):
+                    continue
+                for right in items[left_index + 1:]:
+                    if id(right) in protected or right.get("reference"):
                         continue
-                    result["groups"] += 1
-                    result["kept"] += 1
-                    if dry_run:
+                    if not _auto_same_song(left, right):
                         continue
-                    outcome = _auto_delete_one(store, cfg, root, rel)
-                    if outcome.get("ok"):
-                        result["deleted"] += 1
-                        for batch in outcome.get("batch_ids") or []:
-                            if batch not in result["batch_ids"]:
-                                result["batch_ids"].append(batch)
-                    else:
-                        for message in outcome.get("errors") or []:
-                            result["errors"].append(str(message))
-                        result["ok"] = False
+                    keep_index = _best([left, right], [0, 1])
+                    keeper = [left, right][keep_index]
+                    loser = [left, right][1 - keep_index]
+                    if id(loser) in protected:
+                        continue
+                    deletable.append(loser)
+                    protected.add(id(keeper))
+                    break
+
+            for item in deletable:
+                rel = str(item.get("rel_path") or "")
+                if not rel:
+                    continue
+                result["groups"] += 1
+                result["kept"] += 1
+                if dry_run:
+                    continue
+                outcome = _auto_delete_one(store, cfg, root, rel)
+                if outcome.get("ok"):
+                    result["deleted"] += 1
+                    for batch in outcome.get("batch_ids") or []:
+                        if batch not in result["batch_ids"]:
+                            result["batch_ids"].append(batch)
+                else:
+                    for message in outcome.get("errors") or []:
+                        result["errors"].append(str(message))
+                    result["ok"] = False
         if progress:
             progress(f"{root.name}: 已检查 {result['scanned_groups']} 组")
     result["elapsed_seconds"] = time.time() - started
