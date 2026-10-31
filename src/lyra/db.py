@@ -1828,6 +1828,33 @@ class StateStore:
             "UPDATE staged_lyrics SET state=? WHERE id=?", (state, staged_id)
         )
 
+    def replace_staged_content(
+        self,
+        staged_id: int,
+        *,
+        content: str,
+        content_hash: str,
+        provider: str,
+        provider_id: str | None,
+        score: float | None,
+        duration_delta: float | None,
+        ai_json: str,
+    ) -> None:
+        """把一条暂存歌词整体换成另一个候选的词。
+
+        用途：模型预审确认「同一录音」但选中的候选与程序按分数暂存的
+        那条不同——换上模型选中的候选的词，再走 `mark_ai_reviewed` 的
+        采纳路径。原地替换而不是另插一行：同一位置留两份候选（一份
+        needs_review 一份 staged）会让复核队列永远挂着一条已经无意义的旧记录。
+        """
+        self.conn.execute(
+            "UPDATE staged_lyrics SET content=?, content_hash=?, provider=?, "
+            "provider_id=?, score=?, duration_delta=?, ai_json=? WHERE id=?",
+            (content, content_hash, provider, provider_id, score,
+             duration_delta, ai_json, staged_id),
+        )
+        self.conn.commit()
+
     def mark_ai_reviewed(
         self, staged_id: int, *, ai_json: str, adopt: bool
     ) -> None:

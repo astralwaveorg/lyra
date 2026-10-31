@@ -266,3 +266,84 @@ def test_替换候选的安全底线():
         title_score=0.3, artist_score=0.9, album_score=0.9, version_ok=True,
     )
     assert not _alt_candidate_admissible(off_title, policy), "标题 0.3 是另一首歌"
+
+
+# ---------------------------------------------------------------------------
+# 4) 批量预审通道：模型选中另一条候选时换词（与抓取时同一套底线）
+# ---------------------------------------------------------------------------
+
+
+def test_预审换用模型选中的候选(tmp_path: Path, monkeypatch):
+    from lyra.pipeline import run_fetch
+    from lyra.pre_review import run_ai_pre_review
+    from lyra.providers.base import Candidate, RawLyrics
+
+    cfg = Config(
+        roots=[RootConfig(name="main", path=str(tmp_path / "lib"))],
+        storage=StorageConfig(data_dir=str(tmp_path / "data")),
+    )
+    cfg.policy.write_enabled = True
+    cfg.ai.enabled = True
+    cfg.ai.pre_review = True
+    cfg.ai.auto_accept = True
+    cfg.ai.pre_review_confidence = 0.85
+    lib = tmp_path / "lib"
+    make_flac(lib / "夜曲.flac", entries=(("TITLE", "夜曲钢琴版"), ("ARTIST", "周杰伦")))
+    store = open_store(cfg.storage.resolved_data_dir)
+
+    class _PreProvider:
+        name = "qq"
+
+        def search(self, _query):
+            return [
+                Candidate(provider="qq", provider_id="A", title="夜曲",
+                          artists=("周杰伦",), duration=3.0),
+                Candidate(provider="qq", provider_id="B", title="夜曲",
+                          artists=("周杰伦",), duration=3.05),
+            ]
+
+        def lyrics(self, c):
+            text = {
+                "A": "[00:01.00]A的词\n",
+                "B": "[00:01.00]模型选中候选的词\n",
+            }.get(c.provider_id)
+            if not text:
+                return None
+            return RawLyrics(provider="qq", provider_id=c.provider_id,
+                             text=text, synced=True)
+
+        def close(self) -> None:
+            pass
+
+    # 先走一轮抓取：模型不可用（返回 None），程序按分数暂存 A（needs_review）
+    monkeypatch.setattr(
+        "lyra.pipeline._ai_judge_candidates",
+        lambda *args, **kwargs: None,
+    )
+    summary = run_fetch(store, cfg, cfg.roots[0], [_PreProvider()])
+    assert summary.needs_review == 1 and summary.ai_accepted == 0
+
+    # 再直接验证预审通道的换用：构造 needs_review 行 + 同一套候选
+    from lyra.ai import CandidateJudgement
+    from lyra.audit import audit_root
+    from lyra.pipeline import sync_state
+
+    audit = audit_root(cfg.roots[0])
+    targets = sync_state(store, cfg, cfg.roots[0], audit)
+    contexts = {
+        t.location_id: (t.context, t.revision_hash) for t in targets
+    }
+    judgement = CandidateJudgement(
+        best="qq:B", confidence=0.93, relation="same_recording",
+        reason="批量预审判定",
+    )
+    monkeypatch.setattr(
+        "lyra.pre_review.review_candidates",
+        lambda *args, **kwargs: judgement,
+    )
+    provider = _PreProvider()
+    pre = run_ai_pre_review(
+        store, cfg, cfg.roots[0], {"qq": provider}, contexts,
+    )
+    assert pre.judged >= 1
+    store.close()

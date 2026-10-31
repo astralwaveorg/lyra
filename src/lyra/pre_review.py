@@ -135,15 +135,21 @@ def run_ai_pre_review(
             continue
 
         payload = json.dumps(judgement.to_dict(), ensure_ascii=False)
-        adoptable = (
-            cfg.ai.auto_accept
-            and judgement.best == f"{decision.best.provider}:{decision.best.provider_id}"
-            and judgement.confidence >= cfg.ai.pre_review_confidence
-            and (
-                judgement.same_recording
-                or (judgement.approximable and decision.approximate)
-            )
-        )
+        adoptable = False
+        staged_best = f"{decision.best.provider}:{decision.best.provider_id}"
+        if cfg.ai.auto_accept and judgement.confidence >= cfg.ai.pre_review_confidence:
+            if judgement.best == staged_best:
+                adoptable = judgement.same_recording or (
+                    judgement.approximable and decision.approximate
+                )
+            elif judgement.same_recording and judgement.best:
+                # 模型确认「同一录音」但选了另一条候选（生产实测约 30%：
+                # 程序按分数暂存的那条数值分被伪影拖低、时长反而差）。
+                # 换上模型选中的候选的词，前提是过「防毫不相关」硬底线。
+                adoptable = _switch_to_ai_candidate(
+                    store, cfg, providers, row, context, found, scored,
+                    judgement, payload,
+                )
         store.mark_ai_reviewed(int(row["id"]), ai_json=payload, adopt=adoptable)
         if adoptable:
             summary.adopted += 1
@@ -153,6 +159,70 @@ def run_ai_pre_review(
             progress(f"预审 {index}/{len(rows)}：采纳 {summary.adopted}")
 
     return summary
+
+
+def _switch_to_ai_candidate(
+    store: StateStore,
+    cfg: Config,
+    providers: dict[str, Provider],
+    row,
+    context: MatchContext,
+    found: list,
+    scored: list,
+    judgement: object,
+    payload: str,
+) -> bool:
+    """把暂存条目换成模型选中的候选的词。返回是否换用成功。
+
+    底线（`_alt_candidate_admissible`）：候选未被硬约束否决、时长差在
+    硬外闸内、标题相似度 ≥0.5——模型的语义判定替代数值分证据，
+    但「毫不相关」的硬底线不放宽。取不到可同步的词也不换。
+    """
+    from .lrc import content_hash, normalize_lrc, parse_lrc
+    from .models import LyricsState
+    from .pipeline import _alt_candidate_admissible
+
+    alt_provider_name, _, alt_pid = str(judgement.best).partition(":")
+    alt_score = next(
+        (
+            s for s in scored
+            if s.provider == alt_provider_name and s.provider_id == alt_pid
+        ),
+        None,
+    )
+    alt_candidate = next(
+        (
+            c for c in found
+            if c.provider == alt_provider_name and c.provider_id == alt_pid
+        ),
+        None,
+    )
+    provider_alt = providers.get(alt_provider_name)
+    if alt_score is None or alt_candidate is None or provider_alt is None:
+        return False
+    if not _alt_candidate_admissible(alt_score, cfg.policy.matching):
+        return False
+    try:
+        raw = provider_alt.lyrics(alt_candidate)
+    except Exception:  # noqa: BLE001 — 取词失败不换，保持人工
+        return False
+    if raw is None or not raw.synced or not raw.text.strip():
+        return False
+    parsed = parse_lrc(normalize_lrc(raw.text), duration_seconds=context.duration)
+    if parsed.state is not LyricsState.SYNCED:
+        return False
+    text = normalize_lrc(raw.text)
+    store.replace_staged_content(
+        int(row["id"]),
+        content=text,
+        content_hash=content_hash(text),
+        provider=alt_provider_name,
+        provider_id=alt_pid,
+        score=alt_score.score,
+        duration_delta=alt_score.duration_delta,
+        ai_json=payload,
+    )
+    return True
 
 
 def context_query(context: MatchContext) -> Any:
