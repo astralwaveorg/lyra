@@ -60,6 +60,7 @@ from .tagsources import (
     compare_fields,
     locate_release_track,
     lookup_by_link,
+    lookup_by_release,
     summarise,
 )
 
@@ -1288,6 +1289,63 @@ def _ai_verify_search_match(
     )
 
 
+def _release_level_fallback(
+    provider: MusicBrainzProvider,
+    snap: TrackSnapshot,
+    hints: _GroupHints,
+    ambiguous: bool,
+) -> tuple[object | None, list, bool]:
+    """按「艺人 + 专辑」搜发行，在发行内按标题定位曲目。
+
+    返回 (选中候选, 发行列表, 是否歧义)。找不到返回 (None, [], 原歧义)。
+    定位判据：标题规范化后相等（简繁/大小写/标点差异不算不同），
+    且时长接近或发行曲目未标时长。
+    """
+    album_hint = _effective_album_hint(snap, hints)
+    if not album_hint:
+        return None, [], ambiguous
+    artist = snap.artists[0] if snap.artists else ""
+    try:
+        releases_found = provider.search_releases(
+            album=album_hint, artist=artist, limit=5
+        )
+    except Exception:  # noqa: BLE001 — 搜索失败不算致命
+        return None, [], ambiguous
+    if not releases_found:
+        return None, [], ambiguous
+
+    for release_brief in releases_found[:3]:
+        release_id = str(release_brief.get("id") or "")
+        if not release_id:
+            continue
+        candidate = lookup_by_release(
+            provider,
+            release_id=release_id,
+            title=snap.title,
+            duration=snap.duration,
+        )
+        if candidate is None:
+            continue
+        if _sim(snap.title, candidate.title) >= 0.92:
+            return candidate, [candidate], ambiguous
+    return None, [], ambiguous
+
+
+def _candidate_from_fields(
+    *, provider_id: str, fields: dict[str, list[str]], release_album: str
+):
+    """把发行曲目的字段映射成搜索候选形态（保留给现有链路复用）。"""
+    from .tagsources import MetadataCandidate
+
+    return MetadataCandidate(
+        provider_id=provider_id,
+        title=str((fields.get("TITLE") or [""])[0]),
+        artists=tuple(fields.get("ARTIST") or fields.get("ARTISTS") or ()),
+        album=release_album or str((fields.get("ALBUM") or [""])[0]),
+        duration=None,
+    )
+
+
 def _search_match(
     provider: MusicBrainzProvider,
     snap: TrackSnapshot,
@@ -1372,6 +1430,14 @@ def _search_match(
         ambiguous = True
 
     if chosen is None:
+        # ---- 发行级兜底：录音搜索没把握时，换一条查询路径。----
+        # 按「艺人 + 专辑」搜发行，进发行后按标题定位曲目。
+        # 录音搜索对华语条目覆盖差（标题写法差异大），但**专辑页**通常
+        # 存在且曲目列表完整——这是同一首歌的第二条独立证据路径。
+        chosen, releases, ambiguous = _release_level_fallback(
+            provider, snap, hints, ambiguous
+        )
+    if chosen is None:
         return None, summary
 
     # 录音级时长经常比发行曲目更完整；伪发行/合辑常常缺 track length。
@@ -1381,7 +1447,10 @@ def _search_match(
         best.duration if best.duration is not None else chosen.duration,
         snap.duration,
     )
-    title_ok = _sim(snap.title, chosen.title) >= 0.99
+    # 0.99 的字面近似对华语条目太苛刻：「愛在西元前」vs「爱在西元前」
+    # 差一个字都过不了。_sim 已做简繁/大小写/标点归一，0.92 加上
+    # 艺人 ≥0.85 + 时长 ≤3s + 专辑 ≥0.8 的组合证据，足以认定同一首歌。
+    title_ok = _sim(snap.title, chosen.title) >= 0.92
     artist_ok = max(
         (_sim(a, b) for a in snap.artists for b in chosen.artists),
         default=0.0,

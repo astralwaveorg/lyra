@@ -3350,15 +3350,21 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         }
 
     def _orphans_count() -> int:
-        from .audit import find_orphan_sidecars
+        """孤儿歌词数。**必须走缓存**：它要遍历整个曲库的磁盘文件，
+        实测 3.2 秒——概览页每次都现算，就是「首页加载慢」的主因。
+        缓存 10 分钟，与统计同档；数据最多滞后 10 分钟，可接受。"""
+        def compute() -> int:
+            from .audit import find_orphan_sidecars
 
-        total = 0
-        for root_cfg in cfg.enabled_roots:
-            try:
-                total += len(find_orphan_sidecars(root_cfg))
-            except Exception:  # noqa: BLE001
-                continue
-        return total
+            total = 0
+            for root_cfg in cfg.enabled_roots:
+                try:
+                    total += len(find_orphan_sidecars(root_cfg))
+                except Exception:  # noqa: BLE001
+                    continue
+            return total
+
+        return _STATS_CACHE.get_or_compute("orphans", compute)
 
     @app.get("/api/v1/todo", dependencies=[Depends(require_auth)])
     def todo_view(
@@ -6057,7 +6063,9 @@ def _summary(cfg: Config, store: StateStore, runner: Runner) -> dict[str, Any]:
     return {
         "version": __version__,
         "schema_version": store.current_schema_version(),
-        "integrity": store.integrity_check(),
+        "integrity": _STATS_CACHE.get_or_compute(
+            "integrity", store.integrity_check
+        ),
         "write_enabled": cfg.policy.write_enabled,
         "lyrics_by_provider": by_provider,
         "coverage_history": history,

@@ -28,7 +28,7 @@ import TagProposalRow from '@/components/TagProposalRow.vue'
 import TagLinkDialog from '@/components/TagLinkDialog.vue'
 import TrackFixDrawer from '@/components/TrackFixDrawer.vue'
 
-type Tab = 'auto' | 'review' | 'unmatched' | 'ignored'
+type Tab = 'review' | 'unmatched' | 'ignored'
 
 const meta = useMeta()
 const narrow = useNarrow()
@@ -40,10 +40,10 @@ const requested = typeof route.query.tags_tab === 'string' ? route.query.tags_ta
 const tab = ref<Tab>(
   requested === 'review' ||
     requested === 'unmatched' ||
-    requested === 'auto' ||
     requested === 'ignored'
     ? requested
-    : 'auto',
+    // 「推荐采纳」已自动化（监控每 30 分钟写掉），不再有人工确认页
+    : 'review',
 )
 
 const summary = ref<TagSummary | null>(null)
@@ -84,7 +84,6 @@ const counts = computed(
 const source = computed(() => summary.value?.source)
 
 const tabLabels: Record<Tab, string> = {
-  auto: '推荐采纳',
   review: '待审查',
   unmatched: '未匹配',
   ignored: '已忽略',
@@ -143,12 +142,6 @@ const sourceLine = computed(() => {
 })
 
 const reviewNotice = computed(() => {
-  if (tab.value === 'auto') {
-    return {
-      title: '推荐采纳',
-      text: `共 ${fmtNumber(counts.value.auto)} 首，来源与曲目一致，没有需要人工判断的冲突。`,
-    }
-  }
   if (tab.value === 'review') {
     return {
       title: '待审查',
@@ -413,30 +406,6 @@ async function startScan() {
   }
 }
 
-async function applyAllAuto() {
-  if (!counts.value.auto) return
-  try {
-    await ElMessageBox.confirm(
-      `将写入 ${fmtNumber(counts.value.auto)} 首曲目的可补字段，冲突不会覆盖。`,
-      '全部采用',
-      { confirmButtonText: '全部采用', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  bulkBusy.value = true
-  try {
-    const result = await api.bulkApplyTags({ scope: 'auto' })
-    ElMessage.success(`已写入 ${result.files} 首、${result.fields} 个字段`)
-    if (result.errors.length) ElMessage.warning(result.errors[0])
-    await refreshAll()
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '写入失败')
-  } finally {
-    bulkBusy.value = false
-  }
-}
-
 async function applyPageFills() {
   const ids = items.value
     .filter(
@@ -583,9 +552,9 @@ onUnmounted(() => {
 
   <div class="kpi-grid">
     <div class="kpi">
-      <div class="kpi-label"><AppIcon name="MagicStick" :size="13" />可自动写入</div>
+      <div class="kpi-label"><AppIcon name="MagicStick" :size="13" />自动写入</div>
       <div class="kpi-value num">{{ fmtNumber(counts.auto) }}<small>首</small></div>
-      <div class="kpi-foot">无冲突，扫描后可直接补齐</div>
+      <div class="kpi-foot">无冲突，监控自动写入，无需确认</div>
     </div>
     <div class="kpi">
       <div class="kpi-label"><AppIcon name="Warning" :size="13" />待审查</div>
@@ -605,7 +574,6 @@ onUnmounted(() => {
   </div>
 
   <el-tabs :model-value="tab" class="tags-tabs" @tab-change="changeTab">
-    <el-tab-pane :label="`${tabLabels.auto} ${counts.auto}`" name="auto" />
     <el-tab-pane :label="`${tabLabels.review} ${counts.review}`" name="review" />
     <el-tab-pane :label="`${tabLabels.unmatched} ${counts.unmatched}`" name="unmatched" />
     <el-tab-pane :label="`${tabLabels.ignored} ${counts.ignored}`" name="ignored" />
@@ -620,16 +588,7 @@ onUnmounted(() => {
         <div class="notice-sub">{{ reviewNotice.text }}</div>
       </div>
       <div class="notice-actions">
-        <el-button
-          v-if="tab === 'auto'"
-          type="success"
-          :loading="bulkBusy"
-          :disabled="!counts.auto || !summary?.write_enabled"
-          @click="applyAllAuto"
-        >
-          全部采用
-        </el-button>
-        <template v-else-if="tab === 'review'">
+        <template v-if="tab === 'review'">
           <el-button text :disabled="!pageSelectableCount" @click="selectPage">
             全选本页
           </el-button>
@@ -717,27 +676,21 @@ onUnmounted(() => {
     <EmptyState
       v-else
       :title="
-        tab === 'auto'
-          ? '没有可自动写入的标签'
-          : tab === 'review'
-            ? '没有待审查的标签'
-            : tab === 'unmatched'
-              ? '没有未匹配的曲目'
-              : '还没有忽略的曲目'
+        tab === 'review'
+          ? '没有待审查的标签'
+          : tab === 'unmatched'
+            ? '没有未匹配的曲目'
+            : '还没有忽略的曲目'
       "
       :hint="
-        tab === 'auto'
-          ? '扫描后，来源与曲目一致且没有冲突的会出现在这里。'
-          : tab === 'review'
-            ? '冲突字段需要人工确认；没有冲突时会自动写入。'
-            : tab === 'unmatched'
-              ? '全部曲目都找到了可信的 MusicBrainz 条目。'
-              : '在待审查或未匹配里点「忽略」，条目会移到这里，扫描不会将其恢复。'
+        tab === 'review'
+          ? '冲突字段需要人工确认；没有冲突时会自动写入。'
+          : tab === 'unmatched'
+            ? '全部曲目都找到了可信的 MusicBrainz 条目。'
+            : '在待审查或未匹配里点「忽略」，条目会移到这里，扫描不会将其恢复。'
       "
       :icon="
-        tab === 'auto'
-          ? 'PriceTag'
-          : tab === 'review'
+        tab === 'review'
             ? 'CircleCheck'
             : tab === 'unmatched'
               ? 'Search'

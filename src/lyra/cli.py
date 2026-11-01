@@ -1383,6 +1383,8 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     # AI 预审批：抓取后的待审查队列交给模型判定，高置信直接转待写入。
     # 独立于抓取预算——抓取时逐首判定会被几千首的扫描量摊薄，队列消不动。
     _AI_PRE_REVIEW_SECONDS = 300.0
+    # 推荐采纳自动写入：每 30 分钟
+    _SWEEP_SECONDS = 1800.0
     # full 整理：每 6 小时跑一次，把全库文件移到标准结构
     _FULL_ORGANIZE_SECONDS = 21600.0
     last_ai_pre_review = 0.0
@@ -1392,10 +1394,113 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
     last_state_sync = 0.0
     last_observer_check = 0.0
     last_fd_check = 0.0
+    last_sweep = 0.0
     last_policy_check = 0.0
     last_network_check = 0.0
     last_probe = 0.0
     last_full_organize = 0.0
+
+    def _auto_apply_sweep() -> None:
+        """把「推荐采纳」自动写掉，不再等人点按钮。
+
+        歌词：AI 预审采纳（state=staged）的条目，`run_apply` 会写——
+        但原来只有新文件批次才触发 apply，采纳的条目就永远停在
+        「推荐采纳」里等人点。标签：扫描时的自动写入有上限，剩下的
+        auto 提案同样一直挂着。每 30 分钟扫一次，全部自动处理。
+
+        「硬闸门全过、仅软门槛未达」的候选也在这里自动接受：用户
+        明确决定过——既然是推荐的，就说明质量可以，不该再要人点。
+        """
+        from .api import _safe_batch_entries
+        from .pipeline import run_apply
+
+        # 歌词：自动接受「硬闸门全过」的安全候选（原 safe-batch 按钮）
+        try:
+            safe = _safe_batch_entries(store)
+            if safe:
+                for item in safe:
+                    with contextlib.suppress(Exception):
+                        store.set_staged_state(int(item["id"]), "staged")
+                print(
+                    f"[watch] 推荐采纳：自动接受 {len(safe)} 条安全候选",
+                    flush=True,
+                )
+        except Exception as exc:  # noqa: BLE001 — 接受失败不影响写入
+            print(f"[watch] 安全候选接受失败 {type(exc).__name__}: {exc}", flush=True)
+
+        for root_cfg in cfg.enabled_roots:
+            if root_cfg.read_only:
+                continue
+            try:
+                with _watch_lease(store, root_cfg.name) as got:
+                    if not got:
+                        continue
+                    applied = run_apply(
+                        store, cfg, root_cfg,
+                        progress=lambda m, label=root_cfg.name: print(
+                            f"[watch] {label}: {m}", flush=True
+                        ),
+                        should_yield=_should_yield,
+                    )
+                    if applied.applied or applied.apply_failed:
+                        print(
+                            f"[watch] {root_cfg.name}: 推荐采纳自动写入 "
+                            f"{applied.applied}（失败 {applied.apply_failed}）",
+                            flush=True,
+                        )
+            except Exception as exc:  # noqa: BLE001 — 单根失败不影响其他
+                print(
+                    f"[watch] {root_cfg.name}: 推荐采纳写入失败 "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+    def _auto_tag_write_sweep() -> None:
+        """把 state='auto' 且还没写的标签提案写掉。"""
+        import uuid as _uuid
+
+        from .tagscrape import TagScanSummary, _write_auto
+
+        for root_cfg in cfg.enabled_roots:
+            if root_cfg.read_only:
+                continue
+            try:
+                rows = store.conn.execute(
+                    "SELECT id FROM tag_proposals WHERE state='auto' "
+                    "AND dismissed_at IS NULL LIMIT 500"
+                ).fetchall()
+                if not rows:
+                    continue
+                summary = TagScanSummary()
+                owner = f"tags-sweep-{_uuid.uuid4().hex[:8]}"
+                store.request_write(owner)
+                try:
+                    acquired = store.acquire_write_lock(
+                        "write", owner, ttl_seconds=1800, wait_seconds=90.0
+                    )
+                finally:
+                    store.cancel_write_request(owner)
+                if not acquired:
+                    continue
+                try:
+                    _write_auto(
+                        store, cfg, root_cfg,
+                        [int(r["id"]) for r in rows],
+                        summary, lambda m: print(f"[watch] {m}", flush=True),
+                    )
+                finally:
+                    store.release_write_lock("write", owner)
+                if summary.written:
+                    print(
+                        f"[watch] {root_cfg.name}: 标签自动写入 {summary.written}",
+                        flush=True,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[watch] {root_cfg.name}: 标签自动写入失败 "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
 
     def _run_ai_pre_review() -> None:
         """对待审查队列做一次模型判定，高置信条目转为待写入。"""
@@ -1824,6 +1929,16 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                     _run_ai_pre_review()
                 except Exception as exc:  # noqa: BLE001
                     print(f"[watch] AI 预审失败 {type(exc).__name__}: {exc}", flush=True)
+            # 推荐采纳自动写入：每 30 分钟，紧随预审（预审采纳的歌词、
+            # 扫描后剩下的 auto 标签，都由这里写掉，不再等人点按钮）
+            if now - last_sweep >= _SWEEP_SECONDS:
+                last_sweep = now
+                try:
+                    _auto_apply_sweep()
+                    _auto_tag_write_sweep()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[watch] 推荐采纳写入失败 {type(exc).__name__}: {exc}",
+                          flush=True)
             # full 整理：每 6 小时一次，把全库文件归位到标准结构
             if now - last_full_organize >= _FULL_ORGANIZE_SECONDS:
                 last_full_organize = now

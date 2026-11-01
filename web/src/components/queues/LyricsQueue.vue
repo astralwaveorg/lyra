@@ -29,7 +29,7 @@ import ScrapeDialog from '@/components/ScrapeDialog.vue'
 import PreviewPlayButton from '@/components/PreviewPlayButton.vue'
 import AppIcon from '@/components/AppIcon.vue'
 
-type Tab = 'safe' | 'pending' | 'ignored' | 'orphans'
+type Tab = 'pending' | 'ignored' | 'orphans'
 
 /** 父组件可指定初始标签；仅作初始值，之后仍以 ?tab= 深链为最高优先。 */
 const props = defineProps<{ initialTab?: Tab }>()
@@ -47,7 +47,7 @@ const router = useRouter()
  *   无音源   —— 没有对应音频的歌词（原「独立LRC」）。
  */
 function asTab(value: string | undefined): Tab | null {
-  return value === 'pending' || value === 'orphans' || value === 'safe' || value === 'ignored'
+  return value === 'pending' || value === 'orphans' || value === 'ignored'
     ? value
     : null
 }
@@ -59,7 +59,7 @@ function asTab(value: string | undefined): Tab | null {
  * 共用一个 tab 键会互相污染（切到标签队列时把歌词的页签带给它）。
  */
 const requested = asTab(typeof route.query.lyrics_tab === 'string' ? route.query.lyrics_tab : '') ?? asTab(props.initialTab)
-const tab = ref<Tab>(requested ?? 'safe')
+const tab = ref<Tab>(requested ?? 'pending')
 
 const data = ref<ReviewPage | null>(null)
 const safeItems = ref<SafeItem[]>([])
@@ -82,7 +82,6 @@ const orphansRef = ref<InstanceType<typeof OrphansPanel> | null>(null)
  * 只属于当前列表——换页、刷新即清空，绝不把看不见的行带进批量。
  */
 const checkedPaths = ref<Set<string>>(new Set())
-const checkedSafePaths = ref<Set<string>>(new Set())
 const pendingBatchBusy = ref(false)
 
 /** 「已忽略」标签的数据：path 级 skip_fetch 规则。 */
@@ -252,7 +251,6 @@ async function load() {
   error.value = ''
   // 勾选只属于当前这一页；列表一换就清空。
   checkedPaths.value = new Set()
-  checkedSafePaths.value = new Set()
   try {
     const [review, safeList, ruleList] = await Promise.all([
       api.staged({
@@ -289,12 +287,6 @@ async function refresh() {
   await meta.refresh().catch(() => undefined)
 }
 
-/** 首屏没有推荐项时直接落到「待审查」，别让人停在一个空标签上。 */
-function chooseInitialTab() {
-  if (requested) return
-  if (!safe.value && tab.value === 'safe') tab.value = 'pending'
-}
-
 async function refreshActive() {
   if (tab.value === 'orphans') await orphansRef.value?.reload()
   else await refresh()
@@ -327,25 +319,6 @@ async function accept(group: StagedGroup, candidate: StagedCandidate) {
   }
 }
 
-async function acceptOne(group: { best: SafeItem; items: SafeItem[] }) {
-  busyId.value = group.best.id
-  try {
-    await api.acceptStaged(group.best.id)
-    await Promise.all(
-      group.items
-        .filter((item) => item.id !== group.best.id)
-        .map((item) => api.rejectStaged(item.id).catch(() => undefined)),
-    )
-    ElMessage.success('已采用，等待写入')
-    viewOpen.value = false
-    await refresh()
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '操作失败')
-  } finally {
-    busyId.value = 0
-  }
-}
-
 async function ignoreGroup(group: StagedGroup) {
   try {
     await ElMessageBox.confirm(
@@ -365,37 +338,6 @@ async function ignoreGroup(group: StagedGroup) {
     ElMessage.error(err instanceof Error ? err.message : '操作失败')
   } finally {
     busyId.value = 0
-  }
-}
-
-async function acceptSafe() {
-  try {
-    await ElMessageBox.confirm(
-      `这 ${safeTrackCount.value} 条的来源与曲目一致，匹配分数未达到自动采用标准。采用后会在下次写入时生效。`,
-      '批量采用',
-      { confirmButtonText: '全部采用', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  batchBusy.value = true
-  try {
-    // 界面上是一首一行；「全部采用」也只采用这些行，而不是接口里的全部候选。
-    // 同一首可能有多条安全候选（不同来源都匹配上了），多出来的会被驳回，
-    // 否则「看到 8 条、采用 10 条」这种数字对不上会让人怀疑记错了。
-    const chosen = safeGroups.value.map((group) => group.best.id)
-    const chosenSet = new Set(chosen)
-    const extras = safeItems.value.filter((item) => !chosenSet.has(item.id)).map((item) => item.id)
-    const result = await api.acceptSafeBatch(chosen)
-    await Promise.all(extras.map((id) => api.rejectStaged(id).catch(() => undefined)))
-    ElMessage.success(`已采用 ${result.accepted} 项`)
-    page.value = 1
-    await refresh()
-    if (!safeTrackCount.value) tab.value = 'pending'
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '批量采用失败')
-  } finally {
-    batchBusy.value = false
   }
 }
 
@@ -490,81 +432,7 @@ async function ignoreChecked() {
 
 /* ------------------------------------------------- 推荐采纳的勾选批量 */
 
-const checkedSafeGroups = computed(() =>
-  safeGroups.value.filter((group) => checkedSafePaths.value.has(group.rel_path)),
-)
-const checkedSafeCount = computed(() => checkedSafeGroups.value.length)
 
-function toggleSafeTrack(path: string, value: boolean) {
-  const next = new Set(checkedSafePaths.value)
-  if (value) next.add(path)
-  else next.delete(path)
-  checkedSafePaths.value = next
-}
-
-function selectAllSafe() {
-  checkedSafePaths.value = new Set(
-    safeGroups.value
-      .filter((group) => !unavailable.value.has(group.best.id))
-      .map((group) => group.rel_path),
-  )
-}
-
-function clearSafeChecked() {
-  checkedSafePaths.value = new Set()
-}
-
-async function acceptCheckedSafe() {
-  const list = checkedSafeGroups.value
-  if (!list.length) return
-  try {
-    await ElMessageBox.confirm(
-      `将采用所选 ${list.length} 条（来源与曲目一致，只是分数未达自动采用标准）；同一首的其他候选会被驳回。`,
-      '批量采用',
-      { confirmButtonText: '批量采用', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  batchBusy.value = true
-  try {
-    const result = await api.batchAcceptStaged(list.map((group) => group.best.id))
-    ElMessage.success(`已采用 ${result.accepted} 条，等待写入`)
-    if (result.missing) {
-      ElMessage.warning(`${result.missing} 项已不在待审查队列里，本次未处理`)
-    }
-    await refresh()
-    if (!safeTrackCount.value) tab.value = 'pending'
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '批量采用失败')
-  } finally {
-    batchBusy.value = false
-  }
-}
-
-async function ignoreCheckedSafe() {
-  const list = checkedSafeGroups.value
-  if (!list.length) return
-  try {
-    await ElMessageBox.confirm(
-      `将忽略所选 ${list.length} 条对应的曲目：不再自动匹配歌词；如需恢复，可在「已忽略」页签中还原。`,
-      '批量忽略',
-      { confirmButtonText: '忽略', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  batchBusy.value = true
-  try {
-    const result = await api.ignoreStagedBatch(list.map((group) => group.best.id))
-    ElMessage.success(`已忽略 ${result.ignored} 首`)
-    await refresh()
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '批量忽略失败')
-  } finally {
-    batchBusy.value = false
-  }
-}
 
 /* ---------------------------------------------------------- 已忽略标签 */
 
@@ -589,7 +457,6 @@ function compare(group: StagedGroup) {
 
 onMounted(async () => {
   await load()
-  chooseInitialTab()
 })
 </script>
 
@@ -602,116 +469,6 @@ onMounted(async () => {
   </div>
 
   <el-tabs v-model="tab" class="review-tabs">
-    <el-tab-pane :label="safeTrackCount ? `推荐采纳 ${safeTrackCount}` : '推荐采纳'" name="safe">
-      <div v-if="safe" class="notice">
-        <div class="notice-text">
-          <div class="notice-title">推荐采纳</div>
-          <div class="notice-sub">
-            共 {{ safeTrackCount }} 条，来源与曲目一致，匹配分数未达到自动采用标准。
-          </div>
-        </div>
-        <div class="notice-actions">
-          <el-button text :disabled="!safeTrackCount" @click="selectAllSafe">全选</el-button>
-          <el-button text :disabled="!checkedSafeCount" @click="clearSafeChecked">
-            清除选择
-          </el-button>
-          <el-button
-            type="primary"
-            :loading="batchBusy"
-            :disabled="!checkedSafeCount"
-            @click="acceptCheckedSafe"
-          >
-            采用所选{{ checkedSafeCount ? `（${checkedSafeCount}）` : '' }}
-          </el-button>
-          <el-button
-            text
-            type="warning"
-            :loading="batchBusy"
-            :disabled="!checkedSafeCount"
-            @click="ignoreCheckedSafe"
-          >
-            忽略所选
-          </el-button>
-          <el-button type="primary" :loading="batchBusy" @click="acceptSafe">全部采用</el-button>
-        </div>
-      </div>
-
-      <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
-
-      <el-skeleton v-if="safeLoading && !safeItems.length" animated :rows="6" />
-
-      <div v-else-if="safeGroups.length" class="safe-list">
-        <div v-for="group in safeGroups" :key="group.rel_path" class="safe-row">
-          <el-checkbox
-            class="track-check"
-            :model-value="checkedSafePaths.has(group.rel_path)"
-            :disabled="unavailable.has(group.best.id)"
-            :title="unavailable.has(group.best.id) ? '来源已下架，请点「查看」后重新查询' : ''"
-            @change="toggleSafeTrack(group.rel_path, Boolean($event))"
-          />
-          <div class="safe-main">
-            <div class="name-line">
-              <span class="path ellipsis">{{ splitPath(group.rel_path).name }}</span>
-              <PreviewPlayButton :root="group.root" :path="group.rel_path" />
-            </div>
-            <span class="cell-meta ellipsis">{{ splitPath(group.rel_path).dir }}</span>
-          </div>
-          <div class="safe-source">
-            <ProviderBadge :name="group.best.provider" />
-            <span class="score num" :class="{ good: (group.best.score ?? 0) >= 0.8 }">
-              {{ fmtScore(group.best.score) }}
-            </span>
-            <el-tag v-if="unavailable.has(group.best.id)" size="small" type="danger" effect="plain">
-              来源已下架
-            </el-tag>
-            <span v-else-if="group.items.length > 1" class="cell-meta">+{{ group.items.length - 1 }}</span>
-          </div>
-          <div class="safe-actions">
-            <el-button
-              size="small"
-              text
-              @click="
-                openPreview(
-                  {
-                    id: group.best.id,
-                    path: group.rel_path,
-                    root: group.root,
-                    provider: group.best.provider,
-                    provider_id: group.best.provider_id,
-                    score: group.best.score,
-                    reason: group.best.reason,
-                    recommended: true,
-                    note: '时长、版本、标题、艺人四项检查全部通过，只是总分未达自动采用标准。',
-                  },
-                  () => acceptOne(group),
-                )
-              "
-            >
-              查看
-            </el-button>
-            <el-button
-              class="adopt-btn recommended"
-              size="small"
-              type="primary"
-              plain
-              :loading="busyId === group.best.id"
-              :disabled="unavailable.has(group.best.id)"
-              @click="acceptOne(group)"
-            >
-              采用
-            </el-button>
-          </div>
-        </div>
-      </div>
-
-      <EmptyState
-        v-else
-        title="没有推荐采纳的项"
-        hint="来源与曲目完全一致、只是分数略低的候选会出现在这里；其余请到「待审查」逐首确认。"
-        icon="CircleCheck"
-      />
-    </el-tab-pane>
-
     <el-tab-pane :label="total ? `待审查 ${total}` : '待审查'" name="pending">
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
 

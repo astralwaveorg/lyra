@@ -46,7 +46,7 @@ const kind = ref<Kind>(
 /** 歌词面板的内部页签（/orphans 旧地址 deep-link 用 lyrics_tab 键）。 */
 const lyricsTab = computed(() =>
   typeof route.query.lyrics_tab === 'string'
-    ? (route.query.lyrics_tab as 'safe' | 'pending' | 'ignored' | 'orphans')
+    ? (route.query.lyrics_tab as 'pending' | 'ignored' | 'orphans')
     : undefined,
 )
 
