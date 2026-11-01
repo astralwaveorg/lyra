@@ -1121,6 +1121,16 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
         chunk_size = 50
         for start in range(0, len(ordered), chunk_size):
             chunk = ordered[start:start + chunk_size]
+            # **批与批之间给等待的写入者让出窗口。**
+            # 批内每个文件结束后都会检查有没有人等写入并让出，但批与批
+            # 之间重新拿锁只差几毫秒——等待方（自动写入 sweep）的轮询
+            # 永远抢不到空隙，134 条 auto 提案因此一直没写。这里在拿锁
+            # 前主动停一停，把窗口留出来。
+            if store.waiting_writers():
+                print("[watch] 有写入在等待，批间让出 30 秒", flush=True)
+                deadline = time.monotonic() + 30.0
+                while time.monotonic() < deadline and store.waiting_writers():
+                    stop.wait(2.0)
             with _watch_lease(store, root.name) as got:
                 if not got:
                     return
@@ -1491,6 +1501,9 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                     [int(r["id"]) for r in rows],
                     summary, lambda m: print(f"[watch] {m}", flush=True),
                 )
+                # 错误必须可见：之前租约抢不到时静默写 0 条，看起来像没跑
+                for err in summary.errors[:3]:
+                    print(f"[watch] 标签自动写入：{err}", flush=True)
                 if summary.written:
                     print(
                         f"[watch] {root_cfg.name}: 标签自动写入 {summary.written}",

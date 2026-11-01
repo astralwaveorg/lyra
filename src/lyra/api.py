@@ -3291,8 +3291,10 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
 
     def _todo_counts() -> dict[str, int]:
         """六类待办的计数。全部走现有表，惰性聚合，不做全库大查询。"""
+        # 按**曲目数**计（与待审查列表一致——列表按曲目分组，同一首歌的
+        # 多个候选折叠成一组）。按条目计会出现「徽标 65、列表 49」的错位。
         lyrics = int(state.conn.execute(
-            "SELECT COUNT(*) FROM staged_lyrics s "
+            "SELECT COUNT(DISTINCT s.location_id) FROM staged_lyrics s "
             "JOIN locations l ON l.id = s.location_id "
             "WHERE s.state='needs_review' AND l.missing_since IS NULL"
         ).fetchone()[0])
