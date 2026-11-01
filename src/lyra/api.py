@@ -6334,8 +6334,15 @@ def _staged(
     where = "1=1" if not state_filter else "s.state = ?"
     params: list[Any] = [] if not state_filter else [state_filter]
 
+    # **与待办计数同口径：排除文件已删的位置行。**
+    # 计数（_todo_counts）排除了 missing，列表原来没排——徽标显示 63、
+    # 列表却有 94 条，使用者以为自己在看两个系统。
+    where += " AND l.missing_since IS NULL"
+
     # 「推荐采纳」与「待审查」必须是两个互不重叠的桶：前者的条目不能
     # 又在后者出现，否则使用者会以为同一首歌有两份要处理。
+    # 2.2.35 起「推荐采纳」自动写入，前端已移除该页签；exclude_safe
+    # 仅保留给旧调用方，默认不再排除——否则这些条目在界面上无处显示。
     if exclude_safe:
         safe_ids = [item["id"] for item in _safe_batch_entries(store)]
         for start in range(0, len(safe_ids), 400):
@@ -6365,7 +6372,9 @@ def _staged(
         page_paths = all_paths[start:start + size]
     else:
         total = store.conn.execute(
-            f"SELECT COUNT(*) FROM staged_lyrics s WHERE {where}", tuple(params)
+            f"SELECT COUNT(*) FROM staged_lyrics s "
+            f"JOIN locations l ON l.id = s.location_id WHERE {where}",
+            tuple(params),
         ).fetchone()[0]
 
     extra = ""

@@ -259,7 +259,9 @@ async function load() {
         page: page.value,
         size: size.value,
         // 推荐项单独成一个标签，这里必须排除，否则同一首歌会出现两次
-        exclude_safe: true,
+        // 「推荐采纳」页签已移除（自动写入），列表不再排除安全候选——
+        // 否则这些条目在界面上无处显示，计数与列表也对不上
+        exclude_safe: false,
       }),
       api.safeBatch().catch(() => ({ total: 0, items: [] as SafeItem[] })),
       api.listRules().catch(() => ({ total: 0, items: [] as Rule[] })),

@@ -1414,6 +1414,19 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
         from .api import _safe_batch_entries
         from .pipeline import run_apply
 
+        # 歌词：写入失败的重试一次——瞬时错误（库被占用、文件刚被移动）
+        # 不该永久占着「失败」队列。
+        try:
+            failed = store.conn.execute(
+                "SELECT id FROM staged_lyrics WHERE state='failed' LIMIT 100"
+            ).fetchall()
+            if failed:
+                for row in failed:
+                    store.set_staged_state(int(row["id"]), "staged")
+                print(f"[watch] 重试上次写入失败 {len(failed)} 条", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[watch] 重试失败条目出错 {type(exc).__name__}: {exc}", flush=True)
+
         # 歌词：自动接受「硬闸门全过」的安全候选（原 safe-batch 按钮）
         try:
             safe = _safe_batch_entries(store)
@@ -1457,8 +1470,6 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
 
     def _auto_tag_write_sweep() -> None:
         """把 state='auto' 且还没写的标签提案写掉。"""
-        import uuid as _uuid
-
         from .tagscrape import TagScanSummary, _write_auto
 
         for root_cfg in cfg.enabled_roots:
@@ -1472,24 +1483,14 @@ def cmd_watch(args: argparse.Namespace, cfg: Config) -> int:
                 if not rows:
                     continue
                 summary = TagScanSummary()
-                owner = f"tags-sweep-{_uuid.uuid4().hex[:8]}"
-                store.request_write(owner)
-                try:
-                    acquired = store.acquire_write_lock(
-                        "write", owner, ttl_seconds=1800, wait_seconds=90.0
-                    )
-                finally:
-                    store.cancel_write_request(owner)
-                if not acquired:
-                    continue
-                try:
-                    _write_auto(
-                        store, cfg, root_cfg,
-                        [int(r["id"]) for r in rows],
-                        summary, lambda m: print(f"[watch] {m}", flush=True),
-                    )
-                finally:
-                    store.release_write_lock("write", owner)
+                # **不要在这里先拿写租约**：_write_auto 内部自己会申请，
+                # 先拿了它就申请不到（自己等自己），静默写 0 条——线上
+                # 134 条 auto 提案因此一直没写。
+                _write_auto(
+                    store, cfg, root_cfg,
+                    [int(r["id"]) for r in rows],
+                    summary, lambda m: print(f"[watch] {m}", flush=True),
+                )
                 if summary.written:
                     print(
                         f"[watch] {root_cfg.name}: 标签自动写入 {summary.written}",

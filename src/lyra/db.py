@@ -2200,6 +2200,21 @@ class StateStore:
         """
         now = time.time()
         payload_json = json.dumps(payload, ensure_ascii=False)
+        # 文件已被删除（位置标记缺失）时不再创建提案——扫描对整库跑，
+        # 已删文件的对账残影会反复生成死提案（线上 169 条 review 全是这种）。
+        gone = self.conn.execute(
+            "SELECT missing_since FROM locations WHERE id=?", (location_id,)
+        ).fetchone()
+        if gone is not None and gone["missing_since"] is not None:
+            existing = self.conn.execute(
+                "SELECT id FROM tag_proposals WHERE location_id=?", (location_id,)
+            ).fetchone()
+            if existing is not None:
+                self.conn.execute(
+                    "DELETE FROM tag_proposals WHERE location_id=?", (location_id,)
+                )
+                self.conn.commit()
+            return -1
         row = self.conn.execute(
             "SELECT id, state, source FROM tag_proposals WHERE location_id=?",
             (location_id,),
