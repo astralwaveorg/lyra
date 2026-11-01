@@ -398,7 +398,7 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/tags/proposals/${id}/restore`, json({})),
   bulkApplyTags: (payload: {
     ids?: number[]
-    scope?: 'auto' | 'fills' | 'recommended'
+    scope?: 'auto' | 'fills' | 'recommended' | 'album'
     include_search?: boolean
   }) =>
     request<{ ok: boolean; files: number; fields: number; errors: string[] }>(

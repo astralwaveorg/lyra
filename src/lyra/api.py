@@ -206,6 +206,47 @@ def _make_mb_provider(cfg: Config) -> MusicBrainzProvider:
     )
 
 
+#: 发行信息字段（「专辑信息」一键采用的写入范围）。
+#: 标题/艺人/ISRC/人员等音乐名称字段改动风险高，不进批量，仍需逐条确认。
+_ALBUM_INFO_FIELDS = frozenset({
+    "ALBUM", "DATE", "ORIGINALDATE", "ORIGINALYEAR",
+    "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_RELEASEGROUPID",
+    "MUSICBRAINZ_RELEASETRACKID", "MUSICBRAINZ_TRACKID",
+    "MUSICBRAINZ_ALBUMARTISTID",
+    "LABEL", "CATALOGNUMBER", "BARCODE", "ASIN",
+    "RELEASECOUNTRY", "RELEASESTATUS", "RELEASETYPE", "MEDIA", "SCRIPT",
+    "TRACKNUMBER", "DISCNUMBER", "TOTALTRACKS", "TRACKTOTAL",
+    "TOTALDISCS", "DISCTOTAL",
+    "ALBUMARTIST", "ALBUMARTISTS", "ALBUMARTISTSORT",
+})
+
+
+def _album_info_fields(row) -> list[str]:
+    """批量「专辑信息」的字段集：补空/纠正的全部 + 发行信息的冲突。
+
+    与单条展开后的「专辑信息（N）」按钮同一口径——批量版只是把
+    同一动作作用到多个提案上，不扩大写入范围。
+    """
+    try:
+        payload = json.loads(str(row["payload_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    rows = payload.get("rows") or []
+    return [
+        str(item.get("key"))
+        for item in rows
+        if isinstance(item, dict)
+        and (
+            item.get("action") in (ACTION_FILL, ACTION_CORRECT)
+            or (
+                item.get("action") == ACTION_CONFLICT
+                and str(item.get("key") or "").strip() in _ALBUM_INFO_FIELDS
+            )
+        )
+        and str(item.get("key") or "").strip()
+    ]
+
+
 def _recommended_fields(row) -> list[str]:
     """批量「应用建议」的字段集:除「一致」外的全部对比行。
 
@@ -4364,7 +4405,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="ids 必须是整数数组") from exc
         scope = str(payload.get("scope") or ("fills" if ids else "auto"))
-        if scope not in ("auto", "fills", "recommended"):
+        if scope not in ("auto", "fills", "recommended", "album"):
             raise HTTPException(status_code=400, detail="未知的批量写入范围")
 
         if scope == "auto":
@@ -4376,7 +4417,7 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
                 row for row in (state.tag_proposal(item) for item in ids)
                 if row is not None
             ]
-            if not payload.get("include_search"):
+            if not payload.get("include_search") and scope != "album":
                 # 标题搜索结果可能整条都错；批量补空不能替人做这个判断。
                 filtered = []
                 for row in rows:
@@ -4397,9 +4438,13 @@ def create_app(cfg: Config, *, store: StateStore | None = None) -> FastAPI:
         for row in rows:
             try:
                 root = _select_root(cfg, str(row["root_name"]))
-                fields = None
+                fields: list[str] | None = None
                 if scope == "recommended":
                     fields = _recommended_fields(row)
+                    if not fields:
+                        continue
+                if scope == "album":
+                    fields = _album_info_fields(row)
                     if not fields:
                         continue
                 outcome = apply_proposal(state, cfg, root, row, fields=fields)

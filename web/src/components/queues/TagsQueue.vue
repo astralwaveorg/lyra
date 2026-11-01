@@ -12,6 +12,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api/client'
+import { albumInfoKeys } from '@/utils/tagFields'
 import type {
   TagHistoryRow,
   TagProposal,
@@ -406,6 +407,54 @@ async function startScan() {
   }
 }
 
+/** 本页「专辑信息」可批量采用的条目：有发行信息字段可写。 */
+const pageAlbumInfoItems = computed(() =>
+  items.value.filter((item) => {
+    if (item.state !== 'review' || item.writable === false) return false
+    return albumInfoKeys(item.rows).length > 0
+  }),
+)
+
+async function applyPageAlbumInfo() {
+  const targets = pageAlbumInfoItems.value.map((item) => ({
+    id: item.id,
+    keys: albumInfoKeys(item.rows),
+    fields: item.rows
+      .filter((row) => albumInfoKeys(item.rows).includes(row.key))
+      .map((row) => row.key),
+  }))
+  if (!targets.length) {
+    ElMessage.info('本页没有可批量写入的专辑信息')
+    return
+  }
+  const fieldTotal = targets.reduce((sum, t) => sum + t.fields.length, 0)
+  try {
+    await ElMessageBox.confirm(
+      `将为本页 ${targets.length} 首写入 ${fieldTotal} 个发行信息字段` +
+        '（专辑、日期、厂牌、曲序等）；标题与艺人不动。写入前可撤销，操作有记录。',
+      '批量采用专辑信息',
+      { confirmButtonText: '写入', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  bulkBusy.value = true
+  try {
+    const result = await api.bulkApplyTags({
+      scope: 'album',
+      ids: targets.map((t) => t.id),
+      include_search: true,
+    })
+    ElMessage.success(`已写入 ${result.files} 首、${result.fields} 个字段`)
+    if (result.errors.length) ElMessage.warning(result.errors[0])
+    await refreshAll()
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '写入失败')
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
 async function applyPageFills() {
   const ids = items.value
     .filter(
@@ -594,6 +643,14 @@ onUnmounted(() => {
           </el-button>
           <el-button text :disabled="!checkedCount" @click="clearChecked">
             清除选择
+          </el-button>
+          <el-button
+            :loading="bulkBusy"
+            :disabled="!pageAlbumInfoItems.length || !summary?.write_enabled"
+            title="只写专辑、日期、厂牌、曲序等发行信息；标题与艺人不动"
+            @click="applyPageAlbumInfo"
+          >
+            专辑信息{{ pageAlbumInfoItems.length ? `（${pageAlbumInfoItems.length}）` : '' }}
           </el-button>
           <el-button
             :loading="bulkBusy"
@@ -922,6 +979,22 @@ onUnmounted(() => {
 @media (max-width: 760px) {
   .queue-bar {
     flex-wrap: wrap;
+  }
+
+  /* 按钮行 4 个并排在 390px 屏溢出：换行 */
+  .notice-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .notice-actions .el-button {
+    margin-left: 0;
+  }
+
+  /* KPI 卡两列一行放不下 4 张 */
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 
   .queue-hint {

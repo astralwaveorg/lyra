@@ -11,6 +11,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api/client'
 import type { TagFieldRow, TagProposal } from '@/api/types'
+import { NON_NAME_FIELDS } from '@/utils/tagFields'
 import { fmtAgo, fmtDuration, splitPath } from '@/utils/format'
 import { tagFieldLabel } from '@/utils/labels'
 import AppIcon from './AppIcon.vue'
@@ -63,18 +64,6 @@ const title = computed(() => props.item.track.title || props.item.title || name.
 const artists = computed(() => (props.item.track.artists ?? []).join(' / '))
 const writable = computed(() => props.item.writable !== false)
 
-/** 非音乐名称字段：专辑、日期、MBID、厂牌、曲序等发行信息。 */
-const NON_NAME_FIELDS = new Set([
-  'ALBUM', 'DATE', 'ORIGINALDATE', 'ORIGINALYEAR',
-  'MUSICBRAINZ_ALBUMID', 'MUSICBRAINZ_RELEASEGROUPID',
-  'MUSICBRAINZ_RELEASETRACKID', 'MUSICBRAINZ_TRACKID',
-  'MUSICBRAINZ_ALBUMARTISTID',
-  'LABEL', 'CATALOGNUMBER', 'BARCODE', 'ASIN',
-  'RELEASECOUNTRY', 'RELEASESTATUS', 'RELEASETYPE', 'MEDIA', 'SCRIPT',
-  'TRACKNUMBER', 'DISCNUMBER', 'TOTALTRACKS', 'TRACKTOTAL',
-  'TOTALDISCS', 'DISCTOTAL',
-  'ALBUMARTIST', 'ALBUMARTISTS', 'ALBUMARTISTSORT',
-])
 const nonNameConflicts = computed(() =>
   conflicts.value.filter((row) => NON_NAME_FIELDS.has(row.key)),
 )
@@ -351,7 +340,7 @@ async function restore() {
             :loading="working"
             @click="applyNonName"
           >
-            采用采用专辑信息
+            专辑信息
           </el-button>
           <el-button size="small" :class="{ on: expanded }" @click="expanded = !expanded">
             {{ expanded ? '收起' : '查看对照' }}
@@ -424,7 +413,7 @@ async function restore() {
           :loading="working"
           @click="applyNonName"
         >
-          采用专辑信息（{{ nonNameConflicts.length }}）
+          专辑信息（{{ nonNameConflicts.length }}）
         </el-button>
         <el-button size="small" text @click="emit('link', item)">
           <AppIcon name="Link" :size="13" />链接指定条目
@@ -580,6 +569,35 @@ async function restore() {
 .details {
   padding: 4px 14px 13px;
 }
+
+@media (max-width: 720px) {
+  /* 字段对照表 6 列在窄屏挤成一团：竖排成「字段 → 值」两段式 */
+  .field-head {
+    display: none;
+  }
+
+  .field-head,
+  .field-row {
+    grid-template-columns: 1fr;
+    gap: 3px;
+    padding: 8px 0;
+  }
+
+  .field-name {
+    white-space: normal;
+  }
+
+  .field-value {
+    word-break: break-all;
+    line-height: 1.45;
+  }
+
+  .field-rows {
+    max-height: 330px;
+    overflow: auto;
+    border-top: 1px solid var(--border);
+  }
+}
 .field-head,
 .field-row {
   display: grid;
@@ -733,13 +751,39 @@ async function restore() {
   .details {
     padding: 2px 12px 12px;
   }
+  /* 字段对照表在窄屏竖排：字段名一行、值一行（判断标签隐藏会丢失
+     「为什么没自动采用」的依据——保留，随值内联）。5 列压缩方案在
+     390px 屏上仍然挤成一团。 */
+  .field-head {
+    display: none;
+  }
+
   .field-head,
   .field-row {
-    grid-template-columns: 20px 76px minmax(0, 1fr) 12px minmax(0, 1fr);
-    gap: 6px;
+    grid-template-columns: 1fr;
+    gap: 3px;
+    padding: 9px 0;
   }
-  .field-head span:last-child,
+
   .field-row :deep(.el-tag) {
+    justify-self: start;
+  }
+
+  .field-name {
+    white-space: normal;
+  }
+
+  .field-value {
+    word-break: break-all;
+    line-height: 1.45;
+  }
+
+  .field-rows {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .field-head span:last-child {
     display: none;
   }
   .field-value {
