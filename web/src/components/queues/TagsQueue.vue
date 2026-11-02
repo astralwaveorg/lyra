@@ -172,13 +172,21 @@ const pageFillCount = computed(() =>
 
 const checkedIds = ref<Set<number>>(new Set())
 
-/** 能进批量的行:可写、来源不是标题搜索、还有可写的字段。 */
+/** 能进批量的行:可写、还有可写的字段。
+ *
+ * 标题搜索命中的行也允许勾选——它整条可能匹配错,但既然是人逐行
+ * 勾选出来的,就是显式确认;批量写入时再单独提示一次。
+ */
 function selectable(item: TagProposal): boolean {
   return (
     item.writable !== false &&
-    item.source !== 'search' &&
     (item.summary.total ?? 0) > (item.summary.same ?? 0)
   )
+}
+
+/** 这行是不是标题搜索命中的(整条可能匹配错,需要人确认)。 */
+function isSearchItem(item: TagProposal): boolean {
+  return item.source === 'search'
 }
 
 const checkedItems = computed(() => items.value.filter((item) => checkedIds.value.has(item.id)))
@@ -238,10 +246,15 @@ async function applyChecked() {
   if (fills) parts.push(`补空 ${fills}`)
   if (corrects) parts.push(`纠正 ${corrects}`)
   if (conflicts) parts.push(`覆盖冲突 ${conflicts}`)
+  const searchCount = list.filter(isSearchItem).length
+  const searchNote = searchCount
+    ? `其中 ${searchCount} 首来自标题搜索匹配，整条可能匹配错，请先核对标题与艺人。`
+    : ''
   try {
     await ElMessageBox.confirm(
-      `将按建议写入所选 ${list.length} 首${parts.length ? `（${parts.join('、')}）` : ''}；冲突覆盖不再逐首预览。`,
-      '写入所选',
+      `将按建议写入所选 ${list.length} 首${parts.length ? `（${parts.join('、')}）` : ''}；冲突覆盖不再逐首预览。` +
+        (searchNote ? `\n${searchNote}` : ''),
+      searchCount ? '写入所选（含搜索匹配）' : '写入所选',
       { confirmButtonText: '写入', cancelButtonText: '取消', type: 'warning' },
     )
   } catch {
@@ -252,6 +265,8 @@ async function applyChecked() {
     const result = await api.bulkApplyTags({
       scope: 'recommended',
       ids: list.map((item) => item.id),
+      // 搜索命中的行也是人逐行勾选的,批量写入时一并带上
+      include_search: true,
     })
     ElMessage.success(`已写入 ${result.files} 首、${result.fields} 个字段`)
     if (result.errors.length) ElMessage.warning(result.errors[0])

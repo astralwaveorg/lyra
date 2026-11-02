@@ -68,14 +68,18 @@ const nonNameConflicts = computed(() =>
   conflicts.value.filter((row) => NON_NAME_FIELDS.has(row.key)),
 )
 
-/** 批量勾选只对「能按建议写」的行开放:可写、有可写字段、来源经得起批量。 */
+/** 批量勾选只对「能按建议写」的行开放:可写、有可写字段。
+ *
+ * 标题搜索命中的行同样开放——整条可能匹配错,但勾选是逐行的人为动作,
+ * 批量写入前会再提示一次搜索来源的数量。
+ */
 const batchEligible = computed(
-  () => writable.value && selectableCount.value > 0 && props.item.source !== 'search',
+  () => writable.value && selectableCount.value > 0,
 )
 const checkTitle = computed(() => {
   if (!writable.value) return '只读格式，不支持写入'
-  if (props.item.source === 'search') return '标题搜索来源请逐条确认'
   if (selectableCount.value === 0) return '没有可写的字段'
+  if (props.item.source === 'search') return '标题搜索来源，勾选即视为已核对'
   return ''
 })
 
