@@ -792,6 +792,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#policycover" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        封面 [policy.cover]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#policyorganize" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        目录归位 [policy.organize]
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1817,6 +1839,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#policycover" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        封面 [policy.cover]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#policyorganize" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        目录归位 [policy.organize]
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2427,6 +2471,57 @@
 </tbody>
 </table>
 <p>设置页保存的策略写入数据库 <code>meta.settings.tags_policy</code>，启动时覆盖 <code>[policy.tags]</code>。修改配置文件不会覆盖设置页已经保存的值；需要以设置页为准，或在设置页重新保存。</p>
+<h3 id="policycover">封面 <code>[policy.cover]</code><a class="headerlink" href="#policycover" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>键</th>
+<th>默认</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto_embed_sibling</code></td>
+<td><code>true</code></td>
+<td>同目录规范命名图片（cover.jpg 等）自动嵌入</td>
+</tr>
+<tr>
+<td><code>fetch_sources</code></td>
+<td><code>["caa"]</code></td>
+<td>网络封面来源链，按序降级；可选 <code>caa</code>、<code>provider</code></td>
+</tr>
+<tr>
+<td><code>min_min_pixels</code></td>
+<td><code>90000</code></td>
+<td>质量门：宽×高不小于此值才采用，不足换下一来源</td>
+</tr>
+<tr>
+<td><code>auto_write</code></td>
+<td><code>false</code></td>
+<td>网络抓取的封面是否自动嵌入；false 时只进待办封面队列</td>
+</tr>
+</tbody>
+</table>
+<p>设置页保存的封面策略写入数据库 <code>meta.settings.cover_policy</code>，启动时<strong>覆盖 <code>[policy.cover]</code></strong>——与 <code>[policy.tags]</code> 同一条规则，<code>lyra</code> 与 <code>lyra watch</code> 都会读它。所以「配置文件里 <code>auto_write = false</code>」不等于自动嵌入没开：先看「设置 → 封面与归位」里的「网络封面自动嵌入」是不是打开的。</p>
+<p>已有封面偏小时会自动尝试换更大的，但<strong>换封面必须有实际收益</strong>：新封面要达到 25 万像素，且至少是现内嵌封面的 <strong>1.5 倍</strong>，否则保留原图。尺寸读不出来一律不换——否则会形成「换完还是偏小 → 文件被改写 → 监听再次触发」的无限重写循环。</p>
+<h3 id="policyorganize">目录归位 <code>[policy.organize]</code><a class="headerlink" href="#policyorganize" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>键</th>
+<th>默认</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mode</code></td>
+<td><code>off</code></td>
+<td><code>off</code>、<code>new_files</code>、<code>full</code>；只对「本进程观察到的新增文件」或 INBOX 根生效，存量曲库永远走人工预览</td>
+</tr>
+</tbody>
+</table>
 <h2 id="lyrics">歌词格式 <code>[lyrics]</code><a class="headerlink" href="#lyrics" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

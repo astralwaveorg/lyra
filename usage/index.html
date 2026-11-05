@@ -1865,6 +1865,9 @@
   （<code>01 - 艺人 - 歌名</code>、版本标记）会被解析成查询线索。</li>
 <li>封面：同目录规范命名图片（cover.jpg 等）自动嵌入；有发行 MBID 时从
   Cover Art Archive 按专辑一次下载。MP3 / OGG / Opus 均可写封面。</li>
+<li>已有封面偏小时会自动尝试换更大的，但<strong>只换有实际收益的</strong>：新封面要达到
+  25 万像素，且至少是现内嵌的 1.5 倍。拿不到明显更大的就保留原图，
+  不重写文件。</li>
 <li>自动归位默认关闭；<code>policy.organize.mode = "new_files"</code> 后仅对新增文件
   按模板建目录移动，冲突转待办，全部移动可在「活动」页撤销。<code>"full"</code>
   则由监控进程每 6 小时把全库（含存量）归位到标准结构，同样可撤销。
@@ -2047,11 +2050,13 @@
 <li><strong>账户</strong>：登录状态、退出登录。</li>
 <li><strong>外观</strong>：深色/浅色，跟随系统。</li>
 <li><strong>标签刮削</strong>：自动扫描、间隔、自动写入、指纹、单轮上限、时长容差。</li>
+<li><strong>封面与归位</strong>：同目录图片自动嵌入、网络封面自动嵌入、封面质量门、
+  自动归位与目录模板。</li>
 <li><strong>修改密码</strong>：至少 10 位。</li>
 <li><strong>API 令牌</strong>：给脚本和移动端签发 Bearer Token，明文只显示一次。</li>
 <li><strong>运行信息</strong>：版本、数据库结构、写入开关、来源和受管根。</li>
 </ul>
-<p>设置页保存的标签策略会写入数据库，并覆盖配置文件里的 <code>[policy.tags]</code>。监控进程每分钟检查一次变更。</p>
+<p>设置页保存的策略会写入数据库，并覆盖配置文件里的同名段——标签是 <code>[policy.tags]</code>，封面是 <code>[policy.cover]</code>，归位是 <code>[policy.organize]</code>，重复检测是 <code>[policy.dedupe]</code>。监控进程每分钟检查一次变更。</p>
 <p>「大模型」支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种协议。可以填 base URL 或完整 endpoint，保存前可用「测试连接」发一条最小请求。Token 只保存在服务端 <code>data/ai-token</code>，页面不会回显完整值。</p>
 <h2 id="_23">键盘与移动端<a class="headerlink" href="#_23" title="Permanent link">&para;</a></h2>
 <p>界面在桌面和手机上使用同一套路由。手机上侧栏变成抽屉，表格变成卡片列表，操作按钮保留在卡片内。歌词对比和整理预览在窄屏下改为纵向排列。</p>
