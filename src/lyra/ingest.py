@@ -372,21 +372,26 @@ def run_cover_stage(
                 steps.append((rel, "skipped", {"why": "已有内嵌封面"}))
                 continue
             upgraded = False
+            reason = f"已有内嵌封面（{pixels or '?'} 像素，偏小但没有更大的可换）"
             if writable and policy.auto_write:
                 block = self_serve_cover_block(
                     store, cfg, root, path, meta, policy,
+                    current_pixels=pixels,
                 )
-                if block is not None and _embed_block(
-                    path, meta.info.media_format, block
-                ):
-                    upgraded = True
+                new_pixels = _picture_pixels(block) if block is not None else None
+                if block is not None and _cover_is_worth_upgrading(pixels, new_pixels):
+                    if _embed_block(path, meta.info.media_format, block):
+                        upgraded = True
+                else:
+                    reason = (
+                        f"已有内嵌封面（{pixels or '?'} 像素），"
+                        f"没有明显更大的可换（{new_pixels or '?'} 像素）"
+                    )
             if upgraded:
                 embedded += 1
                 steps.append((rel, "done", {"source": "upgrade", "from_pixels": pixels}))
             else:
-                steps.append((rel, "skipped", {
-                    "why": f"已有内嵌封面（{pixels or '?'} 像素，偏小但没有更大的可换）",
-                }))
+                steps.append((rel, "skipped", {"why": reason}))
             continue
 
         # ---- 同目录图 ----
@@ -462,6 +467,41 @@ def run_cover_stage(
 #: 500×500 = 25 万像素，是 QQ 来源的默认尺寸——在大屏/车机上已经发糊。
 _COVER_UPGRADE_BELOW = 250_000
 
+#: 换封面要有**实际收益**：新封面至少要比现内嵌的大这么多倍。
+#:
+#: 没有这条判定，单靠升级线会变成死循环：线上内嵌封面大量是 500×495
+#: （247500 像素，恒低于 250000 的升级线），而能拿到的最好也就 500×500
+#: ——写进去还是偏小，mtime 一变，inotify 再触发一次，于是无限重写。
+#: 2026-11-05 实测这个循环在 NAS 上写掉了 1.38 TB、CPU 常驻 68%。
+_COVER_UPGRADE_MIN_GAIN = 1.5
+
+
+def _picture_pixels(block: bytes) -> int | None:
+    """图片字节的像素数。读不出返回 None（不是 0）。"""
+    try:
+        info = detect_image(block)
+    except Exception:  # noqa: BLE001 — 读不出就当「尺寸未知」
+        return None
+    return info.width * info.height
+
+
+def _cover_is_worth_upgrading(
+    old_pixels: int | None, new_pixels: int | None
+) -> bool:
+    """换封面是否真的有收益：够大，且比现在明显更好。
+
+    尺寸未知一律不换。宁可留着偏小的封面，也不要为了「看起来更好」
+    把整个文件重写一遍——写入走字节级改写 + 音频哈希校验，代价不小，
+    而且写完 mtime 变化会让监听再触发一轮。
+    """
+    if not new_pixels:
+        return False
+    if new_pixels < _COVER_UPGRADE_BELOW:
+        return False
+    if not old_pixels:
+        return True
+    return new_pixels >= old_pixels * _COVER_UPGRADE_MIN_GAIN
+
 
 def embedded_cover_pixels(path: Path, media_format) -> int | None:
     """内嵌封面的像素数（宽 × 高）；读不出返回 None。
@@ -510,24 +550,32 @@ def self_serve_cover_block(
     path: Path,
     meta,
     policy,
+    current_pixels: int | None = None,
 ) -> bytes | None:
     """给「已有封面但偏小」的文件找一张更大的：CAA 缓存 → CAA → 歌词来源。
 
     与嵌入链路同一批来源、同一套质量门；区别在于入口——这里先看
     **专辑缓存里那张是不是已经够大**（大概率够：缓存里的图和内嵌的
     是同一张专辑），缓存不满足才联网。
+
+    `current_pixels` 是现内嵌封面的像素数。缓存复用按「明显大于它」判断，
+    而不是固定的倍数——线上内嵌封面大量是 500×495，能拿到的最好也就
+    500×500，按固定倍数会永远判定「不够大」，每次都联网取回同一张。
     """
     release_id = _release_id(meta.tags)
     album_key = release_id or f"{root.name}:{path.parent.as_posix()}"
 
-    # 专辑缓存：那张图若比现内嵌的大 2 倍以上，直接用
+    # 专辑缓存：那张图若明显大于现内嵌的，直接用
+    need = _COVER_UPGRADE_BELOW
+    if current_pixels:
+        need = max(need, int(current_pixels * _COVER_UPGRADE_MIN_GAIN))
     cached = store.get_cover_album(album_key)
     if cached is not None and cached["state"] == "ready":
         cached_path = Path(str(cached["file_path"]))
         if cached_path.is_file():
             try:
                 info = detect_image(cached_path.read_bytes())
-                if info.width * info.height >= _COVER_UPGRADE_BELOW * 2:
+                if info.width * info.height >= need:
                     return build_picture_block(info)
             except Exception:  # noqa: BLE001 — 缓存坏了走联网
                 pass
