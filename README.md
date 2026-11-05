@@ -149,8 +149,8 @@ cat data/initial-password.txt
 | --- | --- | --- | --- | --- |
 | FLAC | 是 | 是 | 是 | 是 |
 | MP3 | 是 | 是 | 是 | 是 |
-| OGG Vorbis | 是 | 是 | 是 | 否 |
-| Opus | 是 | 是 | 是 | 否 |
+| OGG Vorbis | 是 | 是 | 是 | 是 |
+| Opus | 是 | 是 | 是 | 是 |
 
 写入使用字节级改写，不调用 `mutagen.save()` 覆盖整份标签。写入前后会比较音频数据哈希；不一致即回滚。
 

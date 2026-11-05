@@ -57,6 +57,10 @@ src/lyra/
   dedupe.py         音频索引、分类、删除
   rename.py         改名与播放列表引用
   cover.py          封面下载与 SSRF 防护
+  ingest.py         入库流水线：身份 → 歌词 → 封面 → 归位
+  watcher.py        监听、稳定判定、周期对账、每日核对
+  identity.py       身份识别：标签 → 指纹 → 目录锚点 → 搜索
+  pre_review.py     大模型的语义预审
   ai.py             可选的语义复核
   web/              前端构建产物（不入库）
 web/                 Vue 3 + Vite 源码
@@ -101,7 +105,7 @@ deploy/              高级部署示例
 
 ## 数据库
 
-Schema v12，主要表：
+Schema v20，主要表：
 
 | 表 | 用途 |
 | --- | --- |

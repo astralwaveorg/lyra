@@ -1,6 +1,7 @@
 # 更新记录
 
 完整记录见仓库根目录的 [CHANGELOG.md](https://github.com/astralwaveorg/lyra/blob/main/CHANGELOG.md)。
+本页只保留早期版本的摘录；2.x 的更新记录以上述链接为准。
 
 ## 1.3.0
 

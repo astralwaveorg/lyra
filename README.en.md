@@ -130,8 +130,8 @@ Report vulnerabilities through [GitHub Security Advisories](https://github.com/a
 | --- | --- | --- | --- | --- |
 | FLAC | yes | yes | yes | yes |
 | MP3 | yes | yes | yes | yes |
-| OGG Vorbis | yes | yes | yes | no |
-| Opus | yes | yes | yes | no |
+| OGG Vorbis | yes | yes | yes | yes |
+| Opus | yes | yes | yes | yes |
 
 Writes are byte-level edits rather than a full `mutagen.save()` rewrite. The audio hash is compared before and after; a mismatch triggers a rollback.
 
